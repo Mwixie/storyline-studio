@@ -303,6 +303,75 @@ async function backupItem(item){
   }
   return copy;
 }
+async function cloudLibrarySnapshot(){
+  const books=await idbGetAll('books'),rawItems=await idbGetAll('items'),items=[];
+  for(const item of rawItems)items.push(await backupItem(item));
+  return {app:'Storyline Studio',schemaVersion:1,syncedAt:new Date().toISOString(),books,items};
+}
+function restoreCloudItem(item){
+  const copy={...item};
+  if(copy.audioBackup?.encoding==='base64'&&copy.audioBackup.data){
+    copy.audioData=base64ToArrayBuffer(copy.audioBackup.data);
+    copy.audioType=copy.audioBackup.type||copy.audioType||'audio/mp4';
+  }
+  delete copy.audioBackup;
+  return copy;
+}
+async function applyCloudLibraryPayload(data){
+  if(data?.app!=='Storyline Studio'||!Array.isArray(data.books)||!Array.isArray(data.items))throw new Error('The iCloud Storyline library is invalid.');
+  const items=data.items.map(restoreCloudItem);
+  state.cloudApplyingRemote=true;
+  try{await replaceLibraryAtomically(data.books,items)}finally{state.cloudApplyingRemote=false}
+  const last=prefs().lastBookId;
+  state.bookId=(last&&data.books.some(b=>b.id===last))?last:(data.books[0]?.id||null);
+  if(state.bookId){
+    const b=await idbGet('books',state.bookId);
+    state.chapterIndex=b?.progress?.chapterIndex||0;
+    state.selectedParagraph=b?.progress?.paragraphIndex||0;
+    state.selectedCharOffset=b?.progress?.charOffset||0;
+    state.selectedWordEnd=b?.progress?.wordEnd||0;
+    savePrefs({lastBookId:state.bookId});
+  }
+}
+async function cloudProgressSnapshot(){
+  const books=await idbGetAll('books');
+  return {schemaVersion:1,syncedAt:new Date().toISOString(),lastBookId:prefs().lastBookId||null,books:Object.fromEntries(books.map(b=>[b.id,b.progress||{}]))};
+}
+async function applyCloudProgressPayload(data){
+  const remote=data?.books||{};
+  state.cloudApplyingRemote=true;
+  try{
+    for(const [id,p] of Object.entries(remote)){
+      const book=await idbGet('books',id);if(!book)continue;
+      const remoteAt=Date.parse(p?.updatedAt||0)||0;
+      const localAt=Date.parse(book.progress?.updatedAt||0)||0;
+      if(remoteAt>localAt){book.progress={...book.progress,...p};book.updatedAt=new Date(Math.max(Date.parse(book.updatedAt||0)||0,remoteAt)).toISOString();await idbPut('books',book)}
+    }
+  }finally{state.cloudApplyingRemote=false}
+  if(data?.lastBookId&&await idbGet('books',data.lastBookId))savePrefs({lastBookId:data.lastBookId});
+}
+function updateCloudStatus(message,kind=''){
+  const el=$('#cloudSyncStatus');if(el){el.textContent=message;el.dataset.state=kind}
+}
+function showCloudConflict(show){
+  const el=$('#cloudConflictActions');if(el)el.classList.toggle('hidden',!show);
+}
+function ensureStorylineCloud(){
+  if(storylineCloud)return storylineCloud;
+  if(!window.StorylineCloudSync)return null;
+  storylineCloud=window.StorylineCloudSync.create({
+    config:cloudConfig,
+    deviceId:syncDeviceId,
+    localBookCount:async()=>(await idbGetAll('books')).length,
+    getLibrary:cloudLibrarySnapshot,
+    applyLibrary:applyCloudLibraryPayload,
+    getProgress:cloudProgressSnapshot,
+    applyProgress:applyCloudProgressPayload,
+    onStatus:updateCloudStatus,
+    onConflict:showCloudConflict
+  });
+  return storylineCloud;
+}
 async function exportBackup(){
   try{
     const books=await idbGetAll('books'),rawItems=await idbGetAll('items');
