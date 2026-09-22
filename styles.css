@@ -260,3 +260,6 @@ body{min-height:100dvh}.app-shell{min-height:100dvh;padding-bottom:86px}.topbar{
   .backup-card{align-items:flex-start;flex-direction:column}
   .backup-actions{width:100%;justify-content:flex-start}
 }
+
+/* Build 22: voice management */
+.voice-manage-actions{flex-wrap:wrap;gap:8px}
