@@ -462,10 +462,11 @@ function startSpeech(fromSelected=true){
     const book=await idbGet('books',state.bookId);
     if(token!==state.playbackToken||!state.isSpeaking)return;
     if(!book||state.chapterIndex>=book.chapters.length-1){finishSpeech(token);return}
+    const completedLabel=chapterLabel(book.chapters[state.chapterIndex],book);
     state.chapterIndex++;state.selectedParagraph=0;state.selectedCharOffset=0;state.selectedWordEnd=0;state.speakingParagraph=null;
     await saveProgress(book);
     if(token!==state.playbackToken||!state.isSpeaking)return;
-    const notice=`Chapter ${state.chapterIndex} complete · continuing to ${chapterLabel(book.chapters[state.chapterIndex],book)}…`;
+    const notice=`${completedLabel} complete · continuing to ${chapterLabel(book.chapters[state.chapterIndex],book)}…`;
     state.chapterTransitionNotice=notice;
     showToast(notice);
     await renderReader();
