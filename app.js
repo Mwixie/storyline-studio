@@ -8,12 +8,23 @@ const state = {
   route:'library', bookId:null, chapterIndex:0, selectedParagraph:0, selectedCharOffset:0, selectedWordEnd:0, speakingParagraph:null,
   voices:[], voicesReady:false, isSpeaking:false, isPaused:false, deferredPrompt:null, activeUtterance:null, localSpeakingId:null, localTTSReady:false,
   playbackToken:0, speakingPIndex:null, speakingSIndex:null, speakingSegments:null, replayCurrent:null,
-  sleepTimerId:null, sleepIntervalId:null, sleepDeadline:null, sleepMinutes:0, wakeLock:null, chapterTransitionNotice:''
+  sleepTimerId:null, sleepIntervalId:null, sleepDeadline:null, sleepMinutes:0, wakeLock:null, chapterTransitionNotice:'',
+  cloudReady:false, cloudUser:null, cloudBusy:false, cloudConflict:null, cloudContainer:null, cloudDB:null,
+  cloudProgressTimer:null, cloudLibraryTimer:null, cloudApplyingRemote:false
 };
 
 const PREF='storyline.prefs.v1';
+const SYNC_META='storyline.sync.v1';
+const CLOUD_LIBRARY_RECORD='storyline-library-v1';
+const CLOUD_PROGRESS_RECORD='storyline-progress-v1';
 const dbName='storyline-studio';
 let db;
+let storylineCloud=null;
+function syncMeta(){try{return JSON.parse(localStorage.getItem(SYNC_META)||'{}')}catch{return{}}}
+function saveSyncMeta(patch){localStorage.setItem(SYNC_META,JSON.stringify({...syncMeta(),...patch}))}
+function syncDeviceId(){let m=syncMeta();if(!m.deviceId){m.deviceId=uid();saveSyncMeta({deviceId:m.deviceId})}return m.deviceId}
+function cloudConfig(){return window.STORYLINE_CLOUDKIT_CONFIG||{}}
+function cloudConfigured(){const cfg=cloudConfig();return !!(cfg.enabled&&cfg.containerIdentifier&&cfg.apiToken&&window.CloudKit)}
 const savedAudioObjectUrls=new Set();
 function revokeSavedAudioObjectUrls(){
   for(const url of savedAudioObjectUrls){try{URL.revokeObjectURL(url)}catch{}}
@@ -110,8 +121,8 @@ async function openDB(){
 function store(name,mode='readonly'){return db.transaction(name,mode).objectStore(name)}
 function idbGetAll(name){return new Promise((res,rej)=>{const r=store(name).getAll();r.onsuccess=()=>res(r.result||[]);r.onerror=()=>rej(r.error)})}
 function idbGet(name,id){return new Promise((res,rej)=>{const r=store(name).get(id);r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)})}
-function idbPut(name,obj){return new Promise((res,rej)=>{const r=store(name,'readwrite').put(obj);r.onsuccess=()=>res(obj);r.onerror=()=>rej(r.error)})}
-function idbDelete(name,id){return new Promise((res,rej)=>{const r=store(name,'readwrite').delete(id);r.onsuccess=()=>res();r.onerror=()=>rej(r.error)})}
+function idbPut(name,obj){return new Promise((res,rej)=>{const r=store(name,'readwrite').put(obj);r.onsuccess=()=>{if(name==='items'&&!state.cloudApplyingRemote)storylineCloud?.markLibraryDirty();res(obj)};r.onerror=()=>rej(r.error)})}
+function idbDelete(name,id){return new Promise((res,rej)=>{const r=store(name,'readwrite').delete(id);r.onsuccess=()=>{if((name==='items'||name==='books')&&!state.cloudApplyingRemote)storylineCloud?.markLibraryDirty();res()};r.onerror=()=>rej(r.error)})}
 function idbClear(name){return new Promise((res,rej)=>{const r=store(name,'readwrite').clear();r.onsuccess=()=>res();r.onerror=()=>rej(r.error)})}
 function replaceLibraryAtomically(books,items){
   return new Promise((res,rej)=>{
@@ -252,7 +263,7 @@ async function importFile(file){
     if(/the plus[ -]one problem/i.test(title)||/^the plus[ -]one problem/i.test(firstUseful||''))title='The Plus-One Problem';
     const chapters=parsedChapters||splitChapters(paragraphs);
     const book={id:uid(),title,fileName:file.name,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),chapters,progress:{chapterIndex:0,paragraphIndex:0,charOffset:0,wordEnd:0,completed:false},version:'Imported manuscript'};
-    await idbPut('books',book);state.bookId=book.id;state.chapterIndex=0;state.selectedParagraph=0;state.selectedCharOffset=0;state.selectedWordEnd=0;
+    await idbPut('books',book);storylineCloud?.markLibraryDirty();state.bookId=book.id;state.chapterIndex=0;state.selectedParagraph=0;state.selectedCharOffset=0;state.selectedWordEnd=0;
     savePrefs({lastBookId:book.id});showToast(`Imported ${book.chapters.length} chapter${book.chapters.length===1?'':'s'}`);navigate('reader');
   }catch(e){showToast(e.message||'Could not import manuscript')}
 }
@@ -292,6 +303,75 @@ async function backupItem(item){
   }
   return copy;
 }
+async function cloudLibrarySnapshot(){
+  const books=await idbGetAll('books'),rawItems=await idbGetAll('items'),items=[];
+  for(const item of rawItems)items.push(await backupItem(item));
+  return {app:'Storyline Studio',schemaVersion:1,syncedAt:new Date().toISOString(),books,items};
+}
+function restoreCloudItem(item){
+  const copy={...item};
+  if(copy.audioBackup?.encoding==='base64'&&copy.audioBackup.data){
+    copy.audioData=base64ToArrayBuffer(copy.audioBackup.data);
+    copy.audioType=copy.audioBackup.type||copy.audioType||'audio/mp4';
+  }
+  delete copy.audioBackup;
+  return copy;
+}
+async function applyCloudLibraryPayload(data){
+  if(data?.app!=='Storyline Studio'||!Array.isArray(data.books)||!Array.isArray(data.items))throw new Error('The iCloud Storyline library is invalid.');
+  const items=data.items.map(restoreCloudItem);
+  state.cloudApplyingRemote=true;
+  try{await replaceLibraryAtomically(data.books,items)}finally{state.cloudApplyingRemote=false}
+  const last=prefs().lastBookId;
+  state.bookId=(last&&data.books.some(b=>b.id===last))?last:(data.books[0]?.id||null);
+  if(state.bookId){
+    const b=await idbGet('books',state.bookId);
+    state.chapterIndex=b?.progress?.chapterIndex||0;
+    state.selectedParagraph=b?.progress?.paragraphIndex||0;
+    state.selectedCharOffset=b?.progress?.charOffset||0;
+    state.selectedWordEnd=b?.progress?.wordEnd||0;
+    savePrefs({lastBookId:state.bookId});
+  }
+}
+async function cloudProgressSnapshot(){
+  const books=await idbGetAll('books');
+  return {schemaVersion:1,syncedAt:new Date().toISOString(),lastBookId:prefs().lastBookId||null,books:Object.fromEntries(books.map(b=>[b.id,b.progress||{}]))};
+}
+async function applyCloudProgressPayload(data){
+  const remote=data?.books||{};
+  state.cloudApplyingRemote=true;
+  try{
+    for(const [id,p] of Object.entries(remote)){
+      const book=await idbGet('books',id);if(!book)continue;
+      const remoteAt=Date.parse(p?.updatedAt||0)||0;
+      const localAt=Date.parse(book.progress?.updatedAt||0)||0;
+      if(remoteAt>localAt){book.progress={...book.progress,...p};book.updatedAt=new Date(Math.max(Date.parse(book.updatedAt||0)||0,remoteAt)).toISOString();await idbPut('books',book)}
+    }
+  }finally{state.cloudApplyingRemote=false}
+  if(data?.lastBookId&&await idbGet('books',data.lastBookId))savePrefs({lastBookId:data.lastBookId});
+}
+function updateCloudStatus(message,kind=''){
+  const el=$('#cloudSyncStatus');if(el){el.textContent=message;el.dataset.state=kind}
+}
+function showCloudConflict(show){
+  const el=$('#cloudConflictActions');if(el)el.classList.toggle('hidden',!show);
+}
+function ensureStorylineCloud(){
+  if(storylineCloud)return storylineCloud;
+  if(!window.StorylineCloudSync)return null;
+  storylineCloud=window.StorylineCloudSync.create({
+    config:cloudConfig,
+    deviceId:syncDeviceId,
+    localBookCount:async()=>(await idbGetAll('books')).length,
+    getLibrary:cloudLibrarySnapshot,
+    applyLibrary:applyCloudLibraryPayload,
+    getProgress:cloudProgressSnapshot,
+    applyProgress:applyCloudProgressPayload,
+    onStatus:updateCloudStatus,
+    onConflict:showCloudConflict
+  });
+  return storylineCloud;
+}
 async function exportBackup(){
   try{
     const books=await idbGetAll('books'),rawItems=await idbGetAll('items');
@@ -328,6 +408,7 @@ async function restoreBackup(file){
     // Replace both stores in one IndexedDB transaction. If any clear/put fails,
     // IndexedDB rolls the entire restore back instead of leaving a half-restored library.
     await replaceLibraryAtomically(data.books,items);
+    storylineCloud?.markLibraryDirty();
 
     if(data.preferences&&typeof data.preferences==='object')localStorage.setItem(PREF,JSON.stringify(data.preferences));
     const p=prefs();
@@ -344,13 +425,18 @@ async function renderLibrary(){
     <section class="hero"><div class="eyebrow">Your private listening desk</div><h1>Read with your ears.<br>Revise with receipts.</h1><p class="sub">Your manuscript stays in this browser. Storyline remembers where you stopped and keeps every note tied to its exact passage.</p></section>
     <section class="import-zone"><strong>${books.length?'Add another manuscript':'Bring in a manuscript'}</strong><p class="sub">DOCX, EPUB, PDF, ODT, Markdown, HTML, or TXT. Chapter headings are detected automatically.</p><button id="importBtn" class="button">Choose manuscript</button><div class="privacy">Local-first: importing a file does not upload it to a server.</div></section>
     <section class="backup-card card"><div><div class="eyebrow">Data safety</div><h2>Backup & restore</h2><p class="sub">Export manuscripts, reading positions, Queue and Actioned items, preferences, and saved voice-note audio.</p></div><div class="row backup-actions"><button id="exportBackupBtn" class="ghost">Export backup</button><button id="restoreBackupBtn" class="ghost">Restore backup</button><input id="restoreBackupInput" type="file" accept="application/json,.json" hidden /></div></section>
+    <section class="cloud-card card"><div><div class="eyebrow">Across your Apple devices</div><h2>iCloud Sync</h2><p class="sub">Storyline keeps a local working copy. When iCloud Sync is enabled, your private iCloud database mirrors the library and listening position for your other signed-in devices.</p><div id="cloudSyncStatus" class="cloud-status">Checking iCloud sync…</div></div><div class="cloud-actions"><div id="apple-sign-in-button"></div><div id="apple-sign-out-button"></div><button id="syncNowBtn" class="ghost">Sync now</button><div id="cloudConflictActions" class="row hidden"><button id="cloudUseRemoteBtn" class="ghost">Use iCloud copy</button><button id="cloudUseLocalBtn" class="ghost">Keep this device</button></div></div></section>
     ${books.length?`<h2 class="section-title">My manuscripts</h2><div class="grid books">${books.map(b=>bookCard(b,items)).join('')}</div>`:`<div class="empty">Your library is waiting for its first book.</div>`}
   `;
   $('#importBtn').onclick=()=>fileInput.click();
   $('#exportBackupBtn').onclick=exportBackup;
   $('#restoreBackupBtn').onclick=()=>$('#restoreBackupInput').click();
   $('#restoreBackupInput').onchange=e=>{const file=e.target.files?.[0];e.target.value='';restoreBackup(file)};
-  $$('.book-card').forEach(c=>c.onclick=async e=>{ if(e.target.closest('[data-delete]')) return; state.bookId=c.dataset.id; savePrefs({lastBookId:state.bookId}); const b=await idbGet('books',state.bookId); state.chapterIndex=b.progress?.chapterIndex||0; state.selectedParagraph=b.progress?.paragraphIndex||0; state.selectedCharOffset=b.progress?.charOffset||0; state.selectedWordEnd=b.progress?.wordEnd||0; navigate('reader'); });
+  $('#syncNowBtn').onclick=()=>ensureStorylineCloud()?.syncNow();
+  $('#cloudUseRemoteBtn').onclick=async()=>{try{await ensureStorylineCloud()?.resolveRemote();await renderLibrary()}catch(e){updateCloudStatus('Could not use the iCloud copy: '+(e?.message||e),'error')}};
+  $('#cloudUseLocalBtn').onclick=async()=>{try{await ensureStorylineCloud()?.resolveLocal();await renderLibrary()}catch(e){updateCloudStatus('Could not keep this device copy: '+(e?.message||e),'error')}};
+  ensureStorylineCloud()?.mountAuth();
+  $('.book-card').forEach(c=>c.onclick=async e=>{ if(e.target.closest('[data-delete]')) return; state.bookId=c.dataset.id; savePrefs({lastBookId:state.bookId}); const b=await idbGet('books',state.bookId); state.chapterIndex=b.progress?.chapterIndex||0; state.selectedParagraph=b.progress?.paragraphIndex||0; state.selectedCharOffset=b.progress?.charOffset||0; state.selectedWordEnd=b.progress?.wordEnd||0; navigate('reader'); });
   $$('[data-delete]').forEach(btn=>btn.onclick=async e=>{e.stopPropagation();const id=btn.dataset.delete; if(confirm('Remove this manuscript and its saved notes from this device?')){await idbDelete('books',id); const all=await idbGetAll('items'); for(const i of all.filter(x=>x.bookId===id)) await idbDelete('items',i.id); if(state.bookId===id) state.bookId=null; renderLibrary(); updateQueueBadge();}});
 }
 function chapterLabel(ch,book){ return (ch?.synthetic||ch?.title==='Beginning'||ch?.title==='Front matter')?(book?.title||'Manuscript'):(ch?.title||'Manuscript'); }
@@ -435,9 +521,11 @@ async function saveProgress(book,{snapshot=null,completed=null,updatePrefs=true}
   if(!book)return;
   const pos=snapshot||progressSnapshot();
   const wasCompleted=book.progress?.completed===true;
-  book.progress={chapterIndex:pos.chapterIndex,paragraphIndex:pos.paragraphIndex,charOffset:pos.charOffset||0,wordEnd:pos.wordEnd||0,completed:completed===null?wasCompleted:!!completed};
-  book.updatedAt=new Date().toISOString();
+  const progressUpdatedAt=new Date().toISOString();
+  book.progress={chapterIndex:pos.chapterIndex,paragraphIndex:pos.paragraphIndex,charOffset:pos.charOffset||0,wordEnd:pos.wordEnd||0,completed:completed===null?wasCompleted:!!completed,updatedAt:progressUpdatedAt};
+  book.updatedAt=progressUpdatedAt;
   await idbPut('books',book);
+  if(!state.cloudApplyingRemote)storylineCloud?.markProgressDirty();
   if(updatePrefs)savePrefs({lastBookId:book.id,lastChapterIndex:pos.chapterIndex,lastParagraphIndex:pos.paragraphIndex,lastCharOffset:pos.charOffset||0,lastWordEnd:pos.wordEnd||0});
 }
 function persistReadingProgress(){
@@ -1161,7 +1249,7 @@ applyNavCollapse();
 fileInput.addEventListener('change',e=>{importFile(e.target.files[0]);e.target.value=''});
 window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();state.deferredPrompt=e;$('#installBtn').classList.remove('hidden')});
 $('#installBtn').onclick=async()=>{if(state.deferredPrompt){state.deferredPrompt.prompt();await state.deferredPrompt.userChoice;state.deferredPrompt=null;$('#installBtn').classList.add('hidden')}};
-document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&state.isSpeaking)requestWakeLock()});
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'){if(state.isSpeaking)requestWakeLock();else storylineCloud?.syncNow()}});
 window.addEventListener('pagehide',()=>stopAllSpeech());
 if('serviceWorker' in navigator) window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
 
