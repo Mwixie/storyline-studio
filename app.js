@@ -994,7 +994,8 @@ function clearSentenceHighlights(){
   });
 }
 async function startLocalSpeech(fromSelected=true){
-  const paras=$$('#readingPage p').map(p=>(p.textContent||'').trim());
+  const token=++state.playbackToken;
+  const paras=$('#readingPage p').map(p=>(p.textContent||'').trim());
   if(!paras.some(Boolean)){showToast('There is no text to read in this chapter.');return}
   let pIndex=fromSelected?state.selectedParagraph:(state.speakingParagraph??state.selectedParagraph);
   pIndex=Math.max(0,Math.min(pIndex,paras.length-1));
@@ -1002,33 +1003,34 @@ async function startLocalSpeech(fromSelected=true){
   const st=$('#voiceStatus'); if(st)st.textContent=state.chapterTransitionNotice||'Loading free local voice…';
   state.chapterTransitionNotice='';
   const play=$('#playBtn'); if(play)play.textContent='…';
-  try{await ensureLocalTTS();}catch(e){if(st)st.textContent='Local voice failed to load';if(play)play.textContent='▶';showToast(e.message);return}
+  try{await ensureLocalTTS();}catch(e){if(token!==state.playbackToken)return;if(st)st.textContent='Local voice failed to load';if(play)play.textContent='▶';showToast(e.message);return}
+  if(token!==state.playbackToken)return;
   try{meSpeak.stop();}catch{}
   state.isSpeaking=true; state.isPaused=false;
   requestWakeLock();
   if(play){play.textContent='■';play.setAttribute('aria-label','Stop');}
 
   const continueLocalChapter=async()=>{
-    if(!state.isSpeaking)return;
+    if(token!==state.playbackToken||!state.isSpeaking)return;
     const book=await idbGet('books',state.bookId);
-    if(!state.isSpeaking)return;
+    if(token!==state.playbackToken||!state.isSpeaking)return;
     if(!book){finishSpeech();return}
     if(state.chapterIndex>=book.chapters.length-1){await saveProgress(book,{completed:true});finishSpeech();return}
     if(prefs().autoAdvance===false){finishSpeech();return}
     const completedLabel=chapterLabel(book.chapters[state.chapterIndex],book);
     state.chapterIndex++;state.selectedParagraph=0;state.selectedCharOffset=0;state.selectedWordEnd=0;state.speakingParagraph=null;
     await saveProgress(book);
-    if(!state.isSpeaking)return;
+    if(token!==state.playbackToken||!state.isSpeaking)return;
     const notice=`${completedLabel} complete · continuing to ${chapterLabel(book.chapters[state.chapterIndex],book)}…`;
     state.chapterTransitionNotice=notice;
     showToast(notice);
     await renderReader();
-    if(!state.isSpeaking)return;
+    if(token!==state.playbackToken||!state.isSpeaking)return;
     startLocalSpeech(false);
   };
 
   const speakParagraph=()=>{
-    if(!state.isSpeaking)return;
+    if(token!==state.playbackToken||!state.isSpeaking)return;
     if(pIndex>=paras.length){continueLocalChapter();return}
     const sentenceParts=sentenceSegments(paras[pIndex],0);
     const sentences=sentenceParts.map(x=>x.text);
@@ -1043,7 +1045,7 @@ async function startLocalSpeech(fromSelected=true){
     const label=$('#positionLabel'); if(label)label.textContent=`Paragraph ${pIndex+1} of ${paras.length}`;
 
     const speakSentence=()=>{
-      if(!state.isSpeaking)return;
+      if(token!==state.playbackToken||!state.isSpeaking)return;
       if(sIndex>=sentences.length){
         const currentP=$(`#readingPage p[data-p="${pIndex}"]`); if(currentP) currentP.textContent=paras[pIndex];
         state.selectedCharOffset=paras[pIndex].length;state.selectedWordEnd=paras[pIndex].length;
@@ -1056,12 +1058,13 @@ async function startLocalSpeech(fromSelected=true){
       persistReadingProgress();
       if(st)st.textContent=`Reading paragraph ${pIndex+1} · sentence ${sIndex+1}/${sentences.length}`; highlightSentence(pIndex,sIndex,sentences);
       const id=meSpeak.speak(sentences[sIndex],{amplitude:100,speed:localSpeed(),volume:1,voice:'en-us',variant:localVoiceVariant()},success=>{
+        if(token!==state.playbackToken)return;
         state.localSpeakingId=null;
         if(!state.isSpeaking)return;
-        if(!success){finishSpeech();return}
+        if(!success){finishSpeech(token);return}
         sIndex++; speakSentence();
       });
-      if(!id){showToast('The local voice could not generate this sentence.');finishSpeech();return}
+      if(!id){showToast('The local voice could not generate this sentence.');finishSpeech(token);return}
       state.localSpeakingId=id;
     };
     speakSentence();
