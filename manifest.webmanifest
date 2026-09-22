@@ -1,0 +1,13 @@
+{
+  "name":"Storyline Studio",
+  "short_name":"Storyline",
+  "description":"A private manuscript listening and revision studio.",
+  "start_url":"./",
+  "scope":"./",
+  "display":"standalone",
+  "background_color":"#0d0c12",
+  "theme_color":"#0d0c12",
+  "icons":[
+    {"src":"icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any maskable"}
+  ]
+}
