@@ -244,21 +244,6 @@ function toggleSpeech(){
   if(state.isSpeaking&&state.isPaused){ speechSynthesis.resume(); state.isPaused=false; $('#playBtn').textContent='Ⅱ'; return; }
   startSpeech(true);
 }
-async function warmAudioSession(){
-  const AC=window.AudioContext||window.webkitAudioContext;
-  if(!AC)return;
-  try{
-    const ctx=new AC();
-    if(ctx.state==='suspended')await ctx.resume();
-    const osc=ctx.createOscillator(),gain=ctx.createGain();
-    osc.frequency.value=80;
-    gain.gain.setValueAtTime(0.0001,ctx.currentTime);
-    osc.connect(gain);gain.connect(ctx.destination);
-    osc.start();osc.stop(ctx.currentTime+0.12);
-    await new Promise(r=>setTimeout(r,170));
-    ctx.close().catch(()=>{});
-  }catch{}
-}
 function startSpeech(fromSelected=true){
   if(!('speechSynthesis' in window) || typeof SpeechSynthesisUtterance==='undefined'){ showToast('Text-to-speech is not available in this browser.'); return; }
   const paras=$$('#readingPage p').map(p=>(p.textContent||'').trim());
@@ -271,7 +256,7 @@ function startSpeech(fromSelected=true){
   const selectedVoice=p.voiceName||$('#voiceSelect')?.value;
   const v=state.voices.find(x=>x.name===selectedVoice) || state.voices.find(x=>x.name==='Samantha') || state.voices[0];
 
-  const begin=async()=>{
+  const begin=()=>{
     state.isSpeaking=true; state.isPaused=false;
     const st=$('#voiceStatus'); if(st)st.textContent='Starting…';
     const play=$('#playBtn'); if(play){play.textContent='Ⅱ';play.setAttribute('aria-label','Pause');}
@@ -304,17 +289,22 @@ function startSpeech(fromSelected=true){
         if(v){u.voice=v;u.lang=v.lang;}else{u.lang=navigator.language||'en-US';}
         u.onend=()=>{if(!state.isSpeaking)return;state.activeUtterance=null;sIndex++;speakSentence();};
         u.onerror=e=>{state.activeUtterance=null;if(e.error!=='canceled'&&e.error!=='interrupted')showToast('The device voice could not continue.');finishSpeech();};
+        if(isFirst){
+          const primer=new SpeechSynthesisUtterance('Ready');
+          primer.rate=2.2; primer.pitch=1; primer.volume=0.02;
+          if(v){primer.voice=v;primer.lang=v.lang;}else{primer.lang=u.lang;}
+          speechSynthesis.speak(primer);
+        }
         speechSynthesis.speak(u);
       };
       speakSentence();
     };
 
-    await warmAudioSession();
-    setTimeout(speakParagraph,120);
+    speakParagraph();
   };
 
   if(speechSynthesis.speaking||speechSynthesis.pending){
-    speechSynthesis.cancel(); setTimeout(()=>{speechSynthesis.resume();begin();},80);
+    speechSynthesis.cancel(); speechSynthesis.resume(); begin();
   }else{speechSynthesis.resume();begin();}
 }
 function stopAllSpeech(){
@@ -738,9 +728,10 @@ function wireItemButtons(){
 $$('[data-nav]').forEach(b=>b.addEventListener('click',()=>navigate(b.dataset.nav)));
 $$('[data-reader-act]').forEach(b=>b.addEventListener('click',async()=>{
   if(state.route!=='reader'||!state.bookId)return;
+  document.body.classList.remove('mobile-tools-open');
+  if(b.dataset.readerAct==='start'){ startSpeech(true); return; }
   const book=await idbGet('books',state.bookId); if(!book)return;
   const ch=book.chapters[state.chapterIndex]; if(!ch)return;
-  document.body.classList.remove('mobile-tools-open');
   await handleAction(b.dataset.readerAct,book,ch);
 }));
 const readerToolsToggle=$('#readerToolsToggle');
