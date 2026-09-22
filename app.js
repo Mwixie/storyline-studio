@@ -734,11 +734,61 @@ async function releaseWakeLock(){
   const lock=state.wakeLock;state.wakeLock=null;
   try{await lock?.release?.()}catch{}
 }
+function setMediaPlaybackState(value){
+  if(!('mediaSession' in navigator))return;
+  try{navigator.mediaSession.playbackState=value}catch{}
+}
+async function updateNowPlaying(){
+  if(!('mediaSession' in navigator)||typeof MediaMetadata==='undefined'||!state.bookId)return;
+  try{
+    const book=await idbGet('books',state.bookId);if(!book)return;
+    const ch=book.chapters[state.chapterIndex];
+    navigator.mediaSession.metadata=new MediaMetadata({
+      title:book.title||'Manuscript',
+      artist:'Storyline Studio',
+      album:chapterLabel(ch,book)
+    });
+  }catch{}
+}
+async function mediaMoveParagraph(delta){
+  const book=await idbGet('books',state.bookId);if(!book)return;
+  const ch=book.chapters[state.chapterIndex];if(!ch?.paragraphs?.length)return;
+  stopAllSpeech();
+  state.selectedParagraph=Math.max(0,Math.min(ch.paragraphs.length-1,state.selectedParagraph+delta));
+  state.selectedCharOffset=0;state.selectedWordEnd=0;
+  await saveProgress(book);
+  await renderReader();
+  startSpeech(true);
+}
+function setupMediaSession(){
+  if(!('mediaSession' in navigator))return;
+  const safe=(name,handler)=>{try{navigator.mediaSession.setActionHandler(name,handler)}catch{}};
+  safe('play',()=>{
+    if(state.isSpeaking&&state.isPaused){
+      try{speechSynthesis.resume()}catch{}
+      state.isPaused=false;
+      const b=$('#playBtn');if(b){b.textContent='Ⅱ';b.setAttribute('aria-label','Pause')}
+      setMediaPlaybackState('playing');
+      return;
+    }
+    if(!state.isSpeaking)startSpeech(true);
+  });
+  safe('pause',()=>{
+    if(!state.isSpeaking||state.isPaused)return;
+    try{speechSynthesis.pause()}catch{}
+    state.isPaused=true;
+    const b=$('#playBtn');if(b){b.textContent='▶';b.setAttribute('aria-label','Play')}
+    setMediaPlaybackState('paused');
+  });
+  safe('previoustrack',()=>{mediaMoveParagraph(-1)});
+  safe('nexttrack',()=>{mediaMoveParagraph(1)});
+  safe('stop',()=>stopAllSpeech());
+}
 function toggleSpeech(){
   if(!state.voicesReady){showToast('Device voices are still loading.');return}
   if(!('speechSynthesis' in window) || typeof SpeechSynthesisUtterance==='undefined'){ showToast('Text-to-speech is not available in this browser.'); return; }
-  if(state.isSpeaking&&!state.isPaused){ speechSynthesis.pause(); state.isPaused=true; $('#playBtn').textContent='▶'; return; }
-  if(state.isSpeaking&&state.isPaused){ speechSynthesis.resume(); state.isPaused=false; $('#playBtn').textContent='Ⅱ'; return; }
+  if(state.isSpeaking&&!state.isPaused){ speechSynthesis.pause(); state.isPaused=true; $('#playBtn').textContent='▶'; setMediaPlaybackState('paused'); return; }
+  if(state.isSpeaking&&state.isPaused){ speechSynthesis.resume(); state.isPaused=false; $('#playBtn').textContent='Ⅱ'; setMediaPlaybackState('playing'); return; }
   startSpeech(true);
 }
 function startSpeech(fromSelected=true){
@@ -756,6 +806,7 @@ function startSpeech(fromSelected=true){
   let firstOffset=fromSelected?(state.selectedCharOffset||0):0;
 
   state.isSpeaking=true;state.isPaused=false;
+  setMediaPlaybackState('playing');updateNowPlaying();
   requestWakeLock();
   const st=$('#voiceStatus');
   if(st)st.textContent=state.chapterTransitionNotice||'Starting…';
@@ -787,6 +838,7 @@ function startSpeech(fromSelected=true){
     state.chapterTransitionNotice=notice;
     showToast(notice);
     await renderReader();
+    updateNowPlaying();
     if(token!==state.playbackToken||!state.isSpeaking)return;
     startSpeech(false);
   };
@@ -867,6 +919,7 @@ function stopAllSpeech(){
   try{speechSynthesis.cancel()}catch{}
   try{if(window.meSpeak)meSpeak.stop()}catch{}
   state.isSpeaking=false;state.isPaused=false;state.activeUtterance=null;state.localSpeakingId=null;state.speakingParagraph=null;
+  setMediaPlaybackState('none');
   state.speakingPIndex=null;state.speakingSIndex=null;state.speakingSegments=null;state.replayCurrent=null;
   clearSleepTimer();releaseWakeLock();
   const b=$('#playBtn');if(b){b.textContent='▶';b.setAttribute('aria-label','Play')}
@@ -1041,6 +1094,7 @@ function markSpeaking(i){
 function finishSpeech(token=null){
   if(token!==null&&token!==state.playbackToken)return;
   state.isSpeaking=false;state.isPaused=false;state.speakingParagraph=null;state.activeUtterance=null;state.localSpeakingId=null;
+  setMediaPlaybackState('none');
   state.speakingPIndex=null;state.speakingSIndex=null;state.speakingSegments=null;state.replayCurrent=null;
   clearSleepTimer();releaseWakeLock();
   const b=$('#playBtn');if(b){b.textContent='▶';b.setAttribute('aria-label','Play')}
@@ -1381,11 +1435,12 @@ function applyNavCollapse(){
 }
 if(navCollapse)navCollapse.onclick=()=>{savePrefs({navCollapsed:!prefs().navCollapsed});applyNavCollapse()};
 applyNavCollapse();
+setupMediaSession();
 fileInput.addEventListener('change',e=>{importFile(e.target.files[0]);e.target.value=''});
 window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();state.deferredPrompt=e;$('#installBtn').classList.remove('hidden')});
 $('#installBtn').onclick=async()=>{if(state.deferredPrompt){state.deferredPrompt.prompt();await state.deferredPrompt.userChoice;state.deferredPrompt=null;$('#installBtn').classList.add('hidden')}};
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&state.isSpeaking)requestWakeLock()});
-window.addEventListener('pagehide',()=>stopAllSpeech());
+// Do not cancel speech merely because iOS backgrounds the installed app.
 if('serviceWorker' in navigator) window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
 
 openDB().then(async()=>{ await migrateLegacyPassageAnchors(); let p=prefs(); if(p.engine!=='device'){ savePrefs({engine:'device'}); p=prefs(); } state.bookId=p.lastBookId||null; if(state.bookId){ const b=await idbGet('books',state.bookId); if(b){ state.chapterIndex=b.progress?.chapterIndex ?? p.lastChapterIndex ?? 0; state.selectedParagraph=b.progress?.paragraphIndex ?? p.lastParagraphIndex ?? 0; state.selectedCharOffset=b.progress?.charOffset ?? p.lastCharOffset ?? 0; state.selectedWordEnd=b.progress?.wordEnd ?? p.lastWordEnd ?? 0; } } await navigate('library'); }).catch(e=>{view.innerHTML=`<div class="empty">Storyline could not start: ${escapeHtml(e.message)}</div>`});
