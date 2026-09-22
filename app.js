@@ -102,6 +102,7 @@ async function renderReader(){
     <section class="player">
       <div class="player-main"><button id="playBtn" class="button play" aria-label="Play">▶</button><div><div class="row between"><span id="positionLabel" class="meta">Paragraph ${state.selectedParagraph+1} of ${ch.paragraphs.length}</span><span id="speedLabel" class="meta">${p.rate||1.05}×</span></div><input id="positionRange" class="range" type="range" min="0" max="${Math.max(ch.paragraphs.length-1,0)}" value="${state.selectedParagraph}" /></div><button id="startBtn" class="ghost tiny">Start here</button></div>
       <div class="player-settings"><select id="voiceSelect" class="select"><option>Loading voices…</option></select><input id="rateRange" class="range" type="range" min="0.75" max="1.75" step="0.05" value="${p.rate||1.05}" title="Reading speed" /></div>
+      <div class="row" style="margin-top:8px"><button id="testVoiceBtn" class="ghost tiny">Test voice</button><span id="voiceStatus" class="meta">Voice ready</span></div>
       <div class="quick-actions">
         <button class="action" data-act="note"><b>✎</b>Add note</button><button class="action" data-act="voice"><b>●</b>Voice note</button><button class="action" data-act="ask"><b>✦</b>Ask ChatGPT</button><button class="action" data-act="continuity"><b>⚑</b>Flag continuity</button><button class="action" data-act="bookmark"><b>⌑</b>Bookmark</button><button class="action primary" data-act="start"><b>▶</b>Start from here</button><button class="action" data-act="queue"><b>☷</b>Revision queue</button>
       </div>
@@ -114,7 +115,7 @@ function wireReader(book,ch){
   $('#chapterSelect').onchange=async e=>{ state.chapterIndex=+e.target.value; state.selectedParagraph=0; await saveProgress(book); renderReader(); };
   $$('#readingPage p').forEach(p=>p.onclick=()=>selectParagraph(+p.dataset.p));
   $('#positionRange').oninput=e=>selectParagraph(+e.target.value,true);
-  $('#playBtn').onclick=toggleSpeech; $('#startBtn').onclick=()=>startSpeech(true);
+  $('#playBtn').onclick=toggleSpeech; $('#startBtn').onclick=()=>startSpeech(true); $('#testVoiceBtn').onclick=testVoice;
   $('#rateRange').oninput=e=>{const r=+e.target.value; savePrefs({rate:r}); $('#speedLabel').textContent=r+'×'; if(state.isSpeaking) startSpeech(true);};
   $('#voiceSelect').onchange=e=>savePrefs({voiceName:e.target.value});
   $$('.action').forEach(b=>b.onclick=()=>handleAction(b.dataset.act,book,ch));
@@ -142,7 +143,7 @@ function startSpeech(fromSelected=true){
 
   const begin=()=>{
     state.isSpeaking=true; state.isPaused=false;
-    const play=$('#playBtn'); if(play) play.textContent='Ⅱ';
+    const st=$('#voiceStatus'); if(st) st.textContent='Starting…';
 
     const speakNext=()=>{
       if(!state.isSpeaking || index>=texts.length){ finishSpeech(); return; }
@@ -154,11 +155,13 @@ function startSpeech(fromSelected=true){
       state.activeUtterance=u;
       const p=prefs();
       u.rate=+(p.rate||1.05);
+      u.volume=1;
+      u.pitch=1;
       const selectedVoice=p.voiceName||$('#voiceSelect')?.value;
       const v=state.voices.find(x=>x.name===selectedVoice);
-      if(v) u.voice=v;
+      if(v){ u.voice=v; u.lang=v.lang; } else { u.lang=navigator.language||'en-US'; }
 
-      u.onstart=()=>{ state.isSpeaking=true; state.isPaused=false; };
+      u.onstart=()=>{ state.isSpeaking=true; state.isPaused=false; const play=$('#playBtn'); if(play) play.textContent='Ⅱ'; const st=$('#voiceStatus'); if(st) st.textContent='Speaking'; };
       u.onend=()=>{ if(!state.isSpeaking) return; state.activeUtterance=null; index++; speakNext(); };
       u.onerror=e=>{
         state.activeUtterance=null;
@@ -179,6 +182,23 @@ function startSpeech(fromSelected=true){
     speechSynthesis.resume();
     begin();
   }
+}
+function testVoice(){
+  if(!('speechSynthesis' in window) || typeof SpeechSynthesisUtterance==='undefined'){ showToast('Text-to-speech is not available in this browser.'); return; }
+  speechSynthesis.cancel();
+  const selectedVoice=prefs().voiceName||$('#voiceSelect')?.value;
+  const v=state.voices.find(x=>x.name===selectedVoice) || state.voices.find(x=>x.lang==='en-US') || state.voices[0];
+  const u=new SpeechSynthesisUtterance('Storyline Studio voice test.');
+  state.activeUtterance=u;
+  u.volume=1; u.rate=1; u.pitch=1;
+  if(v){ u.voice=v; u.lang=v.lang; } else { u.lang='en-US'; }
+  const st=$('#voiceStatus');
+  if(st) st.textContent='Testing…';
+  u.onstart=()=>{ if(st) st.textContent='Test is speaking'; showToast('Voice test started'); };
+  u.onend=()=>{ state.activeUtterance=null; if(st) st.textContent='Test finished'; showToast('Voice test finished'); };
+  u.onerror=e=>{ state.activeUtterance=null; if(st) st.textContent='Voice error: '+(e.error||'unknown'); showToast('Voice error: '+(e.error||'unknown')); };
+  speechSynthesis.resume();
+  speechSynthesis.speak(u);
 }
 function markSpeaking(i){ $('#readingPage p').forEach(p=>p.classList.toggle('speaking',+p.dataset.p===i)); const el=$(`#readingPage p[data-p="${i}"]`); if(el)el.scrollIntoView({block:'center',behavior:'smooth'}); }
 function finishSpeech(){ state.isSpeaking=false; state.isPaused=false; state.speakingParagraph=null; state.activeUtterance=null; const b=$('#playBtn'); if(b)b.textContent='▶'; $('#readingPage p').forEach(p=>p.classList.remove('speaking')); }
