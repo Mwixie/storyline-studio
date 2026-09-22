@@ -102,7 +102,7 @@ async function renderReader(){
     <section class="player">
       <div class="player-main"><button id="playBtn" class="button play" aria-label="Play">▶</button><div><div class="row between"><span id="positionLabel" class="meta">Paragraph ${state.selectedParagraph+1} of ${ch.paragraphs.length}</span><span id="speedLabel" class="meta">${p.rate||1.05}×</span></div><input id="positionRange" class="range" type="range" min="0" max="${Math.max(ch.paragraphs.length-1,0)}" value="${state.selectedParagraph}" /></div><button id="startBtn" class="ghost tiny">Start here</button></div>
       <div class="player-settings"><select id="voiceSelect" class="select"><option>Loading voices…</option></select><input id="rateRange" class="range" type="range" min="0.75" max="1.75" step="0.05" value="${p.rate||1.05}" title="Reading speed" /></div>
-      <div class="row" style="margin-top:8px"><button id="testVoiceBtn" class="ghost tiny">Test voice</button><span id="voiceStatus" class="meta">Voice ready</span></div>
+      <div class="row" style="margin-top:8px"><button id="testVoiceBtn" class="ghost tiny">Test voice</button><button id="testSoundBtn" class="ghost tiny">Test sound</button><span id="voiceStatus" class="meta">Voice ready</span></div>
       <div class="quick-actions">
         <button class="action" data-act="note"><b>✎</b>Add note</button><button class="action" data-act="voice"><b>●</b>Voice note</button><button class="action" data-act="ask"><b>✦</b>Ask ChatGPT</button><button class="action" data-act="continuity"><b>⚑</b>Flag continuity</button><button class="action" data-act="bookmark"><b>⌑</b>Bookmark</button><button class="action primary" data-act="start"><b>▶</b>Start from here</button><button class="action" data-act="queue"><b>☷</b>Revision queue</button>
       </div>
@@ -115,7 +115,7 @@ function wireReader(book,ch){
   $('#chapterSelect').onchange=async e=>{ state.chapterIndex=+e.target.value; state.selectedParagraph=0; await saveProgress(book); renderReader(); };
   $$('#readingPage p').forEach(p=>p.onclick=()=>selectParagraph(+p.dataset.p));
   $('#positionRange').oninput=e=>selectParagraph(+e.target.value,true);
-  $('#playBtn').onclick=toggleSpeech; $('#startBtn').onclick=()=>startSpeech(true); $('#testVoiceBtn').onclick=testVoice;
+  $('#playBtn').onclick=toggleSpeech; $('#startBtn').onclick=()=>startSpeech(true); $('#testVoiceBtn').onclick=testVoice; $('#testSoundBtn').onclick=testSound;
   $('#rateRange').oninput=e=>{const r=+e.target.value; savePrefs({rate:r}); $('#speedLabel').textContent=r+'×'; if(state.isSpeaking) startSpeech(true);};
   $('#voiceSelect').onchange=e=>savePrefs({voiceName:e.target.value});
   $$('.action').forEach(b=>b.onclick=()=>handleAction(b.dataset.act,book,ch));
@@ -182,6 +182,26 @@ function startSpeech(fromSelected=true){
     speechSynthesis.resume();
     begin();
   }
+}
+async function testSound(){
+  const AC=window.AudioContext||window.webkitAudioContext;
+  if(!AC){ showToast('Audio test is not available in this browser.'); return; }
+  try{
+    const ctx=new AC();
+    if(ctx.state==='suspended') await ctx.resume();
+    const osc=ctx.createOscillator();
+    const gain=ctx.createGain();
+    osc.type='sine';
+    osc.frequency.value=880;
+    gain.gain.setValueAtTime(0.0001,ctx.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.18,ctx.currentTime+0.03);
+    gain.gain.exponentialRampToValueAtTime(0.0001,ctx.currentTime+0.65);
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime+0.7);
+    const st=$('#voiceStatus'); if(st) st.textContent='Playing test tone…';
+    osc.onended=()=>{ if(st) st.textContent='Test sound finished'; ctx.close().catch(()=>{}); };
+  }catch(e){ const st=$('#voiceStatus'); if(st) st.textContent='Sound error'; showToast('Sound test could not start.'); }
 }
 function testVoice(){
   if(!('speechSynthesis' in window) || typeof SpeechSynthesisUtterance==='undefined'){ showToast('Text-to-speech is not available in this browser.'); return; }
