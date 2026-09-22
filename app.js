@@ -149,7 +149,7 @@ function setNav(route){
 async function navigate(route){
   if(route==='reader'&&!state.bookId){ const books=await idbGetAll('books'); if(books[0]) state.bookId=books[0].id; else route='library'; }
   state.route=route; setNav(route); stopAllSpeech();
-  if(route==='library') await renderLibrary(); if(route==='reader') await renderReader(); if(route==='notes') await renderNotes(); if(route==='queue') await renderQueue(); updateQueueBadge();
+  if(route==='library') await renderLibrary(); if(route==='reader') await renderReader(); if(route==='notes') await renderNotes(); if(route==='queue') await renderQueue(); if(route==='actioned') await renderActioned(); updateQueueBadge();
 }
 
 async function renderLibrary(){
@@ -164,7 +164,7 @@ async function renderLibrary(){
   $$('.book-card').forEach(c=>c.onclick=async e=>{ if(e.target.closest('[data-delete]')) return; state.bookId=c.dataset.id; savePrefs({lastBookId:state.bookId}); const b=await idbGet('books',state.bookId); state.chapterIndex=b.progress?.chapterIndex||0; state.selectedParagraph=b.progress?.paragraphIndex||0; state.selectedCharOffset=b.progress?.charOffset||0; state.selectedWordEnd=b.progress?.wordEnd||0; navigate('reader'); });
   $$('[data-delete]').forEach(btn=>btn.onclick=async e=>{e.stopPropagation();const id=btn.dataset.delete; if(confirm('Remove this manuscript and its saved notes from this device?')){await idbDelete('books',id); const all=await idbGetAll('items'); for(const i of all.filter(x=>x.bookId===id)) await idbDelete('items',i.id); if(state.bookId===id) state.bookId=null; renderLibrary(); updateQueueBadge();}});
 }
-function chapterLabel(ch){ return ch?.title==='Beginning'?'Front matter':(ch?.title||'Manuscript'); }
+function chapterLabel(ch,book){ return (ch?.synthetic||ch?.title==='Beginning'||ch?.title==='Front matter')?(book?.title||'Manuscript'):(ch?.title||'Manuscript'); }
 function readerChapterTitle(ch){ return (ch?.synthetic||ch?.title==='Beginning'||ch?.title==='Front matter')?'':(ch?.title||''); }
 function bookCard(b,items){ const total=b.chapters.reduce((n,c)=>n+c.paragraphs.length,0); let before=0; for(let i=0;i<(b.progress?.chapterIndex||0);i++) before+=b.chapters[i]?.paragraphs.length||0; before+=b.progress?.paragraphIndex||0; const pct=Math.max(0,Math.min(100,Math.round((before/Math.max(total,1))*100))); const count=items.filter(i=>i.bookId===b.id&&['note','question','continuity'].includes(i.type)).length;
   return `<article class="card book-card" data-id="${b.id}"><div><div class="eyebrow">${escapeHtml(b.version||'Manuscript')}</div><div class="book-title">${escapeHtml(b.title)}</div><p class="meta">${b.chapters.length} chapter${b.chapters.length===1?'':'s'} · ${count} note${count===1?'':'s'}</p></div><div class="stack"><div class="row between"><span class="meta">${pct}% listened</span><button data-delete="${b.id}" class="ghost tiny">Remove</button></div><div class="progress"><i style="width:${pct}%"></i></div><button class="button">Continue reading</button></div></article>`;
@@ -176,7 +176,7 @@ async function renderReader(){
   const p=prefs();
   view.innerHTML=`
     <section class="reader-header"><div class="row between"><div><div class="eyebrow">${escapeHtml(book.title)}</div>${readerChapterTitle(ch)?`<h2 class="reader-title">${escapeHtml(readerChapterTitle(ch))}</h2>`:''}</div><button id="backLibrary" class="ghost tiny">Library</button></div>
-    <select id="chapterSelect" class="chapter-select">${book.chapters.map((c,i)=>`<option value="${i}" ${i===state.chapterIndex?'selected':''}>${escapeHtml(chapterLabel(c))}</option>`).join('')}</select></section>
+    <select id="chapterSelect" class="chapter-select">${book.chapters.map((c,i)=>`<option value="${i}" ${i===state.chapterIndex?'selected':''}>${escapeHtml(chapterLabel(c,book))}</option>`).join('')}</select></section>
     <article id="readingPage" class="reading-page" aria-label="Manuscript text">${ch.paragraphs.map((t,i)=>`<p data-p="${i}" class="${i===state.selectedParagraph?'selected':''}">${escapeHtml(t)}</p>`).join('')}</article>
     <section class="player compact-player">
       <div class="player-main compact-player-main">
@@ -244,6 +244,21 @@ function toggleSpeech(){
   if(state.isSpeaking&&state.isPaused){ speechSynthesis.resume(); state.isPaused=false; $('#playBtn').textContent='Ⅱ'; return; }
   startSpeech(true);
 }
+async function warmAudioSession(){
+  const AC=window.AudioContext||window.webkitAudioContext;
+  if(!AC)return;
+  try{
+    const ctx=new AC();
+    if(ctx.state==='suspended')await ctx.resume();
+    const osc=ctx.createOscillator(),gain=ctx.createGain();
+    osc.frequency.value=80;
+    gain.gain.setValueAtTime(0.0001,ctx.currentTime);
+    osc.connect(gain);gain.connect(ctx.destination);
+    osc.start();osc.stop(ctx.currentTime+0.12);
+    await new Promise(r=>setTimeout(r,170));
+    ctx.close().catch(()=>{});
+  }catch{}
+}
 function startSpeech(fromSelected=true){
   if(!('speechSynthesis' in window) || typeof SpeechSynthesisUtterance==='undefined'){ showToast('Text-to-speech is not available in this browser.'); return; }
   const paras=$$('#readingPage p').map(p=>(p.textContent||'').trim());
@@ -256,7 +271,7 @@ function startSpeech(fromSelected=true){
   const selectedVoice=p.voiceName||$('#voiceSelect')?.value;
   const v=state.voices.find(x=>x.name===selectedVoice) || state.voices.find(x=>x.name==='Samantha') || state.voices[0];
 
-  const begin=()=>{
+  const begin=async()=>{
     state.isSpeaking=true; state.isPaused=false;
     const st=$('#voiceStatus'); if(st)st.textContent='Starting…';
     const play=$('#playBtn'); if(play){play.textContent='Ⅱ';play.setAttribute('aria-label','Pause');}
@@ -283,9 +298,7 @@ function startSpeech(fromSelected=true){
         highlightRange(pIndex,seg.start,seg.end);
         if(st)st.textContent=`Reading paragraph ${pIndex+1} · sentence ${sIndex+1}/${segments.length}`;
         const isFirst=firstAudible; firstAudible=false;
-        const firstWord=isFirst?(seg.text.match(/^\S+/)||[''])[0]:'';
-        const speechText=isFirst&&firstWord?`${firstWord}. ${seg.text}`:seg.text;
-        const u=new SpeechSynthesisUtterance(speechText);
+        const u=new SpeechSynthesisUtterance(seg.text);
         state.activeUtterance=u;
         u.rate=+(p.rate||1.05); u.volume=1; u.pitch=1;
         if(v){u.voice=v;u.lang=v.lang;}else{u.lang=navigator.language||'en-US';}
@@ -296,7 +309,8 @@ function startSpeech(fromSelected=true){
       speakSentence();
     };
 
-    setTimeout(speakParagraph,80);
+    await warmAudioSession();
+    setTimeout(speakParagraph,120);
   };
 
   if(speechSynthesis.speaking||speechSynthesis.pending){
@@ -482,7 +496,7 @@ function chooseAudioMime(){
   const types=['audio/mp4','audio/webm;codecs=opus','audio/webm'];
   return types.find(t=>MediaRecorder.isTypeSupported?.(t))||'';
 }
-async function handleAction(act,book,ch){ const text=ch.paragraphs[state.selectedParagraph]||''; const base={bookId:book.id,bookTitle:book.title,chapterIndex:state.chapterIndex,chapterTitle:ch.title,paragraphIndex:state.selectedParagraph,charOffset:state.selectedCharOffset||0,wordEnd:state.selectedWordEnd||0,excerpt:excerpt(text),createdAt:new Date().toISOString(),status:'open'};
+async function handleAction(act,book,ch){ const text=ch.paragraphs[state.selectedParagraph]||''; const base={bookId:book.id,bookTitle:book.title,chapterIndex:state.chapterIndex,chapterTitle:chapterLabel(ch,book),paragraphIndex:state.selectedParagraph,charOffset:state.selectedCharOffset||0,wordEnd:state.selectedWordEnd||0,excerpt:excerpt(text),createdAt:new Date().toISOString(),status:'open'};
   if(act==='start'){ startSpeech(true); return} if(act==='queue'){navigate('queue');return}
   if(act==='bookmark'){await idbPut('items',{...base,id:uid(),type:'bookmark',note:''});showToast('Bookmarked');updateQueueBadge();return}
   if(act==='note') return promptItem('note','Add note','What did you notice?',base);
@@ -599,13 +613,11 @@ async function renderQueue(){
   const books=await idbGetAll('books'); const bookMap=Object.fromEntries(books.map(b=>[b.id,b]));
   const all=(await idbGetAll('items')).filter(i=>['question','continuity','note','bookmark','voice'].includes(i.type));
   const pending=all.filter(i=>i.status!=='done').sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt));
-  const actioned=all.filter(i=>i.status==='done').sort((a,b)=>new Date(b.completedAt||b.createdAt)-new Date(a.completedAt||a.createdAt));
+  const actionedCount=all.filter(i=>i.status==='done').length;
 
   view.innerHTML=`<section class="hero"><div class="eyebrow">Revision desk</div><h1>Revision Queue</h1><p class="sub">Pending items stay here until you action them.</p></section>
-    <div class="stat-grid"><div class="stat"><b>${pending.length}</b><small>Pending</small></div><div class="stat"><b>${pending.filter(i=>i.type==='continuity').length}</b><small>Continuity</small></div><div class="stat"><b>${actioned.length}</b><small>Actioned</small></div></div>
-
+    <div class="stat-grid"><div class="stat"><b>${pending.length}</b><small>Pending</small></div><div class="stat"><b>${pending.filter(i=>i.type==='continuity').length}</b><small>Continuity</small></div><button class="stat stat-button" data-nav-inline="actioned"><b>${actionedCount}</b><small>Actioned</small></button></div>
     <section class="queue-section">
-      <div class="section-heading-row"><h2>Queue</h2><span class="meta">${pending.length} pending</span></div>
       ${pending.length?`<div class="queue-toolbar">
         <label class="queue-select-all"><input id="selectAllQueue" type="checkbox" /> <span>Select all</span></label>
         <span id="selectedCount" class="meta">0 selected</span>
@@ -615,15 +627,20 @@ async function renderQueue(){
           <button id="bulkDelete" class="ghost tiny danger-ghost" disabled>Delete selected</button>
         </div>
       </div><div class="list queue-list">${pending.map(i=>itemHtml(i,bookMap,true,false)).join('')}</div>`:`<div class="empty card">Nothing pending.</div>`}
-    </section>
-
-    <section class="actioned-section">
-      <div class="section-heading-row"><div><div class="eyebrow">Completed log</div><h2>Actioned</h2></div><span class="meta">${actioned.length} completed</span></div>
-      ${actioned.length?`<div class="list actioned-list">${actioned.map(i=>itemHtml(i,bookMap,true,true)).join('')}</div>`:`<div class="empty card">Completed items will appear here.</div>`}
     </section>`;
 
   wireItemButtons();
   wireQueueBulk();
+  const actionedLink=$('[data-nav-inline="actioned"]'); if(actionedLink)actionedLink.onclick=()=>navigate('actioned');
+}
+async function renderActioned(){
+  const books=await idbGetAll('books'); const bookMap=Object.fromEntries(books.map(b=>[b.id,b]));
+  const items=(await idbGetAll('items')).filter(i=>['question','continuity','note','bookmark','voice'].includes(i.type)&&i.status==='done').sort((a,b)=>new Date(b.completedAt||b.createdAt)-new Date(a.completedAt||a.createdAt));
+  view.innerHTML=`<section class="hero"><div class="eyebrow">Completed log</div><h1>Actioned</h1><p class="sub">Completed revision items stay here until you reopen or delete them.</p></section>
+    <div class="row between actioned-page-heading"><span class="meta">${items.length} completed</span><button class="ghost tiny" id="backToQueue">Back to Queue</button></div>
+    ${items.length?`<div class="list actioned-list">${items.map(i=>itemHtml(i,bookMap,true,true)).join('')}</div>`:`<div class="empty card">No actioned items yet.</div>`}`;
+  $('#backToQueue').onclick=()=>navigate('queue');
+  wireItemButtons();
 }
 function itemHtml(i,bookMap,queue=false,actioned=false){
   const label=i.type==='question'?'Ask ChatGPT':i.type==='continuity'?'Continuity':i.type==='bookmark'?'Bookmark':i.type==='voice'?'Voice note':'Note';
@@ -635,7 +652,7 @@ function itemHtml(i,bookMap,queue=false,actioned=false){
       <div class="row">${queue&&!actioned?`<input class="queue-item-check" type="checkbox" data-select-item="${i.id}" aria-label="Select item" />`:''}<span class="pill ${pill}">${label}</span></div>
       <span class="meta item-time">${timeText}${i.durationSec?` · ${formatDuration(i.durationSec)}`:''}</span>
     </div>
-    <div><strong>${escapeHtml(bookMap[i.bookId]?.title||i.bookTitle||'Manuscript')}</strong><div class="source-chip">${escapeHtml(i.chapterTitle||'Chapter')} · paragraph ${(i.paragraphIndex??0)+1}</div></div>
+    <div><strong>${escapeHtml(bookMap[i.bookId]?.title||i.bookTitle||'Manuscript')}</strong><div class="source-chip">${escapeHtml((i.chapterTitle==='Beginning'||i.chapterTitle==='Front matter')?(bookMap[i.bookId]?.title||i.bookTitle||'Manuscript'):(i.chapterTitle||'Chapter'))} · paragraph ${(i.paragraphIndex??0)+1}</div></div>
     <div class="excerpt">${escapeHtml(i.excerpt||'')}</div>
     ${i.note?`<div class="note-text">${escapeHtml(i.note)}</div>`:''}
     ${hasAudio?`<audio class="saved-voice-note" controls data-audio-item="${i.id}"></audio>`:''}
@@ -710,7 +727,7 @@ function wireItemButtons(){
   $$('[data-done]').forEach(b=>b.onclick=async()=>{
     const i=await idbGet('items',b.dataset.done); if(!i)return;
     if(i.status==='done'){
-      i.status='open'; i.completedAt=null; await idbPut('items',i); navigate('queue'); return;
+      i.status='open'; i.completedAt=null; await idbPut('items',i); navigate('actioned'); return;
     }
     if(!confirm('Mark this item as done?'))return;
     i.status='done'; i.completedAt=new Date().toISOString(); await idbPut('items',i); navigate('queue');
