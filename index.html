@@ -45,12 +45,18 @@
     </nav>
   </div>
 
-  <input id="fileInput" type="file" accept=".docx,.txt,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden />
+  <input id="fileInput" type="file" accept=".docx,.epub,.pdf,.odt,.txt,.md,.markdown,.html,.htm,text/plain,text/markdown,text/html,application/pdf,application/epub+zip,application/vnd.oasis.opendocument.text,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden />
 
   <dialog id="modal" class="modal"><form method="dialog" id="modalForm" class="modal-card"></form></dialog>
   <div id="toast" class="toast" role="status"></div>
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.mjs" type="module"></script>
+  <script type="module">
+    import * as pdfjsLib from 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.min.mjs';
+    pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.10.38/pdf.worker.min.mjs';
+    window.pdfjsLib=pdfjsLib;
+  </script>
   <script src="app.js?v=22"></script>
 </body>
 </html>
