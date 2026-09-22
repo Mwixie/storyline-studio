@@ -172,6 +172,22 @@ function markReferenceRange(paragraphIndex,start,end){
   if(b>a)p.innerHTML=escapeHtml(text.slice(0,a))+`<span class="passage-reference">${escapeHtml(text.slice(a,b))}</span>`+escapeHtml(text.slice(b));
   p.classList.add('reference-target');
 }
+async function migrateLegacyPassageAnchors(){
+  const items=await idbGetAll('items');
+  const books=await idbGetAll('books');
+  const bookMap=Object.fromEntries(books.map(b=>[b.id,b]));
+  let migrated=0;
+  for(const item of items){
+    if(item.anchor)continue;
+    const book=bookMap[item.bookId];if(!book||!book.chapters?.length)continue;
+    const ci=Math.max(0,Math.min(item.chapterIndex??0,book.chapters.length-1));
+    const ch=book.chapters[ci];if(!ch?.paragraphs?.length)continue;
+    item.anchor=makeLegacyPassageAnchor(book,ch,{...item,chapterIndex:ci});
+    item.anchorMigratedAt=new Date().toISOString();
+    await idbPut('items',item);migrated++;
+  }
+  return migrated;
+}
 function formatItemTime(iso){
   if(!iso)return '';
   const d=new Date(iso); if(Number.isNaN(d.getTime()))return '';
@@ -1337,5 +1353,5 @@ document.addEventListener('visibilitychange',()=>{if(document.visibilityState===
 window.addEventListener('pagehide',()=>stopAllSpeech());
 if('serviceWorker' in navigator) window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
 
-openDB().then(async()=>{ let p=prefs(); if(p.engine!=='device'){ savePrefs({engine:'device'}); p=prefs(); } state.bookId=p.lastBookId||null; if(state.bookId){ const b=await idbGet('books',state.bookId); if(b){ state.chapterIndex=b.progress?.chapterIndex ?? p.lastChapterIndex ?? 0; state.selectedParagraph=b.progress?.paragraphIndex ?? p.lastParagraphIndex ?? 0; state.selectedCharOffset=b.progress?.charOffset ?? p.lastCharOffset ?? 0; state.selectedWordEnd=b.progress?.wordEnd ?? p.lastWordEnd ?? 0; } } await navigate('library'); }).catch(e=>{view.innerHTML=`<div class="empty">Storyline could not start: ${escapeHtml(e.message)}</div>`});
+openDB().then(async()=>{ await migrateLegacyPassageAnchors(); let p=prefs(); if(p.engine!=='device'){ savePrefs({engine:'device'}); p=prefs(); } state.bookId=p.lastBookId||null; if(state.bookId){ const b=await idbGet('books',state.bookId); if(b){ state.chapterIndex=b.progress?.chapterIndex ?? p.lastChapterIndex ?? 0; state.selectedParagraph=b.progress?.paragraphIndex ?? p.lastParagraphIndex ?? 0; state.selectedCharOffset=b.progress?.charOffset ?? p.lastCharOffset ?? 0; state.selectedWordEnd=b.progress?.wordEnd ?? p.lastWordEnd ?? 0; } } await navigate('library'); }).catch(e=>{view.innerHTML=`<div class="empty">Storyline could not start: ${escapeHtml(e.message)}</div>`});
 })();
