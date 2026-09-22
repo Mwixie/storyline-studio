@@ -168,3 +168,32 @@ body{min-height:100dvh}.app-shell{min-height:100dvh;padding-bottom:86px}.topbar{
   .compact-status{margin-top:4px}
   .voice-note-actions>*{flex:1 1 45%}
 }
+
+/* Build 15: queue bulk actions */
+.queue-toolbar{
+  margin-top:16px;
+  display:flex;
+  gap:12px;
+  align-items:center;
+  flex-wrap:wrap;
+  padding:11px 12px;
+  background:rgba(24,21,31,.88);
+  border:1px solid var(--line);
+  border-radius:14px;
+  position:sticky;
+  top:76px;
+  z-index:12;
+  backdrop-filter:blur(14px);
+}
+.queue-select-all{display:flex;gap:8px;align-items:center;font-size:12px;color:var(--gold2)}
+.queue-select-all input,.queue-item-check{width:18px;height:18px;accent-color:var(--gold)}
+.queue-bulk-actions{display:flex;gap:7px;flex-wrap:wrap;margin-left:auto}
+.danger-ghost{color:#f0a5a5;border-color:#5c3b41}
+.danger-ghost:disabled,.ghost:disabled{opacity:.42;cursor:default}
+.queue-list .list-item{position:relative}
+.item-done{opacity:.72}
+@media(max-width:759px){
+  .queue-toolbar{top:68px;align-items:stretch}
+  .queue-bulk-actions{width:100%;margin-left:0}
+  .queue-bulk-actions>*{flex:1 1 30%}
+}
