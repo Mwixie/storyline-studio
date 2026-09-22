@@ -1392,7 +1392,7 @@ function wireItemButtons(visibleItems=[]){
     else if(i?.audioBlob)blob=i.audioBlob;
     if(blob){const u=URL.createObjectURL(blob);savedAudioObjectUrls.add(u);a.src=u;a.dataset.objectUrl=u;}
   });
-  $('[data-open-item]').forEach(b=>b.onclick=async()=>{
+  $$('[data-open-item]').forEach(b=>b.onclick=async()=>{
     const i=await idbGet('items',b.dataset.openItem);
     if(!i)return;
     let book=await idbGet('books',i.bookId);
