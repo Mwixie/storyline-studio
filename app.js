@@ -119,14 +119,14 @@ async function renderReader(){
 function wireReader(book,ch){
   $('#backLibrary').onclick=()=>navigate('library');
   $('#chapterSelect').onchange=async e=>{ state.chapterIndex=+e.target.value; state.selectedParagraph=0; await saveProgress(book); renderReader(); };
-  $$$('#readingPage p').forEach(p=>p.onclick=()=>selectParagraph(+p.dataset.p));
+  $$('#readingPage p').forEach(p=>p.onclick=()=>selectParagraph(+p.dataset.p));
   $('#positionRange').oninput=e=>selectParagraph(+e.target.value,true);
   $('#playBtn').onclick=toggleSpeech; $('#startBtn').onclick=()=>startSpeech(true); $('#testVoiceBtn').onclick=testSelectedVoice; $('#testSoundBtn').onclick=testSound; $('#engineSelect').onchange=e=>{ savePrefs({engine:e.target.value}); stopAllSpeech(); $('#voiceStatus').textContent=e.target.value==='local'?'Local voice selected':'Device voice selected'; };
   $('#rateRange').oninput=e=>{const r=+e.target.value; savePrefs({rate:r}); $('#speedLabel').textContent=r+'×'; if(state.isSpeaking) startSpeech(true);};
   $('#voiceSelect').onchange=e=>savePrefs({voiceName:e.target.value});
   $$('.action').forEach(b=>b.onclick=()=>handleAction(b.dataset.act,book,ch));
 }
-async function selectParagraph(i,noScroll=false){ state.selectedParagraph=i; $$$('#readingPage p').forEach(p=>p.classList.toggle('selected',+p.dataset.p===i)); $('#positionRange').value=i; $('#positionLabel').textContent=`Paragraph ${i+1} of ${$('#readingPage').children.length}`; const book=await idbGet('books',state.bookId); await saveProgress(book); if(!noScroll) scrollSelected(); }
+async function selectParagraph(i,noScroll=false){ state.selectedParagraph=i; $$('#readingPage p').forEach(p=>p.classList.toggle('selected',+p.dataset.p===i)); $('#positionRange').value=i; $('#positionLabel').textContent=`Paragraph ${i+1} of ${$('#readingPage').children.length}`; const book=await idbGet('books',state.bookId); await saveProgress(book); if(!noScroll) scrollSelected(); }
 function scrollSelected(smooth=true){ const el=$(`#readingPage p[data-p="${state.selectedParagraph}"]`); if(el) el.scrollIntoView({block:'center',behavior:smooth?'smooth':'auto'}); }
 async function saveProgress(book){ book.progress={chapterIndex:state.chapterIndex,paragraphIndex:state.selectedParagraph}; book.updatedAt=new Date().toISOString(); await idbPut('books',book); }
 function loadVoices(){
@@ -313,7 +313,7 @@ function testVoice(){
   speechSynthesis.speak(u);
 }
 function markSpeaking(i){
-  $('#readingPage p').forEach(p=>p.classList.toggle('speaking',+p.dataset.p===i));
+  $$('#readingPage p').forEach(p=>p.classList.toggle('speaking',+p.dataset.p===i));
   const el=$(`#readingPage p[data-p="${i}"]`);
   if(el) el.scrollIntoView({block:'center',behavior:'smooth'});
   const st=$('#voiceStatus');
@@ -356,5 +356,5 @@ $('#installBtn').onclick=async()=>{if(state.deferredPrompt){state.deferredPrompt
 window.addEventListener('pagehide',()=>stopAllSpeech());
 if('serviceWorker' in navigator) window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
 
-openDB().then(async()=>{ const p=prefs(); state.bookId=p.lastBookId||null; await navigate('library'); }).catch(e=>{view.innerHTML=`<div class="empty">Storyline could not open local storage: ${escapeHtml(e.message)}</div>`});
+openDB().then(async()=>{ const p=prefs(); state.bookId=p.lastBookId||null; await navigate('library'); }).catch(e=>{view.innerHTML=`<div class="empty">Storyline could not start: ${escapeHtml(e.message)}</div>`});
 })();
