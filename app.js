@@ -752,12 +752,21 @@ async function updateNowPlaying(){
 }
 async function mediaMoveParagraph(delta){
   const book=await idbGet('books',state.bookId);if(!book)return;
-  const ch=book.chapters[state.chapterIndex];if(!ch?.paragraphs?.length)return;
+  let ci=state.chapterIndex,pi=state.selectedParagraph;
+  const ch=book.chapters[ci];if(!ch?.paragraphs?.length)return;
+  if(delta>0){
+    if(pi<ch.paragraphs.length-1)pi++;
+    else if(ci<book.chapters.length-1){ci++;pi=0}
+  }else if(delta<0){
+    if(pi>0)pi--;
+    else if(ci>0){ci--;pi=Math.max(0,(book.chapters[ci].paragraphs?.length||1)-1)}
+  }
   stopAllSpeech();
-  state.selectedParagraph=Math.max(0,Math.min(ch.paragraphs.length-1,state.selectedParagraph+delta));
+  state.chapterIndex=ci;state.selectedParagraph=pi;
   state.selectedCharOffset=0;state.selectedWordEnd=0;
   await saveProgress(book);
   await renderReader();
+  updateNowPlaying();
   startSpeech(true);
 }
 function setupMediaSession(){
