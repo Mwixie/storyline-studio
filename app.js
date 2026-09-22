@@ -96,16 +96,25 @@ function allOccurrences(haystack,needle){
   while(from<=haystack.length){const i=haystack.indexOf(needle,from);if(i<0)break;out.push(i);from=i+Math.max(1,needle.length)}
   return out;
 }
+function contextTokenSimilarity(a,b){
+  const ta=new Set(anchorNormalize(a).match(/[a-z0-9']+/g)||[]);
+  const tb=new Set(anchorNormalize(b).match(/[a-z0-9']+/g)||[]);
+  if(!ta.size||!tb.size)return 0;
+  let common=0;for(const token of ta)if(tb.has(token))common++;
+  return (2*common)/(ta.size+tb.size);
+}
 function contextScore(source,index,length,anchor){
   let score=0;
   const before=anchorNormalize(source.slice(Math.max(0,index-120),index));
   const after=anchorNormalize(source.slice(index+length,index+length+120));
-  const wantBefore=anchorNormalize(anchor.prefixContext||'').slice(-60);
-  const wantAfter=anchorNormalize(anchor.suffixContext||'').slice(0,60);
+  const wantBefore=anchorNormalize(anchor.prefixContext||'').slice(-120);
+  const wantAfter=anchorNormalize(anchor.suffixContext||'').slice(0,120);
   if(wantBefore&&before.endsWith(wantBefore))score+=24;
   else if(wantBefore.length>=18&&before.includes(wantBefore.slice(-30)))score+=12;
   if(wantAfter&&after.startsWith(wantAfter))score+=24;
   else if(wantAfter.length>=18&&after.includes(wantAfter.slice(0,30)))score+=12;
+  score+=Math.round(contextTokenSimilarity(before,wantBefore)*22);
+  score+=Math.round(contextTokenSimilarity(after,wantAfter)*22);
   return score;
 }
 function bestSelectionInParagraph(source,anchor){
