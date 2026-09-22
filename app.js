@@ -9,7 +9,7 @@ const state = {
   voices:[], voicesReady:false, isSpeaking:false, isPaused:false, deferredPrompt:null, activeUtterance:null, localSpeakingId:null, localTTSReady:false,
   playbackToken:0, speakingPIndex:null, speakingSIndex:null, speakingSegments:null, replayCurrent:null,
   sleepTimerId:null, sleepIntervalId:null, sleepDeadline:null, sleepMinutes:0, wakeLock:null, chapterTransitionNotice:'',
-  pendingPassageReference:null
+  pendingPassageReference:null, activeEngine:'device'
 };
 
 const PREF='storyline.prefs.v1';
@@ -27,7 +27,7 @@ function escapeHtml(s=''){return String(s).replace(/[&<>'"]/g,c=>({'&':'&amp;','
 function prefs(){ try{return JSON.parse(localStorage.getItem(PREF)||'{}')}catch{return{}} }
 function savePrefs(patch){ localStorage.setItem(PREF,JSON.stringify({...prefs(),...patch})); }
 function isIOS(){ return /iPhone|iPad|iPod/i.test(navigator.userAgent||''); }
-function currentEngine(){ return prefs().engine==='local'?'local':'device'; }
+function currentEngine(){ return state.activeEngine==='local'?'local':'device'; }
 function localVoiceVariant(){ const v=prefs().localVariant||'f2'; return ['f2','f3','m3'].includes(v)?v:'f2'; }
 function voiceKey(v){ return v?.voiceURI || `${v?.name||''}|${v?.lang||''}`; }
 function voiceDisplayName(v){ return `${v?.name||'Device voice'}${v?.lang?' · '+v.lang:''}${v?.localService?' · on device':''}`; }
@@ -818,6 +818,7 @@ function toggleSpeech(){
   startSpeech(true);
 }
 function startSpeech(fromSelected=true){
+  state.activeEngine='device';
   if(!state.voicesReady){showToast('Device voices are still loading.');return}
   if(!('speechSynthesis' in window)||typeof SpeechSynthesisUtterance==='undefined'){showToast('Text-to-speech is not available in this browser.');return}
   const paras=$$('#readingPage p').map(p=>(p.textContent||'').trim());
@@ -994,6 +995,7 @@ function clearSentenceHighlights(){
   });
 }
 async function startLocalSpeech(fromSelected=true){
+  state.activeEngine='local';
   const token=++state.playbackToken;
   const paras=$$('#readingPage p').map(p=>(p.textContent||'').trim());
   if(!paras.some(Boolean)){showToast('There is no text to read in this chapter.');return}
