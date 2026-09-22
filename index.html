@@ -28,8 +28,19 @@
     <nav class="bottom-nav" aria-label="Primary">
       <button data-nav="library" class="nav-item active"><span>▥</span><small>Library</small></button>
       <button data-nav="reader" class="nav-item"><span>◫</span><small>Read</small></button>
-      <button data-nav="notes" class="nav-item"><span>✎</span><small>Notes</small></button>
       <button data-nav="queue" class="nav-item"><span>☷</span><small>Queue</small><b id="queueBadge" class="badge hidden">0</b></button>
+      <button id="readerToolsToggle" class="nav-item mobile-tools-toggle" type="button"><span>＋</span><small>Tools</small></button>
+
+      <div id="readerNavTools" class="reader-nav-tools hidden" aria-label="Reader tools">
+        <div class="reader-tools-label">Manuscript tools</div>
+        <button class="nav-tool" data-reader-act="note"><span>✎</span><small>Add note</small></button>
+        <button class="nav-tool" data-reader-act="voice"><span>●</span><small>Voice note</small></button>
+        <button class="nav-tool" data-reader-act="ask"><span>✦</span><small>Ask ChatGPT</small></button>
+        <button class="nav-tool" data-reader-act="continuity"><span>⚑</span><small>Continuity</small></button>
+        <button class="nav-tool" data-reader-act="bookmark"><span>⌑</span><small>Bookmark</small></button>
+        <button class="nav-tool nav-tool-primary" data-reader-act="start"><span>▶</span><small>Start here</small></button>
+      </div>
+
       <button id="navCollapse" class="nav-item nav-collapse" type="button" aria-label="Collapse navigation" aria-expanded="true"><span>‹</span><small>Collapse</small></button>
     </nav>
   </div>
