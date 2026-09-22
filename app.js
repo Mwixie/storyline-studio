@@ -21,6 +21,16 @@ function savePrefs(patch){ localStorage.setItem(PREF,JSON.stringify({...prefs(),
 function isIOS(){ return /iPhone|iPad|iPod/i.test(navigator.userAgent||''); }
 function currentEngine(){ const p=prefs(); return p.engine || (isIOS() ? 'local' : 'device'); }
 function excerpt(s,n=180){ const x=(s||'').trim(); return x.length>n?x.slice(0,n-1)+'…':x; }
+function splitSentences(text){
+  const t=(text||'').trim(); if(!t) return [];
+  try{
+    if(typeof Intl!=='undefined' && Intl.Segmenter){
+      const seg=new Intl.Segmenter('en',{granularity:'sentence'});
+      return [...seg.segment(t)].map(x=>x.segment.trim()).filter(Boolean);
+    }
+  }catch{}
+  return t.match(/[^.!?]+(?:[.!?]+["'”’)]*|$)/g)?.map(x=>x.trim()).filter(Boolean) || [t];
+}
 
 async function openDB(){
   return new Promise((res,rej)=>{ const r=indexedDB.open(dbName,1); r.onupgradeneeded=()=>{
@@ -234,33 +244,44 @@ function localSpeed(){
   return Math.max(90,Math.min(310,Math.round(170*rate)));
 }
 async function startLocalSpeech(fromSelected=true){
-  const texts=$$('#readingPage p').map(p=>(p.textContent||'').trim()).filter(Boolean);
-  if(!texts.length){showToast('There is no text to read in this chapter.');return}
-  let index=fromSelected?state.selectedParagraph:(state.speakingParagraph??state.selectedParagraph);
-  index=Math.max(0,Math.min(index,texts.length-1));
+  const paras=$$('#readingPage p').map(p=>(p.textContent||'').trim());
+  if(!paras.some(Boolean)){showToast('There is no text to read in this chapter.');return}
+  let pIndex=fromSelected?state.selectedParagraph:(state.speakingParagraph??state.selectedParagraph);
+  pIndex=Math.max(0,Math.min(pIndex,paras.length-1));
   const st=$('#voiceStatus'); if(st)st.textContent='Loading free local voice…';
   const play=$('#playBtn'); if(play)play.textContent='…';
   try{await ensureLocalTTS();}catch(e){if(st)st.textContent='Local voice failed to load';if(play)play.textContent='▶';showToast(e.message);return}
   try{meSpeak.stop();}catch{}
   state.isSpeaking=true; state.isPaused=false;
-  if(play){ play.textContent='■'; play.setAttribute('aria-label','Stop'); }
-  if(st)st.textContent='Starting local voice…';
-  const speakNext=()=>{
-    if(!state.isSpeaking||index>=texts.length){finishSpeech();return}
-    state.speakingParagraph=index;state.selectedParagraph=index;markSpeaking(index);
-    const range=$('#positionRange');if(range)range.value=index;
-    const label=$('#positionLabel');if(label)label.textContent=`Paragraph ${index+1} of ${texts.length}`;
-    const id=meSpeak.speak(texts[index],{amplitude:100,speed:localSpeed(),volume:1,voice:'en-us',variant:'f2'},success=>{
-      state.localSpeakingId=null;
+  if(play){play.textContent='■';play.setAttribute('aria-label','Stop');}
+
+  const speakParagraph=()=>{
+    if(!state.isSpeaking||pIndex>=paras.length){finishSpeech();return}
+    const sentences=splitSentences(paras[pIndex]);
+    let sIndex=0;
+    state.speakingParagraph=pIndex; state.selectedParagraph=pIndex; markSpeaking(pIndex);
+    const range=$('#positionRange'); if(range)range.value=pIndex;
+    const label=$('#positionLabel'); if(label)label.textContent=`Paragraph ${pIndex+1} of ${paras.length}`;
+
+    const speakSentence=()=>{
       if(!state.isSpeaking)return;
-      if(!success){finishSpeech();return}
-      index++;speakNext();
-    });
-    if(!id){showToast('The local voice could not generate this paragraph.');finishSpeech();return}
-    state.localSpeakingId=id;
-    idbGet('books',state.bookId).then(book=>book&&saveProgress(book)).catch(()=>{});
+      if(sIndex>=sentences.length){
+        idbGet('books',state.bookId).then(book=>book&&saveProgress(book)).catch(()=>{});
+        pIndex++; speakParagraph(); return;
+      }
+      if(st)st.textContent=`Reading paragraph ${pIndex+1} · sentence ${sIndex+1}/${sentences.length}`;
+      const id=meSpeak.speak(sentences[sIndex],{amplitude:100,speed:localSpeed(),volume:1,voice:'en-us',variant:'f2'},success=>{
+        state.localSpeakingId=null;
+        if(!state.isSpeaking)return;
+        if(!success){finishSpeech();return}
+        sIndex++; speakSentence();
+      });
+      if(!id){showToast('The local voice could not generate this sentence.');finishSpeech();return}
+      state.localSpeakingId=id;
+    };
+    speakSentence();
   };
-  speakNext();
+  speakParagraph();
 }
 function testSelectedVoice(){
   if(currentEngine()==='local'){ testLocalVoice(); } else { testVoice(); }
