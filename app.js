@@ -5,7 +5,7 @@ const $$ = s => [...document.querySelectorAll(s)];
 const view = $('#view'), fileInput = $('#fileInput'), modal = $('#modal'), modalForm = $('#modalForm'), toast = $('#toast');
 
 const state = {
-  route:'library', bookId:null, chapterIndex:0, selectedParagraph:0, speakingParagraph:null,
+  route:'library', bookId:null, chapterIndex:0, selectedParagraph:0, selectedCharOffset:0, selectedWordEnd:0, speakingParagraph:null,
   voices:[], isSpeaking:false, isPaused:false, deferredPrompt:null, activeUtterance:null, localSpeakingId:null, localTTSReady:false
 };
 
@@ -32,6 +32,57 @@ function splitSentences(text){
   }catch{}
   return t.match(/[^.!?]+(?:[.!?]+["'”’)]*|$)/g)?.map(x=>x.trim()).filter(Boolean) || [t];
 }
+function sentenceSegments(text,startOffset=0){
+  const source=String(text||''); const base=Math.max(0,Math.min(startOffset,source.length)); const tail=source.slice(base);
+  const out=[];
+  try{
+    if(typeof Intl!=='undefined' && Intl.Segmenter){
+      const seg=new Intl.Segmenter('en',{granularity:'sentence'});
+      for(const part of seg.segment(tail)){
+        const raw=part.segment||''; const lead=(raw.match(/^\s*/)||[''])[0].length; const trimmed=raw.trim();
+        if(!trimmed) continue;
+        const start=base+part.index+lead;
+        out.push({text:trimmed,start,end:start+trimmed.length});
+      }
+      if(out.length) return out;
+    }
+  }catch{}
+  for(const m of tail.matchAll(/[^.!?]+(?:[.!?]+["'”’)]*|$)/g)){
+    const raw=m[0]||''; const lead=(raw.match(/^\s*/)||[''])[0].length; const trimmed=raw.trim();
+    if(!trimmed) continue;
+    const start=base+(m.index||0)+lead;
+    out.push({text:trimmed,start,end:start+trimmed.length});
+  }
+  return out.length?out:[{text:tail.trim(),start:base,end:source.length}];
+}
+function caretOffsetInParagraph(p,e){
+  let node=null,offset=0;
+  try{
+    if(document.caretRangeFromPoint){
+      const r=document.caretRangeFromPoint(e.clientX,e.clientY); if(r){node=r.startContainer;offset=r.startOffset;}
+    }else if(document.caretPositionFromPoint){
+      const pos=document.caretPositionFromPoint(e.clientX,e.clientY); if(pos){node=pos.offsetNode;offset=pos.offset;}
+    }
+    if(!node||!p.contains(node)) return 0;
+    const pre=document.createRange(); pre.selectNodeContents(p); pre.setEnd(node,offset); return pre.toString().length;
+  }catch{return 0}
+}
+function wordRangeAt(text,offset){
+  const words=[...String(text||'').matchAll(/\S+/g)]; if(!words.length)return {start:0,end:0,word:''};
+  const w=words.find(m=>offset>=m.index&&offset<=m.index+m[0].length) || words.find(m=>m.index>=offset) || words[words.length-1];
+  return {start:w.index,end:w.index+w[0].length,word:w[0]};
+}
+function markStartWord(paragraphIndex,start,end){
+  const p=$(`#readingPage p[data-p="${paragraphIndex}"]`); if(!p)return;
+  const text=p.textContent||''; const a=Math.max(0,Math.min(start,text.length)); const b=Math.max(a,Math.min(end,text.length));
+  p.innerHTML=escapeHtml(text.slice(0,a))+`<span class="word-start">${escapeHtml(text.slice(a,b))}</span>`+escapeHtml(text.slice(b));
+}
+function highlightRange(paragraphIndex,start,end){
+  const p=$(`#readingPage p[data-p="${paragraphIndex}"]`); if(!p)return;
+  const text=p.textContent||''; const a=Math.max(0,Math.min(start,text.length)); const b=Math.max(a,Math.min(end,text.length));
+  p.innerHTML=escapeHtml(text.slice(0,a))+`<span class="sentence-speaking">${escapeHtml(text.slice(a,b))}</span>`+escapeHtml(text.slice(b));
+}
+
 
 async function openDB(){
   return new Promise((res,rej)=>{ const r=indexedDB.open(dbName,1); r.onupgradeneeded=()=>{
@@ -97,7 +148,7 @@ async function renderLibrary(){
     ${books.length?`<h2 class="section-title">My manuscripts</h2><div class="grid books">${books.map(b=>bookCard(b,items)).join('')}</div>`:`<div class="empty">Your library is waiting for its first book.</div>`}
   `;
   $('#importBtn').onclick=()=>fileInput.click();
-  $$('.book-card').forEach(c=>c.onclick=async e=>{ if(e.target.closest('[data-delete]')) return; state.bookId=c.dataset.id; savePrefs({lastBookId:state.bookId}); const b=await idbGet('books',state.bookId); state.chapterIndex=b.progress?.chapterIndex||0; state.selectedParagraph=b.progress?.paragraphIndex||0; navigate('reader'); });
+  $$('.book-card').forEach(c=>c.onclick=async e=>{ if(e.target.closest('[data-delete]')) return; state.bookId=c.dataset.id; savePrefs({lastBookId:state.bookId}); const b=await idbGet('books',state.bookId); state.chapterIndex=b.progress?.chapterIndex||0; state.selectedParagraph=b.progress?.paragraphIndex||0; state.selectedCharOffset=b.progress?.charOffset||0; state.selectedWordEnd=b.progress?.wordEnd||0; navigate('reader'); });
   $$('[data-delete]').forEach(btn=>btn.onclick=async e=>{e.stopPropagation();const id=btn.dataset.delete; if(confirm('Remove this manuscript and its saved notes from this device?')){await idbDelete('books',id); const all=await idbGetAll('items'); for(const i of all.filter(x=>x.bookId===id)) await idbDelete('items',i.id); if(state.bookId===id) state.bookId=null; renderLibrary(); updateQueueBadge();}});
 }
 function bookCard(b,items){ const total=b.chapters.reduce((n,c)=>n+c.paragraphs.length,0); let before=0; for(let i=0;i<(b.progress?.chapterIndex||0);i++) before+=b.chapters[i]?.paragraphs.length||0; before+=b.progress?.paragraphIndex||0; const pct=Math.max(0,Math.min(100,Math.round((before/Math.max(total,1))*100))); const count=items.filter(i=>i.bookId===b.id&&['note','question','continuity'].includes(i.type)).length;
@@ -144,18 +195,25 @@ async function renderReader(){
         <button class="action" data-act="note"><b>✎</b>Add note</button><button class="action" data-act="voice"><b>●</b>Voice note</button><button class="action" data-act="ask"><b>✦</b>Ask ChatGPT</button><button class="action" data-act="continuity"><b>⚑</b>Flag continuity</button><button class="action" data-act="bookmark"><b>⌑</b>Bookmark</button><button class="action primary" data-act="start"><b>▶</b>Start from here</button><button class="action" data-act="queue"><b>☷</b>Revision queue</button>
       </div>
     </section>`;
-  wireReader(book,ch); loadVoices(); requestAnimationFrame(()=>scrollSelected(false));
+  wireReader(book,ch); loadVoices(); requestAnimationFrame(()=>{ if(state.selectedCharOffset>0) markStartWord(state.selectedParagraph,state.selectedCharOffset,state.selectedWordEnd||state.selectedCharOffset); scrollSelected(false); });
 }
 
 function wireReader(book,ch){
   $('#backLibrary').onclick=()=>navigate('library');
-  $('#chapterSelect').onchange=async e=>{ state.chapterIndex=+e.target.value; state.selectedParagraph=0; await saveProgress(book); renderReader(); };
-  $$('#readingPage p').forEach(p=>p.onclick=()=>selectParagraph(+p.dataset.p));
-  $('#positionRange').oninput=e=>selectParagraph(+e.target.value,true);
+  $('#chapterSelect').onchange=async e=>{ state.chapterIndex=+e.target.value; state.selectedParagraph=0; state.selectedCharOffset=0; state.selectedWordEnd=0; await saveProgress(book); renderReader(); };
+  $$('#readingPage p').forEach(p=>p.onclick=async e=>{
+    stopAllSpeech();
+    const text=p.textContent||''; const wr=wordRangeAt(text,caretOffsetInParagraph(p,e));
+    state.selectedCharOffset=wr.start; state.selectedWordEnd=wr.end;
+    await selectParagraph(+p.dataset.p,false,true);
+    markStartWord(+p.dataset.p,wr.start,wr.end);
+    const label=$('#positionLabel'); if(label) label.textContent=`Paragraph ${+p.dataset.p+1} · starts “${wr.word}”`;
+  });
+  $('#positionRange').oninput=e=>{state.selectedCharOffset=0;state.selectedWordEnd=0;selectParagraph(+e.target.value,true);};
   $('#playBtn').onclick=toggleSpeech;
   $('#startBtn').onclick=()=>startSpeech(true);
-  $('#prevBtn').onclick=()=>{ stopAllSpeech(); selectParagraph(Math.max(0,state.selectedParagraph-1)); };
-  $('#nextBtn').onclick=()=>{ stopAllSpeech(); selectParagraph(Math.min(ch.paragraphs.length-1,state.selectedParagraph+1)); };
+  $('#prevBtn').onclick=()=>{ stopAllSpeech(); state.selectedCharOffset=0;state.selectedWordEnd=0;selectParagraph(Math.max(0,state.selectedParagraph-1)); };
+  $('#nextBtn').onclick=()=>{ stopAllSpeech(); state.selectedCharOffset=0;state.selectedWordEnd=0;selectParagraph(Math.min(ch.paragraphs.length-1,state.selectedParagraph+1)); };
   $('#testVoiceBtn').onclick=testSelectedVoice;
   $('#testSoundBtn').onclick=testSound;
   $('#engineSelect').onchange=e=>{ savePrefs({engine:e.target.value,engineChosenByUser:true}); stopAllSpeech(); renderReader(); };
@@ -164,9 +222,9 @@ function wireReader(book,ch){
   const localVoiceSelect=$('#localVoiceSelect'); if(localVoiceSelect) localVoiceSelect.onchange=e=>{ savePrefs({localVariant:e.target.value}); if(state.isSpeaking) startLocalSpeech(true); };
   $$('.action').forEach(b=>b.onclick=()=>handleAction(b.dataset.act,book,ch));
 }
-async function selectParagraph(i,noScroll=false){ state.selectedParagraph=i; $$('#readingPage p').forEach(p=>p.classList.toggle('selected',+p.dataset.p===i)); $('#positionRange').value=i; $('#positionLabel').textContent=`Paragraph ${i+1} of ${$('#readingPage').children.length}`; const book=await idbGet('books',state.bookId); await saveProgress(book); if(!noScroll) scrollSelected(); }
+async function selectParagraph(i,noScroll=false,preserveWord=false){ state.selectedParagraph=i; if(!preserveWord){state.selectedCharOffset=0;state.selectedWordEnd=0;} $$('#readingPage p').forEach(p=>p.classList.toggle('selected',+p.dataset.p===i)); $('#positionRange').value=i; $('#positionLabel').textContent=`Paragraph ${i+1} of ${$('#readingPage').children.length}`; const book=await idbGet('books',state.bookId); await saveProgress(book); if(!noScroll) scrollSelected(); }
 function scrollSelected(smooth=true){ const el=$(`#readingPage p[data-p="${state.selectedParagraph}"]`); if(el) el.scrollIntoView({block:'center',behavior:smooth?'smooth':'auto'}); }
-async function saveProgress(book){ book.progress={chapterIndex:state.chapterIndex,paragraphIndex:state.selectedParagraph}; book.updatedAt=new Date().toISOString(); await idbPut('books',book); savePrefs({lastBookId:book.id,lastChapterIndex:state.chapterIndex,lastParagraphIndex:state.selectedParagraph}); }
+async function saveProgress(book){ book.progress={chapterIndex:state.chapterIndex,paragraphIndex:state.selectedParagraph,charOffset:state.selectedCharOffset||0,wordEnd:state.selectedWordEnd||0}; book.updatedAt=new Date().toISOString(); await idbPut('books',book); savePrefs({lastBookId:book.id,lastChapterIndex:state.chapterIndex,lastParagraphIndex:state.selectedParagraph,lastCharOffset:state.selectedCharOffset||0,lastWordEnd:state.selectedWordEnd||0}); }
 function loadVoices(){
   const fill=()=>{ state.voices=speechSynthesis.getVoices(); const sel=$('#voiceSelect'); if(!sel) return; const wanted=prefs().voiceName || (state.voices.find(v=>v.name==='Samantha')?.name||''); sel.innerHTML=state.voices.map(v=>`<option value="${escapeHtml(v.name)}" ${v.name===wanted?'selected':''}>${escapeHtml(v.name)}${v.lang?' · '+escapeHtml(v.lang):''}</option>`).join('')||'<option>Default device voice</option>'; };
   fill(); speechSynthesis.onvoiceschanged=fill;
@@ -185,53 +243,67 @@ function toggleSpeech(){
 function startSpeech(fromSelected=true){
   if(currentEngine()==='local'){ startLocalSpeech(fromSelected); return; }
   if(!('speechSynthesis' in window) || typeof SpeechSynthesisUtterance==='undefined'){ showToast('Text-to-speech is not available in this browser.'); return; }
-  const texts=$$('#readingPage p').map(p=>(p.textContent||'').trim()).filter(Boolean);
-  if(!texts.length){ showToast('There is no text to read in this chapter.'); return; }
+  const paras=$$('#readingPage p').map(p=>(p.textContent||'').trim());
+  if(!paras.some(Boolean)){ showToast('There is no text to read in this chapter.'); return; }
 
-  let index=fromSelected?state.selectedParagraph:(state.speakingParagraph??state.selectedParagraph);
-  index=Math.max(0,Math.min(index,texts.length-1));
+  let pIndex=fromSelected?state.selectedParagraph:(state.speakingParagraph??state.selectedParagraph);
+  pIndex=Math.max(0,Math.min(pIndex,paras.length-1));
+  let firstOffset=fromSelected?(state.selectedCharOffset||0):0;
+  const p=prefs();
+  const selectedVoice=p.voiceName||$('#voiceSelect')?.value;
+  const v=state.voices.find(x=>x.name===selectedVoice) || state.voices.find(x=>x.name==='Samantha') || state.voices[0];
 
   const begin=()=>{
     state.isSpeaking=true; state.isPaused=false;
-    const st=$('#voiceStatus'); if(st) st.textContent='Starting…';
+    const st=$('#voiceStatus'); if(st)st.textContent='Starting…';
+    const play=$('#playBtn'); if(play){play.textContent='Ⅱ';play.setAttribute('aria-label','Pause');}
 
-    const speakNext=()=>{
-      if(!state.isSpeaking || index>=texts.length){ finishSpeech(); return; }
-      state.speakingParagraph=index; state.selectedParagraph=index; markSpeaking(index);
-      const range=$('#positionRange'); if(range) range.value=index;
-      const label=$('#positionLabel'); if(label) label.textContent=`Paragraph ${index+1} of ${texts.length}`;
+    const speakParagraph=()=>{
+      if(!state.isSpeaking||pIndex>=paras.length){finishSpeech();return}
+      const full=paras[pIndex]; const start=(pIndex===state.selectedParagraph?firstOffset:0);
+      const segments=sentenceSegments(full,start);
+      let sIndex=0;
+      state.speakingParagraph=pIndex; state.selectedParagraph=pIndex; markSpeaking(pIndex);
+      const range=$('#positionRange'); if(range)range.value=pIndex;
+      const label=$('#positionLabel'); if(label)label.textContent=`Paragraph ${pIndex+1} of ${paras.length}`;
 
-      const u=new SpeechSynthesisUtterance(texts[index]);
-      state.activeUtterance=u;
-      const p=prefs();
-      u.rate=+(p.rate||1.05);
-      u.volume=1;
-      u.pitch=1;
-      const selectedVoice=p.voiceName||$('#voiceSelect')?.value;
-      const v=state.voices.find(x=>x.name===selectedVoice);
-      if(v){ u.voice=v; u.lang=v.lang; } else { u.lang=navigator.language||'en-US'; }
-
-      u.onstart=()=>{ state.isSpeaking=true; state.isPaused=false; const play=$('#playBtn'); if(play) play.textContent='Ⅱ'; const st=$('#voiceStatus'); if(st) st.textContent='Speaking'; };
-      u.onend=()=>{ if(!state.isSpeaking) return; state.activeUtterance=null; index++; speakNext(); };
-      u.onerror=e=>{
-        state.activeUtterance=null;
-        if(e.error!=='canceled' && e.error!=='interrupted') showToast('The device voice could not start. Try another voice.');
-        finishSpeech();
+      const speakSentence=()=>{
+        if(!state.isSpeaking)return;
+        if(sIndex>=segments.length){
+          const currentP=$(`#readingPage p[data-p="${pIndex}"]`); if(currentP)currentP.textContent=full;
+          state.selectedCharOffset=0; state.selectedWordEnd=0;
+          idbGet('books',state.bookId).then(book=>book&&saveProgress(book)).catch(()=>{});
+          pIndex++; firstOffset=0; speakParagraph(); return;
+        }
+        const seg=segments[sIndex];
+        highlightRange(pIndex,seg.start,seg.end);
+        if(st)st.textContent=`Reading paragraph ${pIndex+1} · sentence ${sIndex+1}/${segments.length}`;
+        const u=new SpeechSynthesisUtterance(seg.text);
+        state.activeUtterance=u;
+        u.rate=+(p.rate||1.05); u.volume=1; u.pitch=1;
+        if(v){u.voice=v;u.lang=v.lang;}else{u.lang=navigator.language||'en-US';}
+        u.onend=()=>{if(!state.isSpeaking)return;state.activeUtterance=null;sIndex++;speakSentence();};
+        u.onerror=e=>{state.activeUtterance=null;if(e.error!=='canceled'&&e.error!=='interrupted')showToast('The device voice could not continue.');finishSpeech();};
+        speechSynthesis.speak(u);
       };
-
-      speechSynthesis.speak(u);
-      idbGet('books',state.bookId).then(book=>book&&saveProgress(book)).catch(()=>{});
+      speakSentence();
     };
-    speakNext();
+
+    // Safari can clip the first audible word while it opens the speech audio session.
+    // A silent primer opens that session before the real sentence is queued.
+    const primer=new SpeechSynthesisUtterance('.');
+    primer.volume=0; primer.rate=1; primer.pitch=1;
+    if(v){primer.voice=v;primer.lang=v.lang;}
+    let primed=false;
+    const go=()=>{if(primed)return;primed=true;setTimeout(speakParagraph,90);};
+    primer.onend=go; primer.onerror=go;
+    speechSynthesis.speak(primer);
+    setTimeout(go,450);
   };
 
-  if(speechSynthesis.speaking || speechSynthesis.pending){
-    speechSynthesis.cancel();
-    setTimeout(()=>{ speechSynthesis.resume(); begin(); },60);
-  }else{
-    speechSynthesis.resume();
-    begin();
-  }
+  if(speechSynthesis.speaking||speechSynthesis.pending){
+    speechSynthesis.cancel(); setTimeout(()=>{speechSynthesis.resume();begin();},80);
+  }else{speechSynthesis.resume();begin();}
 }
 function stopAllSpeech(){
   try{ speechSynthesis.cancel(); }catch{}
@@ -443,5 +515,5 @@ $('#installBtn').onclick=async()=>{if(state.deferredPrompt){state.deferredPrompt
 window.addEventListener('pagehide',()=>stopAllSpeech());
 if('serviceWorker' in navigator) window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
 
-openDB().then(async()=>{ let p=prefs(); if(isIOS() && p.engine==='local' && !p.engineChosenByUser){ savePrefs({engine:'device'}); p=prefs(); } state.bookId=p.lastBookId||null; if(state.bookId){ const b=await idbGet('books',state.bookId); if(b){ state.chapterIndex=b.progress?.chapterIndex ?? p.lastChapterIndex ?? 0; state.selectedParagraph=b.progress?.paragraphIndex ?? p.lastParagraphIndex ?? 0; } } await navigate('library'); }).catch(e=>{view.innerHTML=`<div class="empty">Storyline could not start: ${escapeHtml(e.message)}</div>`});
+openDB().then(async()=>{ let p=prefs(); if(isIOS() && p.engine==='local' && !p.engineChosenByUser){ savePrefs({engine:'device'}); p=prefs(); } state.bookId=p.lastBookId||null; if(state.bookId){ const b=await idbGet('books',state.bookId); if(b){ state.chapterIndex=b.progress?.chapterIndex ?? p.lastChapterIndex ?? 0; state.selectedParagraph=b.progress?.paragraphIndex ?? p.lastParagraphIndex ?? 0; state.selectedCharOffset=b.progress?.charOffset ?? p.lastCharOffset ?? 0; state.selectedWordEnd=b.progress?.wordEnd ?? p.lastWordEnd ?? 0; } } await navigate('library'); }).catch(e=>{view.innerHTML=`<div class="empty">Storyline could not start: ${escapeHtml(e.message)}</div>`});
 })();
