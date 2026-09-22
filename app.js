@@ -21,6 +21,8 @@ function savePrefs(patch){ localStorage.setItem(PREF,JSON.stringify({...prefs(),
 function isIOS(){ return /iPhone|iPad|iPod/i.test(navigator.userAgent||''); }
 function currentEngine(){ return 'device'; }
 function localVoiceVariant(){ const v=prefs().localVariant||'f2'; return ['f2','f3','m3'].includes(v)?v:'f2'; }
+function voiceKey(v){ return v?.voiceURI || `${v?.name||''}|${v?.lang||''}`; }
+function voiceDisplayName(v){ return `${v?.name||'Device voice'}${v?.lang?' · '+v.lang:''}${v?.localService?' · on device':''}`; }
 function excerpt(s,n=180){ const x=(s||'').trim(); return x.length>n?x.slice(0,n-1)+'…':x; }
 function formatItemTime(iso){
   if(!iso)return '';
@@ -217,14 +219,19 @@ function wireReader(book,ch){
   $('#nextBtn').onclick=()=>{ stopAllSpeech(); state.selectedCharOffset=0;state.selectedWordEnd=0;selectParagraph(Math.min(ch.paragraphs.length-1,state.selectedParagraph+1)); };
   $('#testVoiceBtn').onclick=testVoice;
   $('#rateRange').oninput=e=>{const r=+e.target.value; savePrefs({rate:r}); $('#speedLabel').textContent=r+'×'; updateVoiceSummary(); if(state.isSpeaking) startSpeech(true);};
-  const voiceSelect=$('#voiceSelect'); if(voiceSelect) voiceSelect.onchange=e=>{savePrefs({voiceName:e.target.value});updateVoiceSummary();};
+  const voiceSelect=$('#voiceSelect'); if(voiceSelect) voiceSelect.onchange=e=>{
+    const chosen=state.voices.find(v=>voiceKey(v)===e.target.value);
+    if(chosen)savePrefs({voiceKey:voiceKey(chosen),voiceName:chosen.name});
+    updateVoiceSummary();
+  };
 }
 async function selectParagraph(i,noScroll=false,preserveWord=false){ state.selectedParagraph=i; if(!preserveWord){state.selectedCharOffset=0;state.selectedWordEnd=0;} $$('#readingPage p').forEach(p=>p.classList.toggle('selected',+p.dataset.p===i)); $('#positionRange').value=i; $('#positionLabel').textContent=`Paragraph ${i+1} of ${$('#readingPage').children.length}`; const book=await idbGet('books',state.bookId); await saveProgress(book); if(!noScroll) scrollSelected(); }
 function scrollSelected(smooth=true){ const el=$(`#readingPage p[data-p="${state.selectedParagraph}"]`); if(el) el.scrollIntoView({block:'center',behavior:smooth?'smooth':'auto'}); }
 async function saveProgress(book){ book.progress={chapterIndex:state.chapterIndex,paragraphIndex:state.selectedParagraph,charOffset:state.selectedCharOffset||0,wordEnd:state.selectedWordEnd||0}; book.updatedAt=new Date().toISOString(); await idbPut('books',book); savePrefs({lastBookId:book.id,lastChapterIndex:state.chapterIndex,lastParagraphIndex:state.selectedParagraph,lastCharOffset:state.selectedCharOffset||0,lastWordEnd:state.selectedWordEnd||0}); }
 function updateVoiceSummary(){
   const sel=$('#voiceSelect'); const summary=$('#voiceSummary'); const st=$('#voiceStatus');
-  const name=sel?.value||prefs().voiceName||'Device voice'; const rate=prefs().rate||1.05;
+  const name=sel?.selectedOptions?.[0]?.dataset?.name || prefs().voiceName || 'Device voice';
+  const rate=prefs().rate||1.05;
   if(summary)summary.textContent=`${name} · ${rate}×`;
   if(st&&!state.isSpeaking)st.textContent=`${name} ready`;
 }
@@ -251,19 +258,47 @@ function primeAudioOutput(){
   }catch{}
 }
 function loadVoices(){
+  const optionHtml=v=>`<option value="${escapeHtml(voiceKey(v))}" data-name="${escapeHtml(v.name)}">${escapeHtml(voiceDisplayName(v))}</option>`;
+  const groupHtml=(label,voices)=>voices.length?`<optgroup label="${escapeHtml(label)}">${voices.map(optionHtml).join('')}</optgroup>`:'';
   const fill=()=>{
     state.voices=speechSynthesis.getVoices();
     const sel=$('#voiceSelect'); if(!sel)return;
-    const wanted=prefs().voiceName || (state.voices.find(v=>v.name==='Samantha')?.name||'');
     if(!state.voices.length){
       sel.innerHTML='<option>Loading device voices…</option>';
       setSpeechControlsReady(false);
       return;
     }
-    sel.innerHTML=state.voices.map(v=>`<option value="${escapeHtml(v.name)}" ${v.name===wanted?'selected':''}>${escapeHtml(v.name)}${v.lang?' · '+escapeHtml(v.lang):''}</option>`).join('');
-    if(wanted&&state.voices.some(v=>v.name===wanted))sel.value=wanted;
-    else if(state.voices.find(v=>v.name==='Samantha'))sel.value='Samantha';
-    savePrefs({voiceName:sel.value});
+
+    const p=prefs();
+    const samantha=state.voices.find(v=>v.name==='Samantha');
+    const recommended=samantha?[samantha]:[];
+    const used=new Set(recommended.map(voiceKey));
+    const englishInstalled=state.voices.filter(v=>/^en(?:-|_)/i.test(v.lang||'')&&v.localService&&!used.has(voiceKey(v))).sort((a,b)=>a.name.localeCompare(b.name));
+    englishInstalled.forEach(v=>used.add(voiceKey(v)));
+    const englishOther=state.voices.filter(v=>/^en(?:-|_)/i.test(v.lang||'')&&!used.has(voiceKey(v))).sort((a,b)=>a.name.localeCompare(b.name));
+    englishOther.forEach(v=>used.add(voiceKey(v)));
+    const otherInstalled=state.voices.filter(v=>v.localService&&!used.has(voiceKey(v))).sort((a,b)=>(a.lang||'').localeCompare(b.lang||'')||a.name.localeCompare(b.name));
+    otherInstalled.forEach(v=>used.add(voiceKey(v)));
+    const other=state.voices.filter(v=>!used.has(voiceKey(v))).sort((a,b)=>(a.lang||'').localeCompare(b.lang||'')||a.name.localeCompare(b.name));
+
+    sel.innerHTML=
+      groupHtml('Recommended',recommended)+
+      groupHtml('English · on device',englishInstalled)+
+      groupHtml('Other English voices',englishOther)+
+      groupHtml('Other voices · on device',otherInstalled)+
+      groupHtml('All other voices',other);
+
+    let wanted=p.voiceKey || '';
+    if(!wanted && p.voiceName){
+      const old=state.voices.find(v=>v.name===p.voiceName);
+      if(old)wanted=voiceKey(old);
+    }
+    if(!wanted&&samantha)wanted=voiceKey(samantha);
+    if(wanted&&state.voices.some(v=>voiceKey(v)===wanted))sel.value=wanted;
+    else sel.selectedIndex=0;
+
+    const chosen=state.voices.find(v=>voiceKey(v)===sel.value);
+    if(chosen)savePrefs({voiceKey:voiceKey(chosen),voiceName:chosen.name});
     setSpeechControlsReady(true);
     updateVoiceSummary();
   };
@@ -288,8 +323,8 @@ function startSpeech(fromSelected=true){
   pIndex=Math.max(0,Math.min(pIndex,paras.length-1));
   let firstOffset=fromSelected?(state.selectedCharOffset||0):0;
   const p=prefs();
-  const selectedVoice=p.voiceName||$('#voiceSelect')?.value;
-  const v=state.voices.find(x=>x.name===selectedVoice) || state.voices.find(x=>x.name==='Samantha') || state.voices[0];
+  const selectedKey=$('#voiceSelect')?.value||p.voiceKey;
+  const v=state.voices.find(x=>voiceKey(x)===selectedKey) || state.voices.find(x=>x.name===p.voiceName) || state.voices.find(x=>x.name==='Samantha') || state.voices[0];
 
   const begin=()=>{
     state.isSpeaking=true; state.isPaused=false;
@@ -465,8 +500,8 @@ async function testSound(){
 function testVoice(){
   if(!('speechSynthesis' in window) || typeof SpeechSynthesisUtterance==='undefined'){ showToast('Text-to-speech is not available in this browser.'); return; }
   speechSynthesis.cancel();
-  const selectedVoice=prefs().voiceName||$('#voiceSelect')?.value;
-  const v=state.voices.find(x=>x.name===selectedVoice) || state.voices.find(x=>x.lang==='en-US') || state.voices[0];
+  const p=prefs(); const selectedKey=$('#voiceSelect')?.value||p.voiceKey;
+  const v=state.voices.find(x=>voiceKey(x)===selectedKey) || state.voices.find(x=>x.name===p.voiceName) || state.voices.find(x=>x.lang==='en-US') || state.voices[0];
   const u=new SpeechSynthesisUtterance('Storyline Studio voice test.');
   state.activeUtterance=u;
   u.volume=1; u.rate=1; u.pitch=1;
