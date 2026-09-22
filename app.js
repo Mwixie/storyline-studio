@@ -494,69 +494,101 @@ function promptItem(type,title,placeholder,base){
   $('#saveItem').onclick=async e=>{e.preventDefault();const note=$('#itemText').value.trim(); if(!note){showToast('Add a note first');return} await idbPut('items',{...base,id:uid(),type,note}); modal.close(); showToast(type==='question'?'Added to revision queue':'Saved'); updateQueueBadge();};
 }
 async function voiceNote(base){
-  if(!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder){
-    showToast('Audio recording is not available in this browser.');
-    return;
-  }
-  let stream=null,recorder=null,chunks=[],audioBlob=null,previewUrl=null,recording=false,recordStartedAt=0,audioDurationSec=0;
+  const canRecord=!!(navigator.mediaDevices?.getUserMedia && window.MediaRecorder);
+  let stream=null,recorder=null,chunks=[],audioBlob=null,previewUrl=null,recording=false,recordStartedAt=0,audioDurationSec=0,timer=null;
+
   modalForm.innerHTML=`<h3>Voice note</h3>
     <div class="source-chip">${escapeHtml(base.chapterTitle)} · paragraph ${base.paragraphIndex+1}</div>
     <div class="excerpt">${escapeHtml(base.excerpt)}</div>
     <div id="voiceRecordStatus" class="sub">Record an audio note. It stays in this browser.</div>
+    <div id="recordTimer" class="record-timer">0:00</div>
     <audio id="voicePreview" class="voice-preview hidden" controls></audio>
     <textarea id="voiceCaption" placeholder="Optional caption or typed note"></textarea>
-    <div class="row between">
+    <input id="voiceCaptureInput" type="file" accept="audio/*" capture="user" hidden />
+    <div class="voice-note-actions">
       <button value="cancel" class="button secondary">Cancel</button>
-      <div class="row">
-        <button type="button" id="dictateCaption" class="ghost">🎙 Dictate caption</button>
-        <button type="button" id="recordAudioBtn" class="ghost">● Record</button>
-        <button type="button" id="saveAudioNote" class="button">Save voice note</button>
-      </div>
+      <button type="button" id="dictateCaption" class="ghost">🎙 Dictate caption</button>
+      <button type="button" id="recordAudioBtn" class="ghost" ${canRecord?'':'disabled'}>● Record here</button>
+      <button type="button" id="nativeRecordBtn" class="ghost">Use iPad recorder</button>
+      <button type="button" id="saveAudioNote" class="button">Save voice note</button>
     </div>`;
   modal.showModal();
   attachDictation($('#dictateCaption'),$('#voiceCaption'));
 
+  const setPreview=blob=>{
+    audioBlob=blob;
+    if(previewUrl)URL.revokeObjectURL(previewUrl);
+    previewUrl=URL.createObjectURL(audioBlob);
+    const a=$('#voicePreview'); a.src=previewUrl; a.classList.remove('hidden');
+  };
+  const stopTimer=()=>{if(timer){clearInterval(timer);timer=null}};
   const cleanup=()=>{
-    try{if(recorder&&recording)recorder.stop()}catch{}
+    stopTimer();
+    try{if(recorder&&recorder.state!=='inactive')recorder.stop()}catch{}
     try{stream?.getTracks().forEach(t=>t.stop())}catch{}
     if(previewUrl){URL.revokeObjectURL(previewUrl);previewUrl=null}
   };
   modal.onclose=cleanup;
 
-  $('#recordAudioBtn').onclick=async()=>{
-    if(recording){try{recorder.stop()}catch{};return}
+  const recordBtn=$('#recordAudioBtn');
+  if(recordBtn)recordBtn.onclick=async()=>{
+    if(recording){
+      try{recorder.requestData()}catch{}
+      setTimeout(()=>{try{if(recorder&&recorder.state!=='inactive')recorder.stop()}catch{}},100);
+      return;
+    }
     try{
       stream=await navigator.mediaDevices.getUserMedia({audio:true});
-      chunks=[]; audioBlob=null;
-      const mime=chooseAudioMime();
-      recorder=mime?new MediaRecorder(stream,{mimeType:mime}):new MediaRecorder(stream);
-      recorder.ondataavailable=e=>{if(e.data&&e.data.size)chunks.push(e.data)};
-      recorder.onstart=()=>{recording=true;recordStartedAt=Date.now();$('#recordAudioBtn').textContent='■ Stop';$('#voiceRecordStatus').textContent='Recording…'};
+      chunks=[]; audioBlob=null; audioDurationSec=0;
+      recorder=new MediaRecorder(stream);
+      recorder.ondataavailable=e=>{if(e.data&&e.data.size>0)chunks.push(e.data)};
+      recorder.onstart=()=>{
+        recording=true;recordStartedAt=Date.now();
+        recordBtn.textContent='■ Stop recording';
+        $('#voiceRecordStatus').textContent='Recording…';
+        const timerEl=$('#recordTimer');
+        timer=setInterval(()=>{if(timerEl)timerEl.textContent=formatDuration((Date.now()-recordStartedAt)/1000)},250);
+      };
       recorder.onstop=()=>{
-        recording=false;
+        recording=false;stopTimer();
         audioDurationSec=recordStartedAt?Math.max(1,Math.round((Date.now()-recordStartedAt)/1000)):0;
-        $('#recordAudioBtn').textContent='● Record again';
-        const type=recorder.mimeType||mime||'audio/mp4';
-        audioBlob=new Blob(chunks,{type});
+        recordBtn.textContent='● Record again';
         try{stream?.getTracks().forEach(t=>t.stop())}catch{}
-        if(previewUrl)URL.revokeObjectURL(previewUrl);
-        previewUrl=URL.createObjectURL(audioBlob);
-        const a=$('#voicePreview'); a.src=previewUrl;a.classList.remove('hidden');
+        const type=recorder.mimeType||chunks.find(c=>c.type)?.type||'audio/mp4';
+        const blob=new Blob(chunks,{type});
+        if(!blob.size){
+          $('#voiceRecordStatus').textContent='No audio was captured. Try “Use iPad recorder” below.';
+          showToast('No audio was captured.');
+          return;
+        }
+        setPreview(blob);
         $('#voiceRecordStatus').textContent=`Recorded · ${formatDuration(audioDurationSec)}. Play it back before saving if you want.`;
       };
-      recorder.onerror=()=>{recording=false;$('#voiceRecordStatus').textContent='Recording failed. Please try again.'};
-      recorder.start();
+      recorder.onerror=()=>{
+        recording=false;stopTimer();
+        recordBtn.textContent='● Record again';
+        $('#voiceRecordStatus').textContent='Browser recording failed. Try “Use iPad recorder”.';
+      };
+      recorder.start(250);
     }catch(e){
-      $('#voiceRecordStatus').textContent='Microphone access was not available.';
-      showToast('Microphone access is needed for a voice note.');
+      recording=false;stopTimer();
+      $('#voiceRecordStatus').textContent='Browser recording was not available. Try “Use iPad recorder”.';
     }
+  };
+
+  $('#nativeRecordBtn').onclick=()=>$('#voiceCaptureInput').click();
+  $('#voiceCaptureInput').onchange=async e=>{
+    const file=e.target.files?.[0]; if(!file)return;
+    audioDurationSec=0; setPreview(file);
+    $('#recordTimer').textContent='Ready';
+    $('#voiceRecordStatus').textContent='Audio attached from the iPad. Play it back before saving if you want.';
   };
 
   $('#saveAudioNote').onclick=async()=>{
     if(recording){showToast('Stop the recording before saving.');return}
-    if(!audioBlob){showToast('Record something first.');return}
+    if(!audioBlob){showToast('Record or attach audio first.');return}
     const note=$('#voiceCaption').value.trim();
-    await idbPut('items',{...base,id:uid(),type:'voice',note,voice:true,audioBlob,audioType:audioBlob.type,durationSec:audioDurationSec});
+    await idbPut('items',{...base,id:uid(),type:'voice',note,voice:true,audioBlob,audioType:audioBlob.type||'audio/mp4',durationSec:audioDurationSec});
     modal.onclose=null; cleanup(); modal.close(); showToast('Voice note saved'); updateQueueBadge();
   };
 }
