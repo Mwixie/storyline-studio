@@ -27,7 +27,7 @@ function escapeHtml(s=''){return String(s).replace(/[&<>'"]/g,c=>({'&':'&amp;','
 function prefs(){ try{return JSON.parse(localStorage.getItem(PREF)||'{}')}catch{return{}} }
 function savePrefs(patch){ localStorage.setItem(PREF,JSON.stringify({...prefs(),...patch})); }
 function isIOS(){ return /iPhone|iPad|iPod/i.test(navigator.userAgent||''); }
-function currentEngine(){ return 'device'; }
+function currentEngine(){ return prefs().engine==='local'?'local':'device'; }
 function localVoiceVariant(){ const v=prefs().localVariant||'f2'; return ['f2','f3','m3'].includes(v)?v:'f2'; }
 function voiceKey(v){ return v?.voiceURI || `${v?.name||''}|${v?.lang||''}`; }
 function voiceDisplayName(v){ return `${v?.name||'Device voice'}${v?.lang?' · '+v.lang:''}${v?.localService?' · on device':''}`; }
@@ -578,7 +578,7 @@ function wireReader(book,ch){
   $('#chapterSelect').onchange=async e=>{ stopAllSpeech(); state.chapterIndex=+e.target.value; state.selectedParagraph=0; state.selectedCharOffset=0; state.selectedWordEnd=0; await saveProgress(book); renderReader(); };
   $('#readingPage p').forEach(p=>p.onclick=async e=>{
     const paragraphIndex=+p.dataset.p;
-    const text=p.textContent||'';
+    const text=ch.paragraphs[paragraphIndex]||p.textContent||'';
     const offset=caretOffsetInParagraph(p,e);
     const seg=sentenceAtOffset(text,offset);
     if(!seg)return;
@@ -983,10 +983,10 @@ function localSpeed(){
   const rate=+(prefs().rate||1.05);
   return Math.max(90,Math.min(310,Math.round(170*rate)));
 }
-function highlightSentence(paragraphIndex,sentenceIndex,sentences){
-  const p=$(`#readingPage p[data-p="${paragraphIndex}"]`);
-  if(!p)return;
-  p.innerHTML=sentences.map((sentence,i)=>`<span class="${i===sentenceIndex?'sentence-speaking':''}">${escapeHtml(sentence)}</span>`).join(' ');
+function highlightSentence(paragraphIndex,sentenceIndex,parts){
+  const part=parts[sentenceIndex];
+  if(!part)return;
+  highlightRange(paragraphIndex,part.start,part.end);
 }
 function clearSentenceHighlights(){
   $$('#readingPage p').forEach(p=>{
@@ -995,7 +995,7 @@ function clearSentenceHighlights(){
 }
 async function startLocalSpeech(fromSelected=true){
   const token=++state.playbackToken;
-  const paras=$('#readingPage p').map(p=>(p.textContent||'').trim());
+  const paras=$$('#readingPage p').map(p=>(p.textContent||'').trim());
   if(!paras.some(Boolean)){showToast('There is no text to read in this chapter.');return}
   let pIndex=fromSelected?state.selectedParagraph:(state.speakingParagraph??state.selectedParagraph);
   pIndex=Math.max(0,Math.min(pIndex,paras.length-1));
@@ -1014,9 +1014,9 @@ async function startLocalSpeech(fromSelected=true){
     if(token!==state.playbackToken||!state.isSpeaking)return;
     const book=await idbGet('books',state.bookId);
     if(token!==state.playbackToken||!state.isSpeaking)return;
-    if(!book){finishSpeech();return}
-    if(state.chapterIndex>=book.chapters.length-1){await saveProgress(book,{completed:true});finishSpeech();return}
-    if(prefs().autoAdvance===false){finishSpeech();return}
+    if(!book){finishSpeech(token);return}
+    if(state.chapterIndex>=book.chapters.length-1){await saveProgress(book,{completed:true});finishSpeech(token);return}
+    if(prefs().autoAdvance===false){finishSpeech(token);return}
     const completedLabel=chapterLabel(book.chapters[state.chapterIndex],book);
     state.chapterIndex++;state.selectedParagraph=0;state.selectedCharOffset=0;state.selectedWordEnd=0;state.speakingParagraph=null;
     await saveProgress(book);
@@ -1056,7 +1056,7 @@ async function startLocalSpeech(fromSelected=true){
       state.speakingPIndex=pIndex;state.speakingSIndex=sIndex;state.speakingSegments=sentenceParts;
       state.selectedCharOffset=part.start;state.selectedWordEnd=wordRangeAt(paras[pIndex],part.start).end;
       persistReadingProgress();
-      if(st)st.textContent=`Reading paragraph ${pIndex+1} · sentence ${sIndex+1}/${sentences.length}`; highlightSentence(pIndex,sIndex,sentences);
+      if(st)st.textContent=`Reading paragraph ${pIndex+1} · sentence ${sIndex+1}/${sentences.length}`; highlightSentence(pIndex,sIndex,sentenceParts);
       const id=meSpeak.speak(sentences[sIndex],{amplitude:100,speed:localSpeed(),volume:1,voice:'en-us',variant:localVoiceVariant()},success=>{
         if(token!==state.playbackToken)return;
         state.localSpeakingId=null;
@@ -1483,5 +1483,5 @@ document.addEventListener('visibilitychange',()=>{if(document.visibilityState===
 // Do not cancel speech merely because iOS backgrounds the installed app.
 if('serviceWorker' in navigator) window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
 
-openDB().then(async()=>{ await migrateLegacyPassageAnchors(); let p=prefs(); if(p.engine!=='device'){ savePrefs({engine:'device'}); p=prefs(); } state.bookId=p.lastBookId||null; if(state.bookId){ const b=await idbGet('books',state.bookId); if(b){ state.chapterIndex=b.progress?.chapterIndex ?? p.lastChapterIndex ?? 0; state.selectedParagraph=b.progress?.paragraphIndex ?? p.lastParagraphIndex ?? 0; state.selectedCharOffset=b.progress?.charOffset ?? p.lastCharOffset ?? 0; state.selectedWordEnd=b.progress?.wordEnd ?? p.lastWordEnd ?? 0; } } await navigate('library'); }).catch(e=>{view.innerHTML=`<div class="empty">Storyline could not start: ${escapeHtml(e.message)}</div>`});
+openDB().then(async()=>{ await migrateLegacyPassageAnchors(); const p=prefs(); state.bookId=p.lastBookId||null; if(state.bookId){ const b=await idbGet('books',state.bookId); if(b){ state.chapterIndex=b.progress?.chapterIndex ?? p.lastChapterIndex ?? 0; state.selectedParagraph=b.progress?.paragraphIndex ?? p.lastParagraphIndex ?? 0; state.selectedCharOffset=b.progress?.charOffset ?? p.lastCharOffset ?? 0; state.selectedWordEnd=b.progress?.wordEnd ?? p.lastWordEnd ?? 0; } } await navigate('library'); }).catch(e=>{view.innerHTML=`<div class="empty">Storyline could not start: ${escapeHtml(e.message)}</div>`});
 })();
