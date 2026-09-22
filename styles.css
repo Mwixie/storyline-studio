@@ -254,11 +254,25 @@ body{min-height:100dvh}.app-shell{min-height:100dvh;padding-bottom:86px}.topbar{
 }
 .backup-card h2{margin:.2rem 0 .35rem}
 .backup-actions{flex-wrap:wrap;justify-content:flex-end}
+.cloud-card{
+  margin-top:18px;
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:20px;
+}
+.cloud-card h2{margin:.2rem 0 .35rem}
+.cloud-actions{display:flex;align-items:center;justify-content:flex-end;gap:10px;flex-wrap:wrap}
+.cloud-status{margin-top:10px;color:var(--muted);font-size:.92rem;line-height:1.4}
+.cloud-status[data-state="ok"]{color:var(--green)}
+.cloud-status[data-state="conflict"],.cloud-status[data-state="error"]{color:var(--danger)}
+.cloud-status[data-state="busy"]{color:var(--gold2)}
+#apple-sign-in-button:empty,#apple-sign-out-button:empty{display:none}
 @media(max-width:759px){
   .sleep-box{grid-template-columns:1fr 1fr}
   .sleep-box #sleepTimerStatus{grid-column:1/-1}
-  .backup-card{align-items:flex-start;flex-direction:column}
-  .backup-actions{width:100%;justify-content:flex-start}
+  .backup-card,.cloud-card{align-items:flex-start;flex-direction:column}
+  .backup-actions,.cloud-actions{width:100%;justify-content:flex-start}
 }
 
 /* Build 22: voice management */
