@@ -239,7 +239,7 @@ function stopAllSpeech(){
   state.isSpeaking=false; state.isPaused=false; state.activeUtterance=null; state.localSpeakingId=null; state.speakingParagraph=null;
   const b=$('#playBtn'); if(b){b.textContent='▶';b.setAttribute('aria-label','Play');}
   const st=$('#voiceStatus'); if(st) st.textContent=currentEngine()==='local'?'Free local voice ready':'Device voice ready';
-  $('#readingPage p').forEach(p=>p.classList.remove('speaking')); clearSentenceHighlights();
+  $$('#readingPage p').forEach(p=>p.classList.remove('speaking')); clearSentenceHighlights();
 }
 function ensureLocalTTS(){
   if(state.localTTSReady && window.meSpeak) return Promise.resolve();
