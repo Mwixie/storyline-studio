@@ -107,6 +107,7 @@ function idbGetAll(name){return new Promise((res,rej)=>{const r=store(name).getA
 function idbGet(name,id){return new Promise((res,rej)=>{const r=store(name).get(id);r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)})}
 function idbPut(name,obj){return new Promise((res,rej)=>{const r=store(name,'readwrite').put(obj);r.onsuccess=()=>res(obj);r.onerror=()=>rej(r.error)})}
 function idbDelete(name,id){return new Promise((res,rej)=>{const r=store(name,'readwrite').delete(id);r.onsuccess=()=>res();r.onerror=()=>rej(r.error)})}
+function idbClear(name){return new Promise((res,rej)=>{const r=store(name,'readwrite').clear();r.onsuccess=()=>res();r.onerror=()=>rej(r.error)})}
 
 function splitChapters(paragraphs){
   const chapters=[]; let current={title:'Front matter', paragraphs:[],synthetic:true};
@@ -156,15 +157,79 @@ async function navigate(route){
   if(route==='library') await renderLibrary(); if(route==='reader') await renderReader(); if(route==='notes') await renderNotes(); if(route==='queue') await renderQueue(); if(route==='actioned') await renderActioned(); updateQueueBadge();
 }
 
+function arrayBufferToBase64(buffer){
+  const bytes=new Uint8Array(buffer);let binary='';const chunk=0x8000;
+  for(let i=0;i<bytes.length;i+=chunk)binary+=String.fromCharCode(...bytes.subarray(i,i+chunk));
+  return btoa(binary);
+}
+function base64ToArrayBuffer(base64){
+  const binary=atob(base64);const bytes=new Uint8Array(binary.length);
+  for(let i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);
+  return bytes.buffer;
+}
+async function backupItem(item){
+  const copy={...item};
+  if(copy.audioData instanceof ArrayBuffer){
+    copy.audioBackup={encoding:'base64',type:copy.audioType||'audio/mp4',data:arrayBufferToBase64(copy.audioData)};
+    delete copy.audioData;
+  }else if(copy.audioBlob instanceof Blob){
+    copy.audioBackup={encoding:'base64',type:copy.audioBlob.type||copy.audioType||'audio/mp4',data:arrayBufferToBase64(await copy.audioBlob.arrayBuffer())};
+    delete copy.audioBlob;
+  }
+  return copy;
+}
+async function exportBackup(){
+  try{
+    const books=await idbGetAll('books'),rawItems=await idbGetAll('items');
+    const items=[];for(const item of rawItems)items.push(await backupItem(item));
+    const payload={app:'Storyline Studio',schemaVersion:1,exportedAt:new Date().toISOString(),books,items,preferences:prefs()};
+    const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
+    const url=URL.createObjectURL(blob),a=document.createElement('a');
+    const date=new Date().toISOString().slice(0,10);
+    a.href=url;a.download=`storyline-backup-${date}.json`;document.body.appendChild(a);a.click();a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+    showToast('Storyline backup exported');
+  }catch(e){showToast(e.message||'Backup could not be exported')}
+}
+async function restoreBackup(file){
+  if(!file)return;
+  try{
+    const data=JSON.parse(await file.text());
+    if(data?.app!=='Storyline Studio'||!Array.isArray(data.books)||!Array.isArray(data.items))throw new Error('This is not a valid Storyline backup.');
+    if(Number(data.schemaVersion||0)>1)throw new Error('This backup was created by a newer Storyline version.');
+    if(!confirm(`Restore this backup? It will replace the ${(await idbGetAll('books')).length} manuscript(s) and all notes currently stored in this browser.`))return;
+    const items=data.items.map(item=>{
+      const copy={...item};
+      if(copy.audioBackup?.encoding==='base64'&&copy.audioBackup.data){
+        copy.audioData=base64ToArrayBuffer(copy.audioBackup.data);
+        copy.audioType=copy.audioBackup.type||copy.audioType||'audio/mp4';
+      }
+      delete copy.audioBackup;
+      return copy;
+    });
+    await idbClear('items');await idbClear('books');
+    for(const book of data.books)await idbPut('books',book);
+    for(const item of items)await idbPut('items',item);
+    if(data.preferences&&typeof data.preferences==='object')localStorage.setItem(PREF,JSON.stringify(data.preferences));
+    const p=prefs();state.bookId=p.lastBookId||data.books[0]?.id||null;
+    if(state.bookId){const book=await idbGet('books',state.bookId);state.chapterIndex=book?.progress?.chapterIndex||0;state.selectedParagraph=book?.progress?.paragraphIndex||0;state.selectedCharOffset=book?.progress?.charOffset||0;state.selectedWordEnd=book?.progress?.wordEnd||0}
+    showToast('Storyline backup restored');
+    await navigate('library');
+  }catch(e){showToast(e.message||'Backup could not be restored')}
+}
 async function renderLibrary(){
   const books=(await idbGetAll('books')).sort((a,b)=>new Date(b.updatedAt)-new Date(a.updatedAt));
   const items=await idbGetAll('items');
   view.innerHTML=`
     <section class="hero"><div class="eyebrow">Your private listening desk</div><h1>Read with your ears.<br>Revise with receipts.</h1><p class="sub">Your manuscript stays in this browser. Storyline remembers where you stopped and keeps every note tied to its exact passage.</p></section>
     <section class="import-zone"><strong>${books.length?'Add another manuscript':'Bring in a manuscript'}</strong><p class="sub">DOCX or TXT. Chapter headings are detected automatically.</p><button id="importBtn" class="button">Choose manuscript</button><div class="privacy">Local-first: importing a file does not upload it to a server.</div></section>
+    <section class="backup-card card"><div><div class="eyebrow">Data safety</div><h2>Backup & restore</h2><p class="sub">Export manuscripts, reading positions, Queue and Actioned items, preferences, and saved voice-note audio.</p></div><div class="row backup-actions"><button id="exportBackupBtn" class="ghost">Export backup</button><button id="restoreBackupBtn" class="ghost">Restore backup</button><input id="restoreBackupInput" type="file" accept="application/json,.json" hidden /></div></section>
     ${books.length?`<h2 class="section-title">My manuscripts</h2><div class="grid books">${books.map(b=>bookCard(b,items)).join('')}</div>`:`<div class="empty">Your library is waiting for its first book.</div>`}
   `;
   $('#importBtn').onclick=()=>fileInput.click();
+  $('#exportBackupBtn').onclick=exportBackup;
+  $('#restoreBackupBtn').onclick=()=>$('#restoreBackupInput').click();
+  $('#restoreBackupInput').onchange=e=>{const file=e.target.files?.[0];e.target.value='';restoreBackup(file)};
   $$('.book-card').forEach(c=>c.onclick=async e=>{ if(e.target.closest('[data-delete]')) return; state.bookId=c.dataset.id; savePrefs({lastBookId:state.bookId}); const b=await idbGet('books',state.bookId); state.chapterIndex=b.progress?.chapterIndex||0; state.selectedParagraph=b.progress?.paragraphIndex||0; state.selectedCharOffset=b.progress?.charOffset||0; state.selectedWordEnd=b.progress?.wordEnd||0; navigate('reader'); });
   $$('[data-delete]').forEach(btn=>btn.onclick=async e=>{e.stopPropagation();const id=btn.dataset.delete; if(confirm('Remove this manuscript and its saved notes from this device?')){await idbDelete('books',id); const all=await idbGetAll('items'); for(const i of all.filter(x=>x.bookId===id)) await idbDelete('items',i.id); if(state.bookId===id) state.bookId=null; renderLibrary(); updateQueueBadge();}});
 }
@@ -418,8 +483,10 @@ function startSpeech(fromSelected=true){
         speechSynthesis.speak(u);
       };
 
-      state.replayCurrent=()=>{
+          state.replayCurrent=()=>{
         if(token!==state.playbackToken||!state.isSpeaking)return;
+        state.isPaused=false;
+        const playBtn=$('#playBtn');if(playBtn){playBtn.textContent='Ⅱ';playBtn.setAttribute('aria-label','Pause')}
         try{speechSynthesis.cancel()}catch{}
         speechSynthesis.resume();
         speakUtterance(seg.text,()=>{sIndex++;speakSentence()});
@@ -753,6 +820,7 @@ async function renderQueue(){
         <label class="queue-select-all"><input id="selectAllQueue" type="checkbox" /> <span>Select all</span></label>
         <span id="selectedCount" class="meta">0 selected</span>
         <div class="queue-bulk-actions">
+          <button id="copyAllPending" class="ghost tiny">Copy all pending</button>
           <button id="bulkDone" class="ghost tiny" disabled>Mark selected done</button>
           <button id="bulkCopy" class="ghost tiny" disabled>Copy selected for ChatGPT</button>
           <button id="bulkDelete" class="ghost tiny danger-ghost" disabled>Delete selected</button>
@@ -762,6 +830,7 @@ async function renderQueue(){
 
   wireItemButtons();
   wireQueueBulk();
+  const copyAll=$('#copyAllPending');if(copyAll)copyAll.onclick=()=>copyItemsForChat(pending);
   const actionedLink=$('[data-nav-inline="actioned"]'); if(actionedLink)actionedLink.onclick=()=>navigate('actioned');
 }
 async function renderActioned(){
