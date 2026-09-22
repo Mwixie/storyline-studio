@@ -105,11 +105,11 @@ function idbPut(name,obj){return new Promise((res,rej)=>{const r=store(name,'rea
 function idbDelete(name,id){return new Promise((res,rej)=>{const r=store(name,'readwrite').delete(id);r.onsuccess=()=>res();r.onerror=()=>rej(r.error)})}
 
 function splitChapters(paragraphs){
-  const chapters=[]; let current={title:'Beginning', paragraphs:[]};
+  const chapters=[]; let current={title:'Front matter', paragraphs:[],synthetic:true};
   const heading=/^(chapter\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|[a-z-]+)|prologue|epilogue)\b/i;
   for(const raw of paragraphs){ const p=raw.trim(); if(!p) continue;
-    if(heading.test(p) && current.paragraphs.length){ chapters.push(current); current={title:p,paragraphs:[]}; }
-    else if(heading.test(p) && !current.paragraphs.length){ current.title=p; }
+    if(heading.test(p) && current.paragraphs.length){ chapters.push(current); current={title:p,paragraphs:[],synthetic:false}; }
+    else if(heading.test(p) && !current.paragraphs.length){ current.title=p; current.synthetic=false; }
     else current.paragraphs.push(p);
   }
   if(current.paragraphs.length) chapters.push(current);
@@ -164,6 +164,8 @@ async function renderLibrary(){
   $$('.book-card').forEach(c=>c.onclick=async e=>{ if(e.target.closest('[data-delete]')) return; state.bookId=c.dataset.id; savePrefs({lastBookId:state.bookId}); const b=await idbGet('books',state.bookId); state.chapterIndex=b.progress?.chapterIndex||0; state.selectedParagraph=b.progress?.paragraphIndex||0; state.selectedCharOffset=b.progress?.charOffset||0; state.selectedWordEnd=b.progress?.wordEnd||0; navigate('reader'); });
   $$('[data-delete]').forEach(btn=>btn.onclick=async e=>{e.stopPropagation();const id=btn.dataset.delete; if(confirm('Remove this manuscript and its saved notes from this device?')){await idbDelete('books',id); const all=await idbGetAll('items'); for(const i of all.filter(x=>x.bookId===id)) await idbDelete('items',i.id); if(state.bookId===id) state.bookId=null; renderLibrary(); updateQueueBadge();}});
 }
+function chapterLabel(ch){ return ch?.title==='Beginning'?'Front matter':(ch?.title||'Manuscript'); }
+function readerChapterTitle(ch){ return (ch?.synthetic||ch?.title==='Beginning'||ch?.title==='Front matter')?'':(ch?.title||''); }
 function bookCard(b,items){ const total=b.chapters.reduce((n,c)=>n+c.paragraphs.length,0); let before=0; for(let i=0;i<(b.progress?.chapterIndex||0);i++) before+=b.chapters[i]?.paragraphs.length||0; before+=b.progress?.paragraphIndex||0; const pct=Math.max(0,Math.min(100,Math.round((before/Math.max(total,1))*100))); const count=items.filter(i=>i.bookId===b.id&&['note','question','continuity'].includes(i.type)).length;
   return `<article class="card book-card" data-id="${b.id}"><div><div class="eyebrow">${escapeHtml(b.version||'Manuscript')}</div><div class="book-title">${escapeHtml(b.title)}</div><p class="meta">${b.chapters.length} chapter${b.chapters.length===1?'':'s'} · ${count} note${count===1?'':'s'}</p></div><div class="stack"><div class="row between"><span class="meta">${pct}% listened</span><button data-delete="${b.id}" class="ghost tiny">Remove</button></div><div class="progress"><i style="width:${pct}%"></i></div><button class="button">Continue reading</button></div></article>`;
 }
@@ -173,8 +175,8 @@ async function renderReader(){
   state.chapterIndex=Math.max(0,Math.min(state.chapterIndex,book.chapters.length-1)); const ch=book.chapters[state.chapterIndex]; state.selectedParagraph=Math.max(0,Math.min(state.selectedParagraph,ch.paragraphs.length-1));
   const p=prefs();
   view.innerHTML=`
-    <section class="reader-header"><div class="row between"><div><div class="eyebrow">${escapeHtml(book.title)}</div><h2 class="reader-title">${escapeHtml(ch.title)}</h2></div><button id="backLibrary" class="ghost tiny">Library</button></div>
-    <select id="chapterSelect" class="chapter-select">${book.chapters.map((c,i)=>`<option value="${i}" ${i===state.chapterIndex?'selected':''}>${escapeHtml(c.title)}</option>`).join('')}</select></section>
+    <section class="reader-header"><div class="row between"><div><div class="eyebrow">${escapeHtml(book.title)}</div>${readerChapterTitle(ch)?`<h2 class="reader-title">${escapeHtml(readerChapterTitle(ch))}</h2>`:''}</div><button id="backLibrary" class="ghost tiny">Library</button></div>
+    <select id="chapterSelect" class="chapter-select">${book.chapters.map((c,i)=>`<option value="${i}" ${i===state.chapterIndex?'selected':''}>${escapeHtml(chapterLabel(c))}</option>`).join('')}</select></section>
     <article id="readingPage" class="reading-page" aria-label="Manuscript text">${ch.paragraphs.map((t,i)=>`<p data-p="${i}" class="${i===state.selectedParagraph?'selected':''}">${escapeHtml(t)}</p>`).join('')}</article>
     <section class="player compact-player">
       <div class="player-main compact-player-main">
@@ -280,14 +282,26 @@ function startSpeech(fromSelected=true){
         const seg=segments[sIndex];
         highlightRange(pIndex,seg.start,seg.end);
         if(st)st.textContent=`Reading paragraph ${pIndex+1} · sentence ${sIndex+1}/${segments.length}`;
-        const spokenText=firstAudible?`… ${seg.text}`:seg.text; firstAudible=false;
-        const u=new SpeechSynthesisUtterance(spokenText);
+        const isFirst=firstAudible; firstAudible=false;
+        const u=new SpeechSynthesisUtterance(seg.text);
         state.activeUtterance=u;
         u.rate=+(p.rate||1.05); u.volume=1; u.pitch=1;
         if(v){u.voice=v;u.lang=v.lang;}else{u.lang=navigator.language||'en-US';}
         u.onend=()=>{if(!state.isSpeaking)return;state.activeUtterance=null;sIndex++;speakSentence();};
         u.onerror=e=>{state.activeUtterance=null;if(e.error!=='canceled'&&e.error!=='interrupted')showToast('The device voice could not continue.');finishSpeech();};
-        speechSynthesis.speak(u);
+        if(isFirst){
+          const firstWord=(seg.text.match(/^\S+/)||[''])[0];
+          if(firstWord){
+            const primer=new SpeechSynthesisUtterance(firstWord);
+            primer.rate=u.rate; primer.pitch=1; primer.volume=0.04;
+            if(v){primer.voice=v;primer.lang=v.lang;}else{primer.lang=u.lang;}
+            let launched=false;
+            const launch=()=>{if(launched||!state.isSpeaking)return;launched=true;setTimeout(()=>speechSynthesis.speak(u),70);};
+            primer.onend=launch; primer.onerror=launch;
+            speechSynthesis.speak(primer);
+            setTimeout(launch,500);
+          }else speechSynthesis.speak(u);
+        }else speechSynthesis.speak(u);
       };
       speakSentence();
     };
@@ -500,20 +514,16 @@ async function voiceNote(base){
   modalForm.innerHTML=`<h3>Voice note</h3>
     <div class="source-chip">${escapeHtml(base.chapterTitle)} · paragraph ${base.paragraphIndex+1}</div>
     <div class="excerpt">${escapeHtml(base.excerpt)}</div>
-    <div id="voiceRecordStatus" class="sub">Record an audio note. It stays in this browser.</div>
+    <div id="voiceRecordStatus" class="sub">${canRecord?'Record an audio note. It stays in this browser.':'Audio recording is not available in this browser.'}</div>
     <div id="recordTimer" class="record-timer">0:00</div>
     <audio id="voicePreview" class="voice-preview hidden" controls></audio>
-    <textarea id="voiceCaption" placeholder="Optional caption or typed note"></textarea>
-    <input id="voiceCaptureInput" type="file" accept="audio/*" capture="user" hidden />
+    <textarea id="voiceCaption" placeholder="Optional typed caption"></textarea>
     <div class="voice-note-actions">
       <button value="cancel" class="button secondary">Cancel</button>
-      <button type="button" id="dictateCaption" class="ghost">🎙 Dictate caption</button>
-      <button type="button" id="recordAudioBtn" class="ghost" ${canRecord?'':'disabled'}>● Record here</button>
-      <button type="button" id="nativeRecordBtn" class="ghost">Use iPad recorder</button>
+      <button type="button" id="recordAudioBtn" class="ghost" ${canRecord?'':'disabled'}>● Record</button>
       <button type="button" id="saveAudioNote" class="button">Save voice note</button>
     </div>`;
   modal.showModal();
-  attachDictation($('#dictateCaption'),$('#voiceCaption'));
 
   const setPreview=blob=>{
     audioBlob=blob;
@@ -538,14 +548,14 @@ async function voiceNote(base){
       return;
     }
     try{
-      stream=await navigator.mediaDevices.getUserMedia({audio:true});
+      stream=await navigator.mediaDevices.getUserMedia({audio:true,video:false});
       chunks=[]; audioBlob=null; audioDurationSec=0;
       recorder=new MediaRecorder(stream);
       recorder.ondataavailable=e=>{if(e.data&&e.data.size>0)chunks.push(e.data)};
       recorder.onstart=()=>{
         recording=true;recordStartedAt=Date.now();
         recordBtn.textContent='■ Stop recording';
-        $('#voiceRecordStatus').textContent='Recording…';
+        $('#voiceRecordStatus').textContent='Recording audio…';
         const timerEl=$('#recordTimer');
         timer=setInterval(()=>{if(timerEl)timerEl.textContent=formatDuration((Date.now()-recordStartedAt)/1000)},250);
       };
@@ -557,7 +567,7 @@ async function voiceNote(base){
         const type=recorder.mimeType||chunks.find(c=>c.type)?.type||'audio/mp4';
         const blob=new Blob(chunks,{type});
         if(!blob.size){
-          $('#voiceRecordStatus').textContent='No audio was captured. Try “Use iPad recorder” below.';
+          $('#voiceRecordStatus').textContent='No audio was captured. Please try again.';
           showToast('No audio was captured.');
           return;
         }
@@ -565,75 +575,143 @@ async function voiceNote(base){
         $('#voiceRecordStatus').textContent=`Recorded · ${formatDuration(audioDurationSec)}. Play it back before saving if you want.`;
       };
       recorder.onerror=()=>{
-        recording=false;stopTimer();
-        recordBtn.textContent='● Record again';
-        $('#voiceRecordStatus').textContent='Browser recording failed. Try “Use iPad recorder”.';
+        recording=false;stopTimer();recordBtn.textContent='● Record again';
+        $('#voiceRecordStatus').textContent='Recording failed. Please try again.';
       };
       recorder.start(250);
     }catch(e){
       recording=false;stopTimer();
-      $('#voiceRecordStatus').textContent='Browser recording was not available. Try “Use iPad recorder”.';
+      $('#voiceRecordStatus').textContent='Microphone recording was not available.';
+      showToast('Microphone recording was not available.');
     }
-  };
-
-  $('#nativeRecordBtn').onclick=()=>$('#voiceCaptureInput').click();
-  $('#voiceCaptureInput').onchange=async e=>{
-    const file=e.target.files?.[0]; if(!file)return;
-    audioDurationSec=0; setPreview(file);
-    $('#recordTimer').textContent='Ready';
-    $('#voiceRecordStatus').textContent='Audio attached from the iPad. Play it back before saving if you want.';
   };
 
   $('#saveAudioNote').onclick=async()=>{
     if(recording){showToast('Stop the recording before saving.');return}
-    if(!audioBlob){showToast('Record or attach audio first.');return}
-    const note=$('#voiceCaption').value.trim();
-    await idbPut('items',{...base,id:uid(),type:'voice',note,voice:true,audioBlob,audioType:audioBlob.type||'audio/mp4',durationSec:audioDurationSec});
-    modal.onclose=null; cleanup(); modal.close(); showToast('Voice note saved'); updateQueueBadge();
+    if(!audioBlob){showToast('Record something first.');return}
+    const btn=$('#saveAudioNote'); btn.disabled=true; btn.textContent='Saving…';
+    try{
+      const audioData=await audioBlob.arrayBuffer();
+      const note=$('#voiceCaption').value.trim();
+      await idbPut('items',{...base,id:uid(),type:'voice',note,voice:true,audioData,audioType:audioBlob.type||'audio/mp4',durationSec:audioDurationSec});
+      modal.onclose=null; cleanup(); modal.close(); showToast('Voice note saved'); updateQueueBadge();
+    }catch(e){
+      btn.disabled=false;btn.textContent='Save voice note';
+      $('#voiceRecordStatus').textContent='The recording could not be saved. Please try again.';
+      showToast('Voice note could not be saved.');
+    }
   };
 }
 
 async function renderNotes(){ const books=await idbGetAll('books'); const bookMap=Object.fromEntries(books.map(b=>[b.id,b])); const items=(await idbGetAll('items')).filter(i=>['note','bookmark','voice'].includes(i.type)).sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt));
   view.innerHTML=`<section class="hero"><div class="eyebrow">Listening memory</div><h1>Notes & bookmarks</h1><p class="sub">Everything you caught while listening, still attached to where you heard it.</p></section>${items.length?`<div class="list">${items.map(i=>itemHtml(i,bookMap)).join('')}</div>`:`<div class="empty card">No notes yet. This is suspiciously peaceful.</div>`}`; wireItemButtons(); }
-async function renderQueue(){ const books=await idbGetAll('books'); const bookMap=Object.fromEntries(books.map(b=>[b.id,b])); const items=(await idbGetAll('items')).filter(i=>['question','continuity','note','bookmark','voice'].includes(i.type)).sort((a,b)=>(a.status==='done')-(b.status==='done')||new Date(b.createdAt)-new Date(a.createdAt)); const open=items.filter(i=>i.status!=='done').length;
-  view.innerHTML=`<section class="hero"><div class="eyebrow">Revision desk</div><h1>Revision Queue</h1><p class="sub">Questions stay questions until you decide what to change.</p></section><div class="stat-grid"><div class="stat"><b>${open}</b><small>Open</small></div><div class="stat"><b>${items.filter(i=>i.type==='continuity').length}</b><small>Continuity</small></div><div class="stat"><b>${items.filter(i=>['note','voice'].includes(i.type)).length}</b><small>Notes</small></div></div>${items.length?`<div class="list" style="margin-top:16px">${items.map(i=>itemHtml(i,bookMap,true)).join('')}</div>`:`<div class="empty card" style="margin-top:16px">Nothing waiting for review.</div>`}`; wireItemButtons(); }
+async function renderQueue(){
+  const books=await idbGetAll('books'); const bookMap=Object.fromEntries(books.map(b=>[b.id,b]));
+  const items=(await idbGetAll('items')).filter(i=>['question','continuity','note','bookmark','voice'].includes(i.type)).sort((a,b)=>(a.status==='done')-(b.status==='done')||new Date(b.createdAt)-new Date(a.createdAt));
+  const open=items.filter(i=>i.status!=='done').length;
+  view.innerHTML=`<section class="hero"><div class="eyebrow">Revision desk</div><h1>Revision Queue</h1><p class="sub">Everything you captured while reading, in one place.</p></section>
+    <div class="stat-grid"><div class="stat"><b>${open}</b><small>Open</small></div><div class="stat"><b>${items.filter(i=>i.type==='continuity').length}</b><small>Continuity</small></div><div class="stat"><b>${items.filter(i=>['note','voice'].includes(i.type)).length}</b><small>Notes</small></div></div>
+    ${items.length?`<div class="queue-toolbar">
+      <label class="queue-select-all"><input id="selectAllQueue" type="checkbox" /> <span>Select all</span></label>
+      <span id="selectedCount" class="meta">0 selected</span>
+      <div class="queue-bulk-actions">
+        <button id="bulkDone" class="ghost tiny" disabled>Mark selected done</button>
+        <button id="bulkCopy" class="ghost tiny" disabled>Copy selected for ChatGPT</button>
+        <button id="bulkDelete" class="ghost tiny danger-ghost" disabled>Delete selected</button>
+      </div>
+    </div><div class="list queue-list">${items.map(i=>itemHtml(i,bookMap,true)).join('')}</div>`:`<div class="empty card" style="margin-top:16px">Nothing waiting for review.</div>`}`;
+  wireItemButtons();
+  wireQueueBulk();
+}
 function itemHtml(i,bookMap,queue=false){
   const label=i.type==='question'?'Ask ChatGPT':i.type==='continuity'?'Continuity':i.type==='bookmark'?'Bookmark':i.type==='voice'?'Voice note':'Note';
   const pill=i.status==='done'?'green':i.type==='question'||i.type==='continuity'?'gold':'';
-  return `<article class="list-item" data-item="${i.id}">
-    <div class="row between"><span class="pill ${pill}">${label}</span><span class="meta item-time">${formatItemTime(i.createdAt)}${i.durationSec?` · ${formatDuration(i.durationSec)}`:''}</span></div>
+  const hasAudio=!!(i.audioData||i.audioBlob);
+  return `<article class="list-item ${i.status==='done'?'item-done':''}" data-item="${i.id}">
+    <div class="row between">
+      <div class="row">${queue?`<input class="queue-item-check" type="checkbox" data-select-item="${i.id}" aria-label="Select item" />`:''}<span class="pill ${pill}">${label}</span></div>
+      <span class="meta item-time">${formatItemTime(i.createdAt)}${i.durationSec?` · ${formatDuration(i.durationSec)}`:''}</span>
+    </div>
     <div><strong>${escapeHtml(bookMap[i.bookId]?.title||i.bookTitle||'Manuscript')}</strong><div class="source-chip">${escapeHtml(i.chapterTitle||'Chapter')} · paragraph ${(i.paragraphIndex??0)+1}</div></div>
     <div class="excerpt">${escapeHtml(i.excerpt||'')}</div>
     ${i.note?`<div class="note-text">${escapeHtml(i.note)}</div>`:''}
-    ${i.audioBlob?`<audio class="saved-voice-note" controls data-audio-item="${i.id}"></audio>`:''}
+    ${hasAudio?`<audio class="saved-voice-note" controls data-audio-item="${i.id}"></audio>`:''}
     <div class="row">
       <button data-open-item="${i.id}" class="ghost tiny">Open passage</button>
       ${queue?`<button data-copy="${i.id}" class="ghost tiny">Copy for ChatGPT</button><button data-done="${i.id}" class="ghost tiny">${i.status==='done'?'Reopen':'Mark done'}</button>`:''}
-      <button data-delete-item="${i.id}" class="ghost tiny">Delete</button>
+      <button data-delete-item="${i.id}" class="ghost tiny danger-ghost">Delete</button>
     </div>
   </article>`;
+}
+function chatPacket(i){
+  const audioNote=i.type==='voice'?'\nAudio: Voice-note audio is stored in Storyline and is not included in clipboard text.':'';
+  return `Storyline Studio revision item\n\nBook: ${i.bookTitle}\nLocation: ${i.chapterTitle}, paragraph ${(i.paragraphIndex||0)+1}\nType: ${i.type}\nCreated: ${formatItemTime(i.createdAt)}\n\nPassage:\n${i.excerpt||''}\n\nMy note/question:\n${i.note||''}${audioNote}\n\nPlease answer using the manuscript context I provide, and do not revise the manuscript unless I explicitly ask.`;
+}
+async function copyItemsForChat(items){
+  if(!items.length)return;
+  const text=items.map((i,n)=>`--- Item ${n+1} of ${items.length} ---\n${chatPacket(i)}`).join('\n\n');
+  try{await navigator.clipboard.writeText(text);showToast(items.length===1?'Copied for ChatGPT':`Copied ${items.length} items for ChatGPT`)}catch{showToast('Copy was blocked by the browser')}
+}
+function selectedQueueIds(){return $$('.queue-item-check:checked').map(c=>c.dataset.selectItem)}
+function updateBulkBar(){
+  const ids=selectedQueueIds(); const count=$('#selectedCount'); if(count)count.textContent=`${ids.length} selected`;
+  ['#bulkDone','#bulkCopy','#bulkDelete'].forEach(sel=>{const b=$(sel);if(b)b.disabled=!ids.length});
+  const all=$$('.queue-item-check'); const selectAll=$('#selectAllQueue');
+  if(selectAll){selectAll.checked=!!all.length&&ids.length===all.length;selectAll.indeterminate=ids.length>0&&ids.length<all.length}
+}
+function wireQueueBulk(){
+  const selectAll=$('#selectAllQueue'); if(!selectAll)return;
+  selectAll.onchange=()=>{$$('.queue-item-check').forEach(c=>c.checked=selectAll.checked);updateBulkBar()};
+  $$('.queue-item-check').forEach(c=>c.onchange=updateBulkBar);
+  $('#bulkDone').onclick=async()=>{
+    const ids=selectedQueueIds(); if(!ids.length)return;
+    if(!confirm(`Mark ${ids.length} selected item${ids.length===1?'':'s'} as done?`))return;
+    for(const id of ids){const i=await idbGet('items',id);if(i){i.status='done';await idbPut('items',i)}}
+    navigate('queue');
+  };
+  $('#bulkCopy').onclick=async()=>{
+    const ids=selectedQueueIds(); const items=[];
+    for(const id of ids){const i=await idbGet('items',id);if(i)items.push(i)}
+    await copyItemsForChat(items);
+  };
+  $('#bulkDelete').onclick=async()=>{
+    const ids=selectedQueueIds(); if(!ids.length)return;
+    if(!confirm(`Delete ${ids.length} selected item${ids.length===1?'':'s'}? This cannot be undone.`))return;
+    for(const id of ids)await idbDelete('items',id);
+    navigate('queue');
+  };
+  updateBulkBar();
 }
 function wireItemButtons(){
   $$('[data-audio-item]').forEach(async a=>{
     const i=await idbGet('items',a.dataset.audioItem);
-    if(i?.audioBlob){const u=URL.createObjectURL(i.audioBlob);a.src=u;a.dataset.objectUrl=u;}
+    let blob=null;
+    if(i?.audioData)blob=new Blob([i.audioData],{type:i.audioType||'audio/mp4'});
+    else if(i?.audioBlob)blob=i.audioBlob;
+    if(blob){const u=URL.createObjectURL(blob);a.src=u;a.dataset.objectUrl=u;}
   });
   $$('[data-open-item]').forEach(b=>b.onclick=async()=>{
     const i=await idbGet('items',b.dataset.openItem);
     if(!i)return;
     const book=await idbGet('books',i.bookId);
     if(!book){showToast('That manuscript is no longer in this browser.');return}
-    state.bookId=i.bookId;
-    state.chapterIndex=i.chapterIndex??0;
-    state.selectedParagraph=i.paragraphIndex??0;
+    state.bookId=i.bookId; state.chapterIndex=i.chapterIndex??0; state.selectedParagraph=i.paragraphIndex??0;
     state.selectedCharOffset=i.charOffset??0; state.selectedWordEnd=i.wordEnd??0;
-    savePrefs({lastBookId:state.bookId});
-    await saveProgress(book);
-    navigate('reader');
+    savePrefs({lastBookId:state.bookId}); await saveProgress(book); navigate('reader');
   });
-  $$('[data-delete-item]').forEach(b=>b.onclick=async()=>{await idbDelete('items',b.dataset.deleteItem);navigate(state.route)});
-  $$('[data-done]').forEach(b=>b.onclick=async()=>{const i=await idbGet('items',b.dataset.done);i.status=i.status==='done'?'open':'done';await idbPut('items',i);navigate('queue')});
-  $$('[data-copy]').forEach(b=>b.onclick=async()=>{const i=await idbGet('items',b.dataset.copy); const packet=`Storyline Studio revision question\n\nBook: ${i.bookTitle}\nLocation: ${i.chapterTitle}, paragraph ${(i.paragraphIndex||0)+1}\nType: ${i.type}\n\nPassage:\n${i.excerpt}\n\nMy note/question:\n${i.note}\n\nPlease answer using the manuscript context I provide, and do not revise the manuscript unless I explicitly ask.`; try{await navigator.clipboard.writeText(packet);showToast('Copied for ChatGPT')}catch{showToast('Copy was blocked by the browser')}});
+  $$('[data-delete-item]').forEach(b=>b.onclick=async()=>{
+    const i=await idbGet('items',b.dataset.deleteItem); if(!i)return;
+    if(!confirm('Delete this item? This cannot be undone.'))return;
+    await idbDelete('items',i.id); navigate(state.route);
+  });
+  $$('[data-done]').forEach(b=>b.onclick=async()=>{
+    const i=await idbGet('items',b.dataset.done); if(!i)return;
+    const next=i.status==='done'?'open':'done';
+    const verb=next==='done'?'mark this item done':'reopen this item';
+    if(!confirm(`Are you sure you want to ${verb}?`))return;
+    i.status=next; await idbPut('items',i); navigate('queue');
+  });
+  $$('[data-copy]').forEach(b=>b.onclick=async()=>{const i=await idbGet('items',b.dataset.copy);if(i)await copyItemsForChat([i])});
 }
 
 $$('[data-nav]').forEach(b=>b.addEventListener('click',()=>navigate(b.dataset.nav)));
