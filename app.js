@@ -576,13 +576,22 @@ async function renderReader(){
 function wireReader(book,ch){
   $('#backLibrary').onclick=()=>navigate('library');
   $('#chapterSelect').onchange=async e=>{ stopAllSpeech(); state.chapterIndex=+e.target.value; state.selectedParagraph=0; state.selectedCharOffset=0; state.selectedWordEnd=0; await saveProgress(book); renderReader(); };
-  $$('#readingPage p').forEach(p=>p.onclick=async e=>{
+  $('#readingPage p').forEach(p=>p.onclick=async e=>{
+    const paragraphIndex=+p.dataset.p;
+    const text=p.textContent||'';
+    const offset=caretOffsetInParagraph(p,e);
+    const seg=sentenceAtOffset(text,offset);
+    if(!seg)return;
     stopAllSpeech();
-    const text=p.textContent||''; const wr=wordRangeAt(text,caretOffsetInParagraph(p,e));
-    state.selectedCharOffset=wr.start; state.selectedWordEnd=wr.end;
-    await selectParagraph(+p.dataset.p,false,true);
-    markStartWord(+p.dataset.p,wr.start,wr.end);
-    const label=$('#positionLabel'); if(label) label.textContent=`Paragraph ${+p.dataset.p+1} · starts “${wr.word}”`;
+    state.selectedParagraph=paragraphIndex;
+    state.selectedCharOffset=seg.start;
+    state.selectedWordEnd=wordRangeAt(text,seg.start).end;
+    await saveProgress(book);
+    $('#readingPage p').forEach(el=>el.classList.toggle('selected',+el.dataset.p===paragraphIndex));
+    const range=$('#positionRange');if(range)range.value=paragraphIndex;
+    const label=$('#positionLabel');if(label)label.textContent=`Paragraph ${paragraphIndex+1} · sentence starts “${excerpt(seg.text,54)}”`;
+    highlightRange(paragraphIndex,seg.start,seg.end);
+    startSpeechFromSelection();
   });
   $('#positionRange').oninput=e=>{stopAllSpeech();state.selectedCharOffset=0;state.selectedWordEnd=0;selectParagraph(+e.target.value,true);};
   $('#playBtn').onclick=toggleSpeech;
@@ -793,7 +802,15 @@ function setupMediaSession(){
   safe('nexttrack',()=>{mediaMoveParagraph(1)});
   safe('stop',()=>stopAllSpeech());
 }
+function startSpeechFromSelection(){
+  if(currentEngine()==='local'){startLocalSpeech(true);return}
+  startSpeech(true);
+}
 function toggleSpeech(){
+  if(currentEngine()==='local'){
+    if(state.isSpeaking){stopAllSpeech();return}
+    startLocalSpeech(true);return;
+  }
   if(!state.voicesReady){showToast('Device voices are still loading.');return}
   if(!('speechSynthesis' in window) || typeof SpeechSynthesisUtterance==='undefined'){ showToast('Text-to-speech is not available in this browser.'); return; }
   if(state.isSpeaking&&!state.isPaused){ speechSynthesis.pause(); state.isPaused=true; $('#playBtn').textContent='▶'; setMediaPlaybackState('paused'); return; }
@@ -981,6 +998,7 @@ async function startLocalSpeech(fromSelected=true){
   if(!paras.some(Boolean)){showToast('There is no text to read in this chapter.');return}
   let pIndex=fromSelected?state.selectedParagraph:(state.speakingParagraph??state.selectedParagraph);
   pIndex=Math.max(0,Math.min(pIndex,paras.length-1));
+  let firstOffset=fromSelected?(state.selectedCharOffset||0):0;
   const st=$('#voiceStatus'); if(st)st.textContent=state.chapterTransitionNotice||'Loading free local voice…';
   state.chapterTransitionNotice='';
   const play=$('#playBtn'); if(play)play.textContent='…';
@@ -1012,8 +1030,14 @@ async function startLocalSpeech(fromSelected=true){
   const speakParagraph=()=>{
     if(!state.isSpeaking)return;
     if(pIndex>=paras.length){continueLocalChapter();return}
-    const sentences=splitSentences(paras[pIndex]);
+    const sentenceParts=sentenceSegments(paras[pIndex],0);
+    const sentences=sentenceParts.map(x=>x.text);
     let sIndex=0;
+    if(pIndex===state.selectedParagraph&&firstOffset>0){
+      const found=sentenceParts.findIndex(x=>firstOffset>=x.start&&firstOffset<x.end);
+      sIndex=found>=0?found:Math.max(0,sentenceParts.findIndex(x=>x.start>=firstOffset));
+      if(sIndex<0)sIndex=Math.max(0,sentenceParts.length-1);
+    }
     state.speakingParagraph=pIndex; state.selectedParagraph=pIndex; markSpeaking(pIndex);
     const range=$('#positionRange'); if(range)range.value=pIndex;
     const label=$('#positionLabel'); if(label)label.textContent=`Paragraph ${pIndex+1} of ${paras.length}`;
@@ -1022,10 +1046,14 @@ async function startLocalSpeech(fromSelected=true){
       if(!state.isSpeaking)return;
       if(sIndex>=sentences.length){
         const currentP=$(`#readingPage p[data-p="${pIndex}"]`); if(currentP) currentP.textContent=paras[pIndex];
-        state.selectedCharOffset=0;state.selectedWordEnd=0;
+        state.selectedCharOffset=paras[pIndex].length;state.selectedWordEnd=paras[pIndex].length;
         idbGet('books',state.bookId).then(book=>book&&saveProgress(book)).catch(()=>{});
-        pIndex++; speakParagraph(); return;
+        pIndex++;firstOffset=0;speakParagraph(); return;
       }
+      const part=sentenceParts[sIndex];
+      state.speakingPIndex=pIndex;state.speakingSIndex=sIndex;state.speakingSegments=sentenceParts;
+      state.selectedCharOffset=part.start;state.selectedWordEnd=wordRangeAt(paras[pIndex],part.start).end;
+      persistReadingProgress();
       if(st)st.textContent=`Reading paragraph ${pIndex+1} · sentence ${sIndex+1}/${sentences.length}`; highlightSentence(pIndex,sIndex,sentences);
       const id=meSpeak.speak(sentences[sIndex],{amplitude:100,speed:localSpeed(),volume:1,voice:'en-us',variant:localVoiceVariant()},success=>{
         state.localSpeakingId=null;
