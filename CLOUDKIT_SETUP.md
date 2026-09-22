@@ -12,7 +12,7 @@ The private database is used; Storyline does not use the public database for man
 ## Apple-side setup
 
 1. Create or choose an iCloud/CloudKit container for Storyline in the Apple Developer tools.
-2. Add the schema in `cloudkit-schema.ckdb` to the development environment, or create the two record types and fields in CloudKit Database.
+2. In the development environment, create these record types in CloudKit Database:\n   - `StorylineLibrary`: `payload` (Asset), `updatedAt` (Date/Time), `deviceID` (String), `schemaVersion` (Int(64)).\n   - `StorylineProgress`: `payload` (String), `updatedAt` (Date/Time), `deviceID` (String), `schemaVersion` (Int(64)).
 3. Enable CloudKit web services and create an API token for the container.
 4. Restrict the token's allowed origin to the deployed Storyline website.
 5. Put the container identifier and browser API token in `cloudkit-config.js`, set the correct environment, and change `enabled` to `true`.
