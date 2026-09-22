@@ -208,3 +208,21 @@ body{min-height:100dvh}.app-shell{min-height:100dvh;padding-bottom:86px}.topbar{
 @media(max-width:759px){
   .section-heading-row{align-items:flex-start}
 }
+
+/* Build 17: Actioned as a first-class destination */
+.stat-button{
+  appearance:none;
+  color:inherit;
+  width:100%;
+  cursor:pointer;
+  font:inherit;
+}
+.stat-button:hover,.stat-button:active{
+  border-color:#5b4f61;
+  background:#1d1923;
+}
+.actioned-page-heading{margin:4px 0 14px}
+@media(max-width:759px){
+  .bottom-nav{grid-template-columns:repeat(4,1fr)}
+  body.reader-route .bottom-nav{grid-template-columns:repeat(5,1fr)}
+}
