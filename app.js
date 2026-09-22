@@ -8,7 +8,8 @@ const state = {
   route:'library', bookId:null, chapterIndex:0, selectedParagraph:0, selectedCharOffset:0, selectedWordEnd:0, speakingParagraph:null,
   voices:[], voicesReady:false, isSpeaking:false, isPaused:false, deferredPrompt:null, activeUtterance:null, localSpeakingId:null, localTTSReady:false,
   playbackToken:0, speakingPIndex:null, speakingSIndex:null, speakingSegments:null, replayCurrent:null,
-  sleepTimerId:null, sleepIntervalId:null, sleepDeadline:null, sleepMinutes:0, wakeLock:null, chapterTransitionNotice:''
+  sleepTimerId:null, sleepIntervalId:null, sleepDeadline:null, sleepMinutes:0, wakeLock:null, chapterTransitionNotice:'',
+  pendingPassageReference:null
 };
 
 const PREF='storyline.prefs.v1';
@@ -31,6 +32,146 @@ function localVoiceVariant(){ const v=prefs().localVariant||'f2'; return ['f2','
 function voiceKey(v){ return v?.voiceURI || `${v?.name||''}|${v?.lang||''}`; }
 function voiceDisplayName(v){ return `${v?.name||'Device voice'}${v?.lang?' · '+v.lang:''}${v?.localService?' · on device':''}`; }
 function excerpt(s,n=180){ const x=(s||'').trim(); return x.length>n?x.slice(0,n-1)+'…':x; }
+function anchorNormalize(s=''){
+  return String(s).normalize?.('NFKC').toLowerCase()
+    .replace(/[“”]/g,'"').replace(/[‘’]/g,"'").replace(/[–—]/g,'-')
+    .replace(/\s+/g,' ').trim() || String(s).toLowerCase().replace(/\s+/g,' ').trim();
+}
+function anchorHash(s=''){
+  const text=anchorNormalize(s);let h=2166136261;
+  for(let i=0;i<text.length;i++){h^=text.charCodeAt(i);h=Math.imul(h,16777619)}
+  return (h>>>0).toString(36);
+}
+function chapterAnchorKey(ch,book){
+  return anchorHash(ch?.synthetic||ch?.title==='Beginning'||ch?.title==='Front matter'?(book?.title||'front matter'):(ch?.title||'chapter'));
+}
+function sentenceAtOffset(text,offset){
+  const segments=sentenceSegments(text,0);if(!segments.length)return null;
+  const o=Math.max(0,Math.min(Number(offset)||0,String(text||'').length));
+  return segments.find(s=>o>=s.start&&o<s.end)||segments.find(s=>s.start>=o)||segments[segments.length-1];
+}
+function passageContext(text,start,end,span=120){
+  const source=String(text||''),a=Math.max(0,Math.min(start,source.length)),b=Math.max(a,Math.min(end,source.length));
+  return {prefix:source.slice(Math.max(0,a-span),a),selected:source.slice(a,b),suffix:source.slice(b,Math.min(source.length,b+span))};
+}
+function makePassageAnchor(book,ch,paragraphIndex,text,{start=0,end=0,spokenSegment=null,precision='sentence'}={}){
+  const source=String(text||'');let a=start,b=end,kind=precision;
+  if(spokenSegment&&spokenSegment.start>=0&&spokenSegment.end>spokenSegment.start){
+    a=spokenSegment.start;b=spokenSegment.end;kind='sentence';
+  }else if(precision==='sentence'){
+    const seg=sentenceAtOffset(source,a);
+    if(seg){a=seg.start;b=seg.end}else{const w=wordRangeAt(source,a);a=w.start;b=w.end;kind='word'}
+  }else{
+    a=Math.max(0,Math.min(a,source.length));b=Math.max(a,Math.min(b||a,source.length));
+  }
+  const ctx=passageContext(source,a,b);
+  return {
+    version:1,precision:kind,
+    chapterKey:chapterAnchorKey(ch,book),chapterTitle:chapterLabel(ch,book),chapterIndex:state.chapterIndex,
+    paragraphIndex,paragraphFingerprint:anchorHash(source),
+    charStart:a,charEnd:b,selectedText:ctx.selected,selectionFingerprint:ctx.selected?anchorHash(ctx.selected):'',
+    prefixContext:ctx.prefix,suffixContext:ctx.suffix,
+    previousParagraphFingerprint:paragraphIndex>0?anchorHash(ch.paragraphs[paragraphIndex-1]||''):'',
+    nextParagraphFingerprint:paragraphIndex<ch.paragraphs.length-1?anchorHash(ch.paragraphs[paragraphIndex+1]||''):'',
+    capturedAt:new Date().toISOString()
+  };
+}
+function makeLegacyPassageAnchor(book,ch,item){
+  const pi=Math.max(0,Math.min(item.paragraphIndex??0,ch.paragraphs.length-1)),text=ch.paragraphs[pi]||'';
+  const a=Math.max(0,Math.min(item.charOffset||0,text.length)),b=Math.max(a,Math.min(item.wordEnd||a,text.length));
+  const ctx=passageContext(text,a,b);
+  return {
+    version:1,precision:'paragraph',legacy:true,
+    chapterKey:chapterAnchorKey(ch,book),chapterTitle:chapterLabel(ch,book),chapterIndex:item.chapterIndex??0,
+    paragraphIndex:pi,paragraphFingerprint:anchorHash(text),
+    charStart:a,charEnd:b,selectedText:ctx.selected,selectionFingerprint:ctx.selected?anchorHash(ctx.selected):'',
+    prefixContext:ctx.prefix,suffixContext:ctx.suffix,
+    previousParagraphFingerprint:pi>0?anchorHash(ch.paragraphs[pi-1]||''):'',
+    nextParagraphFingerprint:pi<ch.paragraphs.length-1?anchorHash(ch.paragraphs[pi+1]||''):'',
+    legacyExcerpt:item.excerpt||'',capturedAt:item.createdAt||new Date().toISOString()
+  };
+}
+function allOccurrences(haystack,needle){
+  const out=[];if(!needle)return out;let from=0;
+  while(from<=haystack.length){const i=haystack.indexOf(needle,from);if(i<0)break;out.push(i);from=i+Math.max(1,needle.length)}
+  return out;
+}
+function contextScore(source,index,length,anchor){
+  let score=0;
+  const before=anchorNormalize(source.slice(Math.max(0,index-120),index));
+  const after=anchorNormalize(source.slice(index+length,index+length+120));
+  const wantBefore=anchorNormalize(anchor.prefixContext||'').slice(-60);
+  const wantAfter=anchorNormalize(anchor.suffixContext||'').slice(0,60);
+  if(wantBefore&&before.endsWith(wantBefore))score+=24;
+  else if(wantBefore.length>=18&&before.includes(wantBefore.slice(-30)))score+=12;
+  if(wantAfter&&after.startsWith(wantAfter))score+=24;
+  else if(wantAfter.length>=18&&after.includes(wantAfter.slice(0,30)))score+=12;
+  return score;
+}
+function bestSelectionInParagraph(source,anchor){
+  const selected=String(anchor.selectedText||'');if(!selected)return {start:anchor.charStart||0,end:anchor.charEnd||anchor.charStart||0,score:0};
+  let hits=allOccurrences(source,selected),caseInsensitive=false;
+  if(!hits.length){hits=allOccurrences(source.toLowerCase(),selected.toLowerCase());caseInsensitive=true}
+  if(!hits.length)return {start:anchor.charStart||0,end:anchor.charEnd||anchor.charStart||0,score:0};
+  let best=null;
+  for(const start of hits){
+    const score=42+contextScore(source,start,selected.length,anchor)-(caseInsensitive?2:0);
+    if(!best||score>best.score)best={start,end:start+selected.length,score};
+  }
+  return best;
+}
+function scorePassageCandidate(book,ch,ci,pi,anchor){
+  const source=ch.paragraphs[pi]||'',fp=anchorHash(source),selection=bestSelectionInParagraph(source,anchor);
+  let score=selection.score;
+  if(fp===anchor.paragraphFingerprint)score+=110;
+  if(chapterAnchorKey(ch,book)===anchor.chapterKey)score+=36;
+  if(pi>0&&anchor.previousParagraphFingerprint&&anchorHash(ch.paragraphs[pi-1]||'')===anchor.previousParagraphFingerprint)score+=18;
+  if(pi<ch.paragraphs.length-1&&anchor.nextParagraphFingerprint&&anchorHash(ch.paragraphs[pi+1]||'')===anchor.nextParagraphFingerprint)score+=18;
+  if(ci===anchor.chapterIndex)score+=8;
+  score-=Math.min(18,Math.abs(pi-(anchor.paragraphIndex||0))*.3);
+  if(anchor.legacyExcerpt&&anchorNormalize(source).includes(anchorNormalize(anchor.legacyExcerpt).slice(0,80)))score+=32;
+  let start=selection.start,end=selection.end;
+  if(fp===anchor.paragraphFingerprint&&anchor.precision==='paragraph'){
+    start=Math.max(0,Math.min(anchor.charStart||0,source.length));
+    end=Math.max(start,Math.min(anchor.charEnd||start,source.length));
+  }
+  return {chapterIndex:ci,paragraphIndex:pi,start,end,score,paragraphFingerprint:fp};
+}
+function resolvePassageAnchor(book,item){
+  const anchor=item.anchor;
+  if(!anchor){
+    const ci=Math.max(0,Math.min(item.chapterIndex??0,book.chapters.length-1)),ch=book.chapters[ci];
+    const pi=Math.max(0,Math.min(item.paragraphIndex??0,(ch?.paragraphs.length||1)-1));
+    return {chapterIndex:ci,paragraphIndex:pi,start:item.charOffset||0,end:item.wordEnd||item.charOffset||0,score:1,moved:false,legacy:true};
+  }
+  let best=null;
+  for(let ci=0;ci<book.chapters.length;ci++){
+    const ch=book.chapters[ci];
+    for(let pi=0;pi<ch.paragraphs.length;pi++){
+      const candidate=scorePassageCandidate(book,ch,ci,pi,anchor);
+      if(!best||candidate.score>best.score)best=candidate;
+    }
+  }
+  if(!best||best.score<34){
+    const ci=Math.max(0,Math.min(anchor.chapterIndex??item.chapterIndex??0,book.chapters.length-1)),ch=book.chapters[ci];
+    const pi=Math.max(0,Math.min(anchor.paragraphIndex??item.paragraphIndex??0,(ch?.paragraphs.length||1)-1));
+    best={chapterIndex:ci,paragraphIndex:pi,start:anchor.charStart||0,end:anchor.charEnd||anchor.charStart||0,score:0,unverified:true};
+  }
+  best.moved=best.chapterIndex!==(anchor.chapterIndex??item.chapterIndex)||best.paragraphIndex!==(anchor.paragraphIndex??item.paragraphIndex);
+  return best;
+}
+function referenceExcerptHtml(item){
+  const a=item.anchor;if(!a)return escapeHtml(item.excerpt||'');
+  const before=excerpt(a.prefixContext||'',80),selected=a.selectedText||'',after=excerpt(a.suffixContext||'',80);
+  if(!selected)return escapeHtml(item.excerpt||a.legacyExcerpt||'');
+  return `${before?'…'+escapeHtml(before)+' ':''}<mark class="passage-anchor-text">${escapeHtml(selected)}</mark>${after?' '+escapeHtml(after)+'…':''}`;
+}
+function markReferenceRange(paragraphIndex,start,end){
+  const p=$(`#readingPage p[data-p="${paragraphIndex}"]`);if(!p)return;
+  const text=p.textContent||'',a=Math.max(0,Math.min(start,text.length)),b=Math.max(a,Math.min(end||a,text.length));
+  if(b>a)p.innerHTML=escapeHtml(text.slice(0,a))+`<span class="passage-reference">${escapeHtml(text.slice(a,b))}</span>`+escapeHtml(text.slice(b));
+  p.classList.add('reference-target');
+}
 function formatItemTime(iso){
   if(!iso)return '';
   const d=new Date(iso); if(Number.isNaN(d.getTime()))return '';
