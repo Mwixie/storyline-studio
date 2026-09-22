@@ -263,3 +263,17 @@ body{min-height:100dvh}.app-shell{min-height:100dvh;padding-bottom:86px}.topbar{
 
 /* Build 22: voice management */
 .voice-manage-actions{flex-wrap:wrap;gap:8px}
+
+/* Build 25: chapter continuation control */
+.chapter-advance-toggle{
+  display:flex;
+  align-items:flex-start;
+  gap:10px;
+  padding:12px 0 2px;
+  border-top:1px solid var(--line);
+  cursor:pointer;
+}
+.chapter-advance-toggle input{margin-top:3px;accent-color:var(--gold)}
+.chapter-advance-toggle span{display:grid;gap:2px}
+.chapter-advance-toggle strong{font-size:.9rem;font-weight:600}
+.chapter-advance-toggle small{font-size:.78rem;line-height:1.35;opacity:.72}
