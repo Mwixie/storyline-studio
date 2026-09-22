@@ -273,7 +273,9 @@ async function restoreBackup(file){
     const data=JSON.parse(await file.text());
     if(data?.app!=='Storyline Studio'||!Array.isArray(data.books)||!Array.isArray(data.items))throw new Error('This is not a valid Storyline backup.');
     if(Number(data.schemaVersion||0)>1)throw new Error('This backup was created by a newer Storyline version.');
-    if(!confirm(`Restore this backup? It will replace the ${(await idbGetAll('books')).length} manuscript(s) and all notes currently stored in this browser.`))return;
+    if(data.books.some(book=>!book||!book.id)||data.items.some(item=>!item||!item.id))throw new Error('This backup contains records without valid IDs.');
+    const bookIds=new Set(data.books.map(book=>book.id)),itemIds=new Set(data.items.map(item=>item.id));
+    if(bookIds.size!==data.books.length||itemIds.size!==data.items.length)throw new Error('This backup contains duplicate record IDs.');
     const items=data.items.map(item=>{
       const copy={...item};
       if(copy.audioBackup?.encoding==='base64'&&copy.audioBackup.data){
@@ -283,9 +285,17 @@ async function restoreBackup(file){
       delete copy.audioBackup;
       return copy;
     });
-    await idbClear('items');await idbClear('books');
+    if(!confirm(`Restore this backup? It will replace the ${(await idbGetAll('books')).length} manuscript(s) and all notes currently stored in this browser.`))return;
+
+    // Write the complete backup first. Existing records remain available if this phase is interrupted.
     for(const book of data.books)await idbPut('books',book);
     for(const item of items)await idbPut('items',item);
+
+    // Only after every backup record has been written do we remove records not present in the backup.
+    const localBooks=await idbGetAll('books'),localItems=await idbGetAll('items');
+    for(const book of localBooks)if(!bookIds.has(book.id))await idbDelete('books',book.id);
+    for(const item of localItems)if(!itemIds.has(item.id))await idbDelete('items',item.id);
+
     if(data.preferences&&typeof data.preferences==='object')localStorage.setItem(PREF,JSON.stringify(data.preferences));
     const p=prefs();state.bookId=p.lastBookId||data.books[0]?.id||null;
     if(state.bookId){const book=await idbGet('books',state.bookId);state.chapterIndex=book?.progress?.chapterIndex||0;state.selectedParagraph=book?.progress?.paragraphIndex||0;state.selectedCharOffset=book?.progress?.charOffset||0;state.selectedWordEnd=book?.progress?.wordEnd||0}
@@ -298,7 +308,7 @@ async function renderLibrary(){
   const items=await idbGetAll('items');
   view.innerHTML=`
     <section class="hero"><div class="eyebrow">Your private listening desk</div><h1>Read with your ears.<br>Revise with receipts.</h1><p class="sub">Your manuscript stays in this browser. Storyline remembers where you stopped and keeps every note tied to its exact passage.</p></section>
-    <section class="import-zone"><strong>${books.length?'Add another manuscript':'Bring in a manuscript'}</strong><p class="sub">DOCX, EPUB, PDF, ODT, TXT, Markdown, or HTML. Chapter headings are detected automatically.</p><button id="importBtn" class="button">Choose manuscript</button><div class="privacy">Local-first: importing a file does not upload it to a server.</div></section>
+    <section class="import-zone"><strong>${books.length?'Add another manuscript':'Bring in a manuscript'}</strong><p class="sub">DOCX, EPUB, PDF, ODT, Markdown, HTML, or TXT. Chapter headings are detected automatically.</p><button id="importBtn" class="button">Choose manuscript</button><div class="privacy">Local-first: importing a file does not upload it to a server.</div></section>
     <section class="backup-card card"><div><div class="eyebrow">Data safety</div><h2>Backup & restore</h2><p class="sub">Export manuscripts, reading positions, Queue and Actioned items, preferences, and saved voice-note audio.</p></div><div class="row backup-actions"><button id="exportBackupBtn" class="ghost">Export backup</button><button id="restoreBackupBtn" class="ghost">Restore backup</button><input id="restoreBackupInput" type="file" accept="application/json,.json" hidden /></div></section>
     ${books.length?`<h2 class="section-title">My manuscripts</h2><div class="grid books">${books.map(b=>bookCard(b,items)).join('')}</div>`:`<div class="empty">Your library is waiting for its first book.</div>`}
   `;
@@ -342,6 +352,7 @@ async function renderReader(){
           <div class="speed-box"><span class="meta">Speed</span><input id="rateRange" class="range" type="range" min="0.75" max="1.75" step="0.05" value="${p.rate||1.05}" title="Reading speed" /></div>
           <button id="testVoiceBtn" class="ghost tiny">Test selected voice</button>
           <div class="sleep-box"><span class="meta">Sleep timer</span><select id="sleepTimerSelect" class="select"><option value="0">Off</option><option value="15">15 min</option><option value="30">30 min</option><option value="45">45 min</option><option value="60">60 min</option></select><span id="sleepTimerStatus" class="meta">Sleep timer off</span></div>
+          <label class="chapter-advance-toggle"><input id="autoAdvanceToggle" type="checkbox" ${p.autoAdvance!==false?'checked':''} /><span><strong>Continue to next chapter</strong><small>Keep reading automatically when a chapter ends.</small></span></label>
           <div class="wake-note meta">Screen stays awake while Storyline reads, when supported. Manually locking the device can still pause playback.</div>
         </div>
       </details>
@@ -367,6 +378,7 @@ function wireReader(book,ch){
   $('#testVoiceBtn').onclick=testVoice;
   $('#replayBtn').onclick=replayCurrentSentence;
   $('#sleepTimerSelect').onchange=e=>setSleepTimer(+e.target.value);
+  $('#autoAdvanceToggle').onchange=e=>savePrefs({autoAdvance:e.target.checked});
   $('#rateRange').oninput=e=>{const r=+e.target.value; savePrefs({rate:r}); $('#speedLabel').textContent=r+'×'; updateVoiceSummary();};
   const voiceSelect=$('#voiceSelect'); if(voiceSelect) voiceSelect.onchange=e=>{
     const chosen=state.voices.find(v=>voiceKey(v)===e.target.value);
@@ -538,6 +550,7 @@ function startSpeech(fromSelected=true){
     const book=await idbGet('books',state.bookId);
     if(token!==state.playbackToken||!state.isSpeaking)return;
     if(!book||state.chapterIndex>=book.chapters.length-1){finishSpeech(token);return}
+    if(prefs().autoAdvance===false){finishSpeech(token);return}
     const completedLabel=chapterLabel(book.chapters[state.chapterIndex],book);
     state.chapterIndex++;state.selectedParagraph=0;state.selectedCharOffset=0;state.selectedWordEnd=0;state.speakingParagraph=null;
     await saveProgress(book);
@@ -674,15 +687,36 @@ async function startLocalSpeech(fromSelected=true){
   if(!paras.some(Boolean)){showToast('There is no text to read in this chapter.');return}
   let pIndex=fromSelected?state.selectedParagraph:(state.speakingParagraph??state.selectedParagraph);
   pIndex=Math.max(0,Math.min(pIndex,paras.length-1));
-  const st=$('#voiceStatus'); if(st)st.textContent='Loading free local voice…';
+  const st=$('#voiceStatus'); if(st)st.textContent=state.chapterTransitionNotice||'Loading free local voice…';
+  state.chapterTransitionNotice='';
   const play=$('#playBtn'); if(play)play.textContent='…';
   try{await ensureLocalTTS();}catch(e){if(st)st.textContent='Local voice failed to load';if(play)play.textContent='▶';showToast(e.message);return}
   try{meSpeak.stop();}catch{}
   state.isSpeaking=true; state.isPaused=false;
+  requestWakeLock();
   if(play){play.textContent='■';play.setAttribute('aria-label','Stop');}
 
+  const continueLocalChapter=async()=>{
+    if(!state.isSpeaking)return;
+    const book=await idbGet('books',state.bookId);
+    if(!state.isSpeaking)return;
+    if(!book||state.chapterIndex>=book.chapters.length-1){finishSpeech();return}
+    if(prefs().autoAdvance===false){finishSpeech();return}
+    const completedLabel=chapterLabel(book.chapters[state.chapterIndex],book);
+    state.chapterIndex++;state.selectedParagraph=0;state.selectedCharOffset=0;state.selectedWordEnd=0;state.speakingParagraph=null;
+    await saveProgress(book);
+    if(!state.isSpeaking)return;
+    const notice=`${completedLabel} complete · continuing to ${chapterLabel(book.chapters[state.chapterIndex],book)}…`;
+    state.chapterTransitionNotice=notice;
+    showToast(notice);
+    await renderReader();
+    if(!state.isSpeaking)return;
+    startLocalSpeech(false);
+  };
+
   const speakParagraph=()=>{
-    if(!state.isSpeaking||pIndex>=paras.length){finishSpeech();return}
+    if(!state.isSpeaking)return;
+    if(pIndex>=paras.length){continueLocalChapter();return}
     const sentences=splitSentences(paras[pIndex]);
     let sIndex=0;
     state.speakingParagraph=pIndex; state.selectedParagraph=pIndex; markSpeaking(pIndex);
@@ -693,6 +727,7 @@ async function startLocalSpeech(fromSelected=true){
       if(!state.isSpeaking)return;
       if(sIndex>=sentences.length){
         const currentP=$(`#readingPage p[data-p="${pIndex}"]`); if(currentP) currentP.textContent=paras[pIndex];
+        state.selectedCharOffset=0;state.selectedWordEnd=0;
         idbGet('books',state.bookId).then(book=>book&&saveProgress(book)).catch(()=>{});
         pIndex++; speakParagraph(); return;
       }
