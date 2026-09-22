@@ -6,7 +6,7 @@ const view = $('#view'), fileInput = $('#fileInput'), modal = $('#modal'), modal
 
 const state = {
   route:'library', bookId:null, chapterIndex:0, selectedParagraph:0, selectedCharOffset:0, selectedWordEnd:0, speakingParagraph:null,
-  voices:[], isSpeaking:false, isPaused:false, deferredPrompt:null, activeUtterance:null, localSpeakingId:null, localTTSReady:false
+  voices:[], voicesReady:false, isSpeaking:false, isPaused:false, deferredPrompt:null, activeUtterance:null, localSpeakingId:null, localTTSReady:false
 };
 
 const PREF='storyline.prefs.v1';
@@ -187,7 +187,7 @@ async function renderReader(){
         </div>
         <div class="transport-progress"><div class="row between"><span id="positionLabel" class="meta">Paragraph ${state.selectedParagraph+1} of ${ch.paragraphs.length}</span><span id="speedLabel" class="meta">${p.rate||1.05}×</span></div><input id="positionRange" class="range" type="range" min="0" max="${Math.max(ch.paragraphs.length-1,0)}" value="${state.selectedParagraph}" /></div>
       </div>
-      <div class="compact-status"><span id="voiceStatus" class="reading-status">Device voice ready</span></div>
+      <div class="compact-status"><span id="voiceStatus" class="reading-status">Loading device voices…</span></div>
       <details id="voiceOptions" class="voice-options">
         <summary><span>Voice & speed</span><span id="voiceSummary" class="meta">Samantha · ${p.rate||1.05}×</span></summary>
         <div class="voice-options-panel">
@@ -228,23 +228,58 @@ function updateVoiceSummary(){
   if(summary)summary.textContent=`${name} · ${rate}×`;
   if(st&&!state.isSpeaking)st.textContent=`${name} ready`;
 }
+function setSpeechControlsReady(ready){
+  state.voicesReady=!!ready;
+  const play=$('#playBtn'); if(play){play.disabled=!ready;play.setAttribute('aria-disabled',String(!ready));}
+  $$('[data-reader-act="start"]').forEach(b=>{b.disabled=!ready;b.setAttribute('aria-disabled',String(!ready))});
+  const st=$('#voiceStatus');
+  if(st&&!state.isSpeaking)st.textContent=ready?`${$('#voiceSelect')?.value||prefs().voiceName||'Device voice'} ready`:'Loading device voices…';
+}
+function primeAudioOutput(){
+  const AC=window.AudioContext||window.webkitAudioContext;
+  if(!AC)return;
+  try{
+    const ctx=new AC();
+    if(ctx.state==='suspended')ctx.resume().catch(()=>{});
+    const osc=ctx.createOscillator(),gain=ctx.createGain();
+    osc.frequency.value=60;
+    gain.gain.value=0.0001;
+    osc.connect(gain);gain.connect(ctx.destination);
+    osc.start();
+    osc.stop(ctx.currentTime+0.35);
+    osc.onended=()=>ctx.close().catch(()=>{});
+  }catch{}
+}
 function loadVoices(){
   const fill=()=>{
-    state.voices=speechSynthesis.getVoices(); const sel=$('#voiceSelect'); if(!sel)return;
+    state.voices=speechSynthesis.getVoices();
+    const sel=$('#voiceSelect'); if(!sel)return;
     const wanted=prefs().voiceName || (state.voices.find(v=>v.name==='Samantha')?.name||'');
-    sel.innerHTML=state.voices.map(v=>`<option value="${escapeHtml(v.name)}" ${v.name===wanted?'selected':''}>${escapeHtml(v.name)}${v.lang?' · '+escapeHtml(v.lang):''}</option>`).join('')||'<option>Default device voice</option>';
+    if(!state.voices.length){
+      sel.innerHTML='<option>Loading device voices…</option>';
+      setSpeechControlsReady(false);
+      return;
+    }
+    sel.innerHTML=state.voices.map(v=>`<option value="${escapeHtml(v.name)}" ${v.name===wanted?'selected':''}>${escapeHtml(v.name)}${v.lang?' · '+escapeHtml(v.lang):''}</option>`).join('');
     if(wanted&&state.voices.some(v=>v.name===wanted))sel.value=wanted;
+    else if(state.voices.find(v=>v.name==='Samantha'))sel.value='Samantha';
+    savePrefs({voiceName:sel.value});
+    setSpeechControlsReady(true);
     updateVoiceSummary();
   };
-  fill(); speechSynthesis.onvoiceschanged=fill;
+  setSpeechControlsReady(false);
+  fill();
+  speechSynthesis.onvoiceschanged=fill;
 }
 function toggleSpeech(){
+  if(!state.voicesReady){showToast('Device voices are still loading.');return}
   if(!('speechSynthesis' in window) || typeof SpeechSynthesisUtterance==='undefined'){ showToast('Text-to-speech is not available in this browser.'); return; }
   if(state.isSpeaking&&!state.isPaused){ speechSynthesis.pause(); state.isPaused=true; $('#playBtn').textContent='▶'; return; }
   if(state.isSpeaking&&state.isPaused){ speechSynthesis.resume(); state.isPaused=false; $('#playBtn').textContent='Ⅱ'; return; }
   startSpeech(true);
 }
 function startSpeech(fromSelected=true){
+  if(!state.voicesReady){showToast('Device voices are still loading.');return}
   if(!('speechSynthesis' in window) || typeof SpeechSynthesisUtterance==='undefined'){ showToast('Text-to-speech is not available in this browser.'); return; }
   const paras=$$('#readingPage p').map(p=>(p.textContent||'').trim());
   if(!paras.some(Boolean)){ showToast('There is no text to read in this chapter.'); return; }
@@ -289,12 +324,6 @@ function startSpeech(fromSelected=true){
         if(v){u.voice=v;u.lang=v.lang;}else{u.lang=navigator.language||'en-US';}
         u.onend=()=>{if(!state.isSpeaking)return;state.activeUtterance=null;sIndex++;speakSentence();};
         u.onerror=e=>{state.activeUtterance=null;if(e.error!=='canceled'&&e.error!=='interrupted')showToast('The device voice could not continue.');finishSpeech();};
-        if(isFirst){
-          const primer=new SpeechSynthesisUtterance('Ready');
-          primer.rate=2.2; primer.pitch=1; primer.volume=0.02;
-          if(v){primer.voice=v;primer.lang=v.lang;}else{primer.lang=u.lang;}
-          speechSynthesis.speak(primer);
-        }
         speechSynthesis.speak(u);
       };
       speakSentence();
@@ -303,6 +332,7 @@ function startSpeech(fromSelected=true){
     speakParagraph();
   };
 
+  primeAudioOutput();
   if(speechSynthesis.speaking||speechSynthesis.pending){
     speechSynthesis.cancel(); speechSynthesis.resume(); begin();
   }else{speechSynthesis.resume();begin();}
