@@ -22,6 +22,14 @@ function isIOS(){ return /iPhone|iPad|iPod/i.test(navigator.userAgent||''); }
 function currentEngine(){ const p=prefs(); return p.engine || 'device'; }
 function localVoiceVariant(){ const v=prefs().localVariant||'f2'; return ['f2','f3','m3'].includes(v)?v:'f2'; }
 function excerpt(s,n=180){ const x=(s||'').trim(); return x.length>n?x.slice(0,n-1)+'…':x; }
+function formatItemTime(iso){
+  if(!iso)return '';
+  const d=new Date(iso); if(Number.isNaN(d.getTime()))return '';
+  try{return new Intl.DateTimeFormat(undefined,{day:'numeric',month:'short',year:'numeric',hour:'numeric',minute:'2-digit'}).format(d)}catch{return d.toLocaleString()}
+}
+function formatDuration(sec){
+  const n=Math.max(0,Math.round(Number(sec)||0)); const m=Math.floor(n/60),s=n%60; return `${m}:${String(s).padStart(2,'0')}`;
+}
 function splitSentences(text){
   const t=(text||'').trim(); if(!t) return [];
   try{
@@ -484,7 +492,7 @@ function chooseAudioMime(){
   const types=['audio/mp4','audio/webm;codecs=opus','audio/webm'];
   return types.find(t=>MediaRecorder.isTypeSupported?.(t))||'';
 }
-async function handleAction(act,book,ch){ const text=ch.paragraphs[state.selectedParagraph]||''; const base={bookId:book.id,bookTitle:book.title,chapterIndex:state.chapterIndex,chapterTitle:ch.title,paragraphIndex:state.selectedParagraph,excerpt:excerpt(text),createdAt:new Date().toISOString(),status:'open'};
+async function handleAction(act,book,ch){ const text=ch.paragraphs[state.selectedParagraph]||''; const base={bookId:book.id,bookTitle:book.title,chapterIndex:state.chapterIndex,chapterTitle:ch.title,paragraphIndex:state.selectedParagraph,charOffset:state.selectedCharOffset||0,wordEnd:state.selectedWordEnd||0,excerpt:excerpt(text),createdAt:new Date().toISOString(),status:'open'};
   if(act==='start'){ if(currentEngine()==='local') startLocalSpeech(true); else startSpeech(true); return} if(act==='queue'){navigate('queue');return}
   if(act==='bookmark'){await idbPut('items',{...base,id:uid(),type:'bookmark',note:''});showToast('Bookmarked');updateQueueBadge();return}
   if(act==='note') return promptItem('note','Add note','What did you notice?',base);
@@ -504,7 +512,7 @@ async function voiceNote(base){
     showToast('Audio recording is not available in this browser.');
     return;
   }
-  let stream=null,recorder=null,chunks=[],audioBlob=null,previewUrl=null,recording=false;
+  let stream=null,recorder=null,chunks=[],audioBlob=null,previewUrl=null,recording=false,recordStartedAt=0,audioDurationSec=0;
   modalForm.innerHTML=`<h3>Voice note</h3>
     <div class="source-chip">${escapeHtml(base.chapterTitle)} · paragraph ${base.paragraphIndex+1}</div>
     <div class="excerpt">${escapeHtml(base.excerpt)}</div>
@@ -537,9 +545,10 @@ async function voiceNote(base){
       const mime=chooseAudioMime();
       recorder=mime?new MediaRecorder(stream,{mimeType:mime}):new MediaRecorder(stream);
       recorder.ondataavailable=e=>{if(e.data&&e.data.size)chunks.push(e.data)};
-      recorder.onstart=()=>{recording=true;$('#recordAudioBtn').textContent='■ Stop';$('#voiceRecordStatus').textContent='Recording…'};
+      recorder.onstart=()=>{recording=true;recordStartedAt=Date.now();$('#recordAudioBtn').textContent='■ Stop';$('#voiceRecordStatus').textContent='Recording…'};
       recorder.onstop=()=>{
         recording=false;
+        audioDurationSec=recordStartedAt?Math.max(1,Math.round((Date.now()-recordStartedAt)/1000)):0;
         $('#recordAudioBtn').textContent='● Record again';
         const type=recorder.mimeType||mime||'audio/mp4';
         audioBlob=new Blob(chunks,{type});
@@ -547,7 +556,7 @@ async function voiceNote(base){
         if(previewUrl)URL.revokeObjectURL(previewUrl);
         previewUrl=URL.createObjectURL(audioBlob);
         const a=$('#voicePreview'); a.src=previewUrl;a.classList.remove('hidden');
-        $('#voiceRecordStatus').textContent='Recorded. Play it back before saving if you want.';
+        $('#voiceRecordStatus').textContent=`Recorded · ${formatDuration(audioDurationSec)}. Play it back before saving if you want.`;
       };
       recorder.onerror=()=>{recording=false;$('#voiceRecordStatus').textContent='Recording failed. Please try again.'};
       recorder.start();
@@ -561,7 +570,7 @@ async function voiceNote(base){
     if(recording){showToast('Stop the recording before saving.');return}
     if(!audioBlob){showToast('Record something first.');return}
     const note=$('#voiceCaption').value.trim();
-    await idbPut('items',{...base,id:uid(),type:'voice',note,voice:true,audioBlob,audioType:audioBlob.type});
+    await idbPut('items',{...base,id:uid(),type:'voice',note,voice:true,audioBlob,audioType:audioBlob.type,durationSec:audioDurationSec});
     modal.onclose=null; cleanup(); modal.close(); showToast('Voice note saved'); updateQueueBadge();
   };
 }
@@ -574,7 +583,7 @@ function itemHtml(i,bookMap,queue=false){
   const label=i.type==='question'?'Ask ChatGPT':i.type==='continuity'?'Continuity':i.type==='bookmark'?'Bookmark':i.type==='voice'?'Voice note':'Note';
   const pill=i.status==='done'?'green':i.type==='question'||i.type==='continuity'?'gold':'';
   return `<article class="list-item" data-item="${i.id}">
-    <div class="row between"><span class="pill ${pill}">${label}${i.voice?' · voice':''}</span><span class="meta">${i.status==='done'?'Done':'Open'}</span></div>
+    <div class="row between"><span class="pill ${pill}">${label}</span><span class="meta item-time">${formatItemTime(i.createdAt)}${i.durationSec?` · ${formatDuration(i.durationSec)}`:''}</span></div>
     <div><strong>${escapeHtml(bookMap[i.bookId]?.title||i.bookTitle||'Manuscript')}</strong><div class="source-chip">${escapeHtml(i.chapterTitle||'Chapter')} · paragraph ${(i.paragraphIndex??0)+1}</div></div>
     <div class="excerpt">${escapeHtml(i.excerpt||'')}</div>
     ${i.note?`<div class="note-text">${escapeHtml(i.note)}</div>`:''}
@@ -599,6 +608,7 @@ function wireItemButtons(){
     state.bookId=i.bookId;
     state.chapterIndex=i.chapterIndex??0;
     state.selectedParagraph=i.paragraphIndex??0;
+    state.selectedCharOffset=i.charOffset??0; state.selectedWordEnd=i.wordEnd??0;
     savePrefs({lastBookId:state.bookId});
     await saveProgress(book);
     navigate('reader');
@@ -609,6 +619,14 @@ function wireItemButtons(){
 }
 
 $$('[data-nav]').forEach(b=>b.addEventListener('click',()=>navigate(b.dataset.nav)));
+const navCollapse=$('#navCollapse');
+function applyNavCollapse(){
+  const collapsed=!!prefs().navCollapsed;
+  document.body.classList.toggle('nav-collapsed',collapsed);
+  if(navCollapse){navCollapse.setAttribute('aria-expanded',String(!collapsed));const small=navCollapse.querySelector('small');if(small)small.textContent=collapsed?'Expand':'Collapse';const icon=navCollapse.querySelector('span');if(icon)icon.textContent=collapsed?'›':'‹';}
+}
+if(navCollapse)navCollapse.onclick=()=>{savePrefs({navCollapsed:!prefs().navCollapsed});applyNavCollapse()};
+applyNavCollapse();
 fileInput.addEventListener('change',e=>{importFile(e.target.files[0]);e.target.value=''});
 window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();state.deferredPrompt=e;$('#installBtn').classList.remove('hidden')});
 $('#installBtn').onclick=async()=>{if(state.deferredPrompt){state.deferredPrompt.prompt();await state.deferredPrompt.userChoice;state.deferredPrompt=null;$('#installBtn').classList.add('hidden')}};
