@@ -226,3 +226,37 @@ body{min-height:100dvh}.app-shell{min-height:100dvh;padding-bottom:86px}.topbar{
   .bottom-nav{grid-template-columns:repeat(4,1fr)}
   body.reader-route .bottom-nav{grid-template-columns:repeat(5,1fr)}
 }
+
+/* Build 21: reader utilities + backup */
+.transport-replay{
+  width:42px;
+  min-width:42px;
+  height:42px;
+  border-radius:50%;
+  font-size:1.25rem;
+}
+.transport-replay:disabled{opacity:.38;cursor:not-allowed}
+.sleep-box{
+  display:grid;
+  grid-template-columns:auto minmax(110px,160px) 1fr;
+  gap:10px;
+  align-items:center;
+  padding-top:10px;
+  border-top:1px solid var(--line);
+}
+.wake-note{line-height:1.45;opacity:.8}
+.backup-card{
+  margin-top:18px;
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:20px;
+}
+.backup-card h2{margin:.2rem 0 .35rem}
+.backup-actions{flex-wrap:wrap;justify-content:flex-end}
+@media(max-width:759px){
+  .sleep-box{grid-template-columns:1fr 1fr}
+  .sleep-box #sleepTimerStatus{grid-column:1/-1}
+  .backup-card{align-items:flex-start;flex-direction:column}
+  .backup-actions{width:100%;justify-content:flex-start}
+}
