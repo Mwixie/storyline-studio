@@ -532,7 +532,20 @@ async function renderReader(){
         </div>
       </details>
     </section>`;
-  wireReader(book,ch); loadVoices(); requestAnimationFrame(()=>{ if(state.sleepDeadline){const sleep=$('#sleepTimerSelect');if(sleep)sleep.value=String(state.sleepMinutes||0);updateSleepTimerStatus()} if(state.selectedCharOffset>0) markStartWord(state.selectedParagraph,state.selectedCharOffset,state.selectedWordEnd||state.selectedCharOffset); scrollSelected(false); });
+  wireReader(book,ch); loadVoices(); requestAnimationFrame(()=>{
+    if(state.sleepDeadline){const sleep=$('#sleepTimerSelect');if(sleep)sleep.value=String(state.sleepMinutes||0);updateSleepTimerStatus()}
+    const ref=state.pendingPassageReference;
+    if(ref&&ref.chapterIndex===state.chapterIndex&&ref.paragraphIndex===state.selectedParagraph){
+      markReferenceRange(ref.paragraphIndex,ref.start,ref.end);
+      state.pendingPassageReference=null;
+      scrollSelected(false);
+      if(ref.unverified)showToast('Opened the saved location, but Storyline could not fully verify this reference.');
+      else if(ref.moved)showToast('Reference found at its new location.');
+    }else{
+      if(state.selectedCharOffset>0)markStartWord(state.selectedParagraph,state.selectedCharOffset,state.selectedWordEnd||state.selectedCharOffset);
+      scrollSelected(false);
+    }
+  });
 }
 
 function wireReader(book,ch){
@@ -1039,7 +1052,15 @@ function chooseAudioMime(){
   const types=['audio/mp4','audio/webm;codecs=opus','audio/webm'];
   return types.find(t=>MediaRecorder.isTypeSupported?.(t))||'';
 }
-async function handleAction(act,book,ch){ const text=ch.paragraphs[state.selectedParagraph]||''; const base={bookId:book.id,bookTitle:book.title,chapterIndex:state.chapterIndex,chapterTitle:chapterLabel(ch,book),paragraphIndex:state.selectedParagraph,charOffset:state.selectedCharOffset||0,wordEnd:state.selectedWordEnd||0,excerpt:excerpt(text),createdAt:new Date().toISOString(),status:'open'};
+async function handleAction(act,book,ch){
+  const text=ch.paragraphs[state.selectedParagraph]||'';
+  const spoken=(state.isSpeaking&&state.speakingPIndex===state.selectedParagraph&&state.speakingSegments?.[state.speakingSIndex])?state.speakingSegments[state.speakingSIndex]:null;
+  const anchor=makePassageAnchor(book,ch,state.selectedParagraph,text,{start:state.selectedCharOffset||0,end:state.selectedWordEnd||0,spokenSegment:spoken,precision:'sentence'});
+  const base={
+    bookId:book.id,bookTitle:book.title,chapterIndex:state.chapterIndex,chapterTitle:chapterLabel(ch,book),
+    paragraphIndex:state.selectedParagraph,charOffset:anchor.charStart||0,wordEnd:anchor.charEnd||anchor.charStart||0,
+    anchor,excerpt:excerpt(anchor.selectedText||text),createdAt:new Date().toISOString(),status:'open'
+  };
   if(act==='start'){ startSpeech(true); return} if(act==='queue'){navigate('queue');return}
   if(act==='bookmark'){await idbPut('items',{...base,id:uid(),type:'bookmark',note:''});showToast('Bookmarked');updateQueueBadge();return}
   if(act==='note') return promptItem('note','Add note','What did you notice?',base);
@@ -1048,7 +1069,7 @@ async function handleAction(act,book,ch){ const text=ch.paragraphs[state.selecte
   if(act==='voice') return voiceNote(base);
 }
 function promptItem(type,title,placeholder,base){
-  modalForm.innerHTML=`<h3>${title}</h3><div class="source-chip">${escapeHtml(base.chapterTitle)} · paragraph ${base.paragraphIndex+1}</div><div class="excerpt">${escapeHtml(base.excerpt)}</div><textarea id="itemText" placeholder="${escapeHtml(placeholder)}" autofocus></textarea><div class="row between"><button value="cancel" class="button secondary">Cancel</button><div class="row"><button type="button" id="dictateItem" class="ghost">🎙 Dictate</button><button id="saveItem" value="default" class="button">Save</button></div></div>`;
+  modalForm.innerHTML=`<h3>${title}</h3><div class="source-chip">${escapeHtml(base.chapterTitle)} · paragraph ${base.paragraphIndex+1} · exact passage</div><div class="excerpt passage-preview">${referenceExcerptHtml(base)}</div><textarea id="itemText" placeholder="${escapeHtml(placeholder)}" autofocus></textarea><div class="row between"><button value="cancel" class="button secondary">Cancel</button><div class="row"><button type="button" id="dictateItem" class="ghost">🎙 Dictate</button><button id="saveItem" value="default" class="button">Save</button></div></div>`;
   modal.showModal();
   attachDictation($('#dictateItem'),$('#itemText'));
   setTimeout(()=>$('#itemText')?.focus(),50);
@@ -1059,8 +1080,8 @@ async function voiceNote(base){
   let stream=null,recorder=null,chunks=[],audioBlob=null,previewUrl=null,recording=false,recordStartedAt=0,audioDurationSec=0,timer=null;
 
   modalForm.innerHTML=`<h3>Voice note</h3>
-    <div class="source-chip">${escapeHtml(base.chapterTitle)} · paragraph ${base.paragraphIndex+1}</div>
-    <div class="excerpt">${escapeHtml(base.excerpt)}</div>
+    <div class="source-chip">${escapeHtml(base.chapterTitle)} · paragraph ${base.paragraphIndex+1} · exact passage</div>
+    <div class="excerpt passage-preview">${referenceExcerptHtml(base)}</div>
     <div id="voiceRecordStatus" class="sub">${canRecord?'Record an audio note. It stays in this browser.':'Audio recording is not available in this browser.'}</div>
     <div id="recordTimer" class="record-timer">0:00</div>
     <audio id="voicePreview" class="voice-preview hidden" controls></audio>
@@ -1197,8 +1218,8 @@ function itemHtml(i,bookMap,queue=false,actioned=false){
       <div class="row">${queue&&!actioned?`<input class="queue-item-check" type="checkbox" data-select-item="${i.id}" aria-label="Select item" />`:''}<span class="pill ${pill}">${label}</span></div>
       <span class="meta item-time">${timeText}${i.durationSec?` · ${formatDuration(i.durationSec)}`:''}</span>
     </div>
-    <div><strong>${escapeHtml(bookMap[i.bookId]?.title||i.bookTitle||'Manuscript')}</strong><div class="source-chip">${escapeHtml((i.chapterTitle==='Beginning'||i.chapterTitle==='Front matter')?(bookMap[i.bookId]?.title||i.bookTitle||'Manuscript'):(i.chapterTitle||'Chapter'))} · paragraph ${(i.paragraphIndex??0)+1}</div></div>
-    <div class="excerpt">${escapeHtml(i.excerpt||'')}</div>
+    <div><strong>${escapeHtml(bookMap[i.bookId]?.title||i.bookTitle||'Manuscript')}</strong><div class="source-chip">${escapeHtml((i.chapterTitle==='Beginning'||i.chapterTitle==='Front matter')?(bookMap[i.bookId]?.title||i.bookTitle||'Manuscript'):(i.chapterTitle||'Chapter'))} · paragraph ${(i.paragraphIndex??0)+1}${i.anchor?' · anchored':''}</div></div>
+    <div class="excerpt passage-reference-preview">${referenceExcerptHtml(i)}</div>
     ${i.note?`<div class="note-text">${escapeHtml(i.note)}</div>`:''}
     ${hasAudio?`<audio class="saved-voice-note" controls data-audio-item="${i.id}"></audio>`:''}
     <div class="row">
@@ -1210,7 +1231,9 @@ function itemHtml(i,bookMap,queue=false,actioned=false){
 }
 function chatPacket(i){
   const audioNote=i.type==='voice'?'\nAudio: Voice-note audio is stored in Storyline and is not included in clipboard text.':'';
-  return `Storyline Studio revision item\n\nBook: ${i.bookTitle}\nLocation: ${i.chapterTitle}, paragraph ${(i.paragraphIndex||0)+1}\nType: ${i.type}\nCreated: ${formatItemTime(i.createdAt)}\n\nPassage:\n${i.excerpt||''}\n\nMy note/question:\n${i.note||''}${audioNote}\n\nPlease answer using the manuscript context I provide, and do not revise the manuscript unless I explicitly ask.`;
+  const a=i.anchor;
+  const reference=a?`\nAnchor: ${a.chapterTitle||i.chapterTitle}, paragraph ${(a.paragraphIndex??i.paragraphIndex??0)+1}, ${a.precision||'passage'} reference\nSelected passage: ${a.selectedText||i.excerpt||''}\nContext before: ${a.prefixContext||''}\nContext after: ${a.suffixContext||''}`:`\nPassage: ${i.excerpt||''}`;
+  return `Storyline Studio revision item\n\nBook: ${i.bookTitle}\nLocation when captured: ${i.chapterTitle}, paragraph ${(i.paragraphIndex||0)+1}\nType: ${i.type}\nCreated: ${formatItemTime(i.createdAt)}${reference}\n\nMy note/question:\n${i.note||''}${audioNote}\n\nPlease answer using the manuscript context I provide, and do not revise the manuscript unless I explicitly ask.`;
 }
 async function copyItemsForChat(items){
   if(!items.length)return;
@@ -1255,14 +1278,22 @@ function wireItemButtons(){
     else if(i?.audioBlob)blob=i.audioBlob;
     if(blob){const u=URL.createObjectURL(blob);savedAudioObjectUrls.add(u);a.src=u;a.dataset.objectUrl=u;}
   });
-  $$('[data-open-item]').forEach(b=>b.onclick=async()=>{
+  $('[data-open-item]').forEach(b=>b.onclick=async()=>{
     const i=await idbGet('items',b.dataset.openItem);
     if(!i)return;
-    const book=await idbGet('books',i.bookId);
+    let book=await idbGet('books',i.bookId);
+    if(!book){
+      const candidates=(await idbGetAll('books')).filter(x=>x.title===i.bookTitle);
+      if(candidates.length===1)book=candidates[0];
+    }
     if(!book){showToast('That manuscript is no longer in this browser.');return}
-    state.bookId=i.bookId; state.chapterIndex=i.chapterIndex??0; state.selectedParagraph=i.paragraphIndex??0;
-    state.selectedCharOffset=i.charOffset??0; state.selectedWordEnd=i.wordEnd??0;
-    savePrefs({lastBookId:state.bookId}); await saveProgress(book); navigate('reader');
+    const resolved=resolvePassageAnchor(book,i);
+    state.bookId=book.id;state.chapterIndex=resolved.chapterIndex;state.selectedParagraph=resolved.paragraphIndex;
+    state.selectedCharOffset=resolved.start||0;state.selectedWordEnd=resolved.end||resolved.start||0;
+    state.pendingPassageReference=resolved;
+    i.lastResolved={bookId:book.id,chapterIndex:resolved.chapterIndex,paragraphIndex:resolved.paragraphIndex,charStart:resolved.start||0,charEnd:resolved.end||0,score:resolved.score||0,moved:!!resolved.moved,unverified:!!resolved.unverified,resolvedAt:new Date().toISOString()};
+    await idbPut('items',i);
+    savePrefs({lastBookId:state.bookId});await saveProgress(book);navigate('reader');
   });
   $$('[data-delete-item]').forEach(b=>b.onclick=async()=>{
     const i=await idbGet('items',b.dataset.deleteItem); if(!i)return;
