@@ -277,3 +277,25 @@ body{min-height:100dvh}.app-shell{min-height:100dvh;padding-bottom:86px}.topbar{
 .chapter-advance-toggle span{display:grid;gap:2px}
 .chapter-advance-toggle strong{font-size:.9rem;font-weight:600}
 .chapter-advance-toggle small{font-size:.78rem;line-height:1.35;opacity:.72}
+
+
+/* Build 27: stable passage anchors */
+.passage-anchor-text{
+  background:rgba(214,179,106,.18);
+  color:var(--ink);
+  border-radius:4px;
+  padding:0 .08em;
+}
+.passage-reference-preview{line-height:1.6}
+.passage-reference{
+  background:rgba(214,179,106,.28);
+  box-shadow:0 0 0 1px rgba(214,179,106,.45);
+  border-radius:4px;
+  padding:0 .08em;
+}
+.reading-page p.reference-target{
+  outline:1px solid rgba(214,179,106,.35);
+  outline-offset:8px;
+  border-radius:6px;
+}
+.passage-preview{line-height:1.6}

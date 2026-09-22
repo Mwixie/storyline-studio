@@ -8,7 +8,8 @@ const state = {
   route:'library', bookId:null, chapterIndex:0, selectedParagraph:0, selectedCharOffset:0, selectedWordEnd:0, speakingParagraph:null,
   voices:[], voicesReady:false, isSpeaking:false, isPaused:false, deferredPrompt:null, activeUtterance:null, localSpeakingId:null, localTTSReady:false,
   playbackToken:0, speakingPIndex:null, speakingSIndex:null, speakingSegments:null, replayCurrent:null,
-  sleepTimerId:null, sleepIntervalId:null, sleepDeadline:null, sleepMinutes:0, wakeLock:null, chapterTransitionNotice:''
+  sleepTimerId:null, sleepIntervalId:null, sleepDeadline:null, sleepMinutes:0, wakeLock:null, chapterTransitionNotice:'',
+  pendingPassageReference:null
 };
 
 const PREF='storyline.prefs.v1';
@@ -31,6 +32,171 @@ function localVoiceVariant(){ const v=prefs().localVariant||'f2'; return ['f2','
 function voiceKey(v){ return v?.voiceURI || `${v?.name||''}|${v?.lang||''}`; }
 function voiceDisplayName(v){ return `${v?.name||'Device voice'}${v?.lang?' · '+v.lang:''}${v?.localService?' · on device':''}`; }
 function excerpt(s,n=180){ const x=(s||'').trim(); return x.length>n?x.slice(0,n-1)+'…':x; }
+function anchorNormalize(s=''){
+  return String(s).normalize?.('NFKC').toLowerCase()
+    .replace(/[“”]/g,'"').replace(/[‘’]/g,"'").replace(/[–—]/g,'-')
+    .replace(/\s+/g,' ').trim() || String(s).toLowerCase().replace(/\s+/g,' ').trim();
+}
+function anchorHash(s=''){
+  const text=anchorNormalize(s);let h=2166136261;
+  for(let i=0;i<text.length;i++){h^=text.charCodeAt(i);h=Math.imul(h,16777619)}
+  return (h>>>0).toString(36);
+}
+function chapterAnchorKey(ch,book){
+  return anchorHash(ch?.synthetic||ch?.title==='Beginning'||ch?.title==='Front matter'?(book?.title||'front matter'):(ch?.title||'chapter'));
+}
+function sentenceAtOffset(text,offset){
+  const segments=sentenceSegments(text,0);if(!segments.length)return null;
+  const o=Math.max(0,Math.min(Number(offset)||0,String(text||'').length));
+  return segments.find(s=>o>=s.start&&o<s.end)||segments.find(s=>s.start>=o)||segments[segments.length-1];
+}
+function passageContext(text,start,end,span=120){
+  const source=String(text||''),a=Math.max(0,Math.min(start,source.length)),b=Math.max(a,Math.min(end,source.length));
+  return {prefix:source.slice(Math.max(0,a-span),a),selected:source.slice(a,b),suffix:source.slice(b,Math.min(source.length,b+span))};
+}
+function makePassageAnchor(book,ch,paragraphIndex,text,{start=0,end=0,spokenSegment=null,precision='sentence'}={}){
+  const source=String(text||'');let a=start,b=end,kind=precision;
+  if(spokenSegment&&spokenSegment.start>=0&&spokenSegment.end>spokenSegment.start){
+    a=spokenSegment.start;b=spokenSegment.end;kind='sentence';
+  }else if(precision==='sentence'){
+    const seg=sentenceAtOffset(source,a);
+    if(seg){a=seg.start;b=seg.end}else{const w=wordRangeAt(source,a);a=w.start;b=w.end;kind='word'}
+  }else{
+    a=Math.max(0,Math.min(a,source.length));b=Math.max(a,Math.min(b||a,source.length));
+  }
+  const ctx=passageContext(source,a,b);
+  return {
+    version:1,precision:kind,
+    chapterKey:chapterAnchorKey(ch,book),chapterTitle:chapterLabel(ch,book),chapterIndex:state.chapterIndex,
+    paragraphIndex,paragraphFingerprint:anchorHash(source),
+    charStart:a,charEnd:b,selectedText:ctx.selected,selectionFingerprint:ctx.selected?anchorHash(ctx.selected):'',
+    prefixContext:ctx.prefix,suffixContext:ctx.suffix,
+    previousParagraphFingerprint:paragraphIndex>0?anchorHash(ch.paragraphs[paragraphIndex-1]||''):'',
+    nextParagraphFingerprint:paragraphIndex<ch.paragraphs.length-1?anchorHash(ch.paragraphs[paragraphIndex+1]||''):'',
+    capturedAt:new Date().toISOString()
+  };
+}
+function makeLegacyPassageAnchor(book,ch,item){
+  const pi=Math.max(0,Math.min(item.paragraphIndex??0,ch.paragraphs.length-1)),text=ch.paragraphs[pi]||'';
+  const a=Math.max(0,Math.min(item.charOffset||0,text.length)),b=Math.max(a,Math.min(item.wordEnd||a,text.length));
+  const ctx=passageContext(text,a,b);
+  return {
+    version:1,precision:'paragraph',legacy:true,
+    chapterKey:chapterAnchorKey(ch,book),chapterTitle:chapterLabel(ch,book),chapterIndex:item.chapterIndex??0,
+    paragraphIndex:pi,paragraphFingerprint:anchorHash(text),
+    charStart:a,charEnd:b,selectedText:ctx.selected,selectionFingerprint:ctx.selected?anchorHash(ctx.selected):'',
+    prefixContext:ctx.prefix,suffixContext:ctx.suffix,
+    previousParagraphFingerprint:pi>0?anchorHash(ch.paragraphs[pi-1]||''):'',
+    nextParagraphFingerprint:pi<ch.paragraphs.length-1?anchorHash(ch.paragraphs[pi+1]||''):'',
+    legacyExcerpt:item.excerpt||'',capturedAt:item.createdAt||new Date().toISOString()
+  };
+}
+function allOccurrences(haystack,needle){
+  const out=[];if(!needle)return out;let from=0;
+  while(from<=haystack.length){const i=haystack.indexOf(needle,from);if(i<0)break;out.push(i);from=i+Math.max(1,needle.length)}
+  return out;
+}
+function contextTokenSimilarity(a,b){
+  const ta=new Set(anchorNormalize(a).match(/[a-z0-9']+/g)||[]);
+  const tb=new Set(anchorNormalize(b).match(/[a-z0-9']+/g)||[]);
+  if(!ta.size||!tb.size)return 0;
+  let common=0;for(const token of ta)if(tb.has(token))common++;
+  return (2*common)/(ta.size+tb.size);
+}
+function contextScore(source,index,length,anchor){
+  let score=0;
+  const before=anchorNormalize(source.slice(Math.max(0,index-120),index));
+  const after=anchorNormalize(source.slice(index+length,index+length+120));
+  const wantBefore=anchorNormalize(anchor.prefixContext||'').slice(-120);
+  const wantAfter=anchorNormalize(anchor.suffixContext||'').slice(0,120);
+  if(wantBefore&&before.endsWith(wantBefore))score+=24;
+  else if(wantBefore.length>=18&&before.includes(wantBefore.slice(-30)))score+=12;
+  if(wantAfter&&after.startsWith(wantAfter))score+=24;
+  else if(wantAfter.length>=18&&after.includes(wantAfter.slice(0,30)))score+=12;
+  score+=Math.round(contextTokenSimilarity(before,wantBefore)*22);
+  score+=Math.round(contextTokenSimilarity(after,wantAfter)*22);
+  return score;
+}
+function bestSelectionInParagraph(source,anchor){
+  const selected=String(anchor.selectedText||'');if(!selected)return {start:anchor.charStart||0,end:anchor.charEnd||anchor.charStart||0,score:0};
+  let hits=allOccurrences(source,selected),caseInsensitive=false;
+  if(!hits.length){hits=allOccurrences(source.toLowerCase(),selected.toLowerCase());caseInsensitive=true}
+  if(!hits.length)return {start:anchor.charStart||0,end:anchor.charEnd||anchor.charStart||0,score:0};
+  let best=null;
+  for(const start of hits){
+    const score=42+contextScore(source,start,selected.length,anchor)-(caseInsensitive?2:0);
+    if(!best||score>best.score)best={start,end:start+selected.length,score};
+  }
+  return best;
+}
+function scorePassageCandidate(book,ch,ci,pi,anchor){
+  const source=ch.paragraphs[pi]||'',fp=anchorHash(source),selection=bestSelectionInParagraph(source,anchor);
+  let score=selection.score;
+  if(fp===anchor.paragraphFingerprint)score+=110;
+  if(chapterAnchorKey(ch,book)===anchor.chapterKey)score+=36;
+  if(pi>0&&anchor.previousParagraphFingerprint&&anchorHash(ch.paragraphs[pi-1]||'')===anchor.previousParagraphFingerprint)score+=18;
+  if(pi<ch.paragraphs.length-1&&anchor.nextParagraphFingerprint&&anchorHash(ch.paragraphs[pi+1]||'')===anchor.nextParagraphFingerprint)score+=18;
+  if(ci===anchor.chapterIndex)score+=8;
+  score-=Math.min(18,Math.abs(pi-(anchor.paragraphIndex||0))*.3);
+  if(anchor.legacyExcerpt&&anchorNormalize(source).includes(anchorNormalize(anchor.legacyExcerpt).slice(0,80)))score+=32;
+  let start=selection.start,end=selection.end;
+  if(fp===anchor.paragraphFingerprint&&anchor.precision==='paragraph'){
+    start=Math.max(0,Math.min(anchor.charStart||0,source.length));
+    end=Math.max(start,Math.min(anchor.charEnd||start,source.length));
+  }
+  return {chapterIndex:ci,paragraphIndex:pi,start,end,score,paragraphFingerprint:fp};
+}
+function resolvePassageAnchor(book,item){
+  const anchor=item.anchor;
+  if(!anchor){
+    const ci=Math.max(0,Math.min(item.chapterIndex??0,book.chapters.length-1)),ch=book.chapters[ci];
+    const pi=Math.max(0,Math.min(item.paragraphIndex??0,(ch?.paragraphs.length||1)-1));
+    return {chapterIndex:ci,paragraphIndex:pi,start:item.charOffset||0,end:item.wordEnd||item.charOffset||0,score:1,moved:false,legacy:true};
+  }
+  let best=null;
+  for(let ci=0;ci<book.chapters.length;ci++){
+    const ch=book.chapters[ci];
+    for(let pi=0;pi<ch.paragraphs.length;pi++){
+      const candidate=scorePassageCandidate(book,ch,ci,pi,anchor);
+      if(!best||candidate.score>best.score)best=candidate;
+    }
+  }
+  if(!best||best.score<34){
+    const ci=Math.max(0,Math.min(anchor.chapterIndex??item.chapterIndex??0,book.chapters.length-1)),ch=book.chapters[ci];
+    const pi=Math.max(0,Math.min(anchor.paragraphIndex??item.paragraphIndex??0,(ch?.paragraphs.length||1)-1));
+    best={chapterIndex:ci,paragraphIndex:pi,start:anchor.charStart||0,end:anchor.charEnd||anchor.charStart||0,score:0,unverified:true};
+  }
+  best.moved=best.chapterIndex!==(anchor.chapterIndex??item.chapterIndex)||best.paragraphIndex!==(anchor.paragraphIndex??item.paragraphIndex);
+  return best;
+}
+function referenceExcerptHtml(item){
+  const a=item.anchor;if(!a)return escapeHtml(item.excerpt||'');
+  const before=excerpt(a.prefixContext||'',80),selected=a.selectedText||'',after=excerpt(a.suffixContext||'',80);
+  if(!selected)return escapeHtml(item.excerpt||a.legacyExcerpt||'');
+  return `${before?'…'+escapeHtml(before)+' ':''}<mark class="passage-anchor-text">${escapeHtml(selected)}</mark>${after?' '+escapeHtml(after)+'…':''}`;
+}
+function markReferenceRange(paragraphIndex,start,end){
+  const p=$(`#readingPage p[data-p="${paragraphIndex}"]`);if(!p)return;
+  const text=p.textContent||'',a=Math.max(0,Math.min(start,text.length)),b=Math.max(a,Math.min(end||a,text.length));
+  if(b>a)p.innerHTML=escapeHtml(text.slice(0,a))+`<span class="passage-reference">${escapeHtml(text.slice(a,b))}</span>`+escapeHtml(text.slice(b));
+  p.classList.add('reference-target');
+}
+async function migrateLegacyPassageAnchors(){
+  const items=await idbGetAll('items');
+  const books=await idbGetAll('books');
+  const bookMap=Object.fromEntries(books.map(b=>[b.id,b]));
+  let migrated=0;
+  for(const item of items){
+    if(item.anchor)continue;
+    const book=bookMap[item.bookId];if(!book||!book.chapters?.length)continue;
+    const ci=Math.max(0,Math.min(item.chapterIndex??0,book.chapters.length-1));
+    const ch=book.chapters[ci];if(!ch?.paragraphs?.length)continue;
+    item.anchor=makeLegacyPassageAnchor(book,ch,{...item,chapterIndex:ci});
+    item.anchorMigratedAt=new Date().toISOString();
+    await idbPut('items',item);migrated++;
+  }
+  return migrated;
+}
 function formatItemTime(iso){
   if(!iso)return '';
   const d=new Date(iso); if(Number.isNaN(d.getTime()))return '';
@@ -391,7 +557,20 @@ async function renderReader(){
         </div>
       </details>
     </section>`;
-  wireReader(book,ch); loadVoices(); requestAnimationFrame(()=>{ if(state.sleepDeadline){const sleep=$('#sleepTimerSelect');if(sleep)sleep.value=String(state.sleepMinutes||0);updateSleepTimerStatus()} if(state.selectedCharOffset>0) markStartWord(state.selectedParagraph,state.selectedCharOffset,state.selectedWordEnd||state.selectedCharOffset); scrollSelected(false); });
+  wireReader(book,ch); loadVoices(); requestAnimationFrame(()=>{
+    if(state.sleepDeadline){const sleep=$('#sleepTimerSelect');if(sleep)sleep.value=String(state.sleepMinutes||0);updateSleepTimerStatus()}
+    const ref=state.pendingPassageReference;
+    if(ref&&ref.chapterIndex===state.chapterIndex&&ref.paragraphIndex===state.selectedParagraph){
+      markReferenceRange(ref.paragraphIndex,ref.start,ref.end);
+      state.pendingPassageReference=null;
+      scrollSelected(false);
+      if(ref.unverified)showToast('Opened the saved location, but Storyline could not fully verify this reference.');
+      else if(ref.moved)showToast('Reference found at its new location.');
+    }else{
+      if(state.selectedCharOffset>0)markStartWord(state.selectedParagraph,state.selectedCharOffset,state.selectedWordEnd||state.selectedCharOffset);
+      scrollSelected(false);
+    }
+  });
 }
 
 function wireReader(book,ch){
@@ -898,7 +1077,15 @@ function chooseAudioMime(){
   const types=['audio/mp4','audio/webm;codecs=opus','audio/webm'];
   return types.find(t=>MediaRecorder.isTypeSupported?.(t))||'';
 }
-async function handleAction(act,book,ch){ const text=ch.paragraphs[state.selectedParagraph]||''; const base={bookId:book.id,bookTitle:book.title,chapterIndex:state.chapterIndex,chapterTitle:chapterLabel(ch,book),paragraphIndex:state.selectedParagraph,charOffset:state.selectedCharOffset||0,wordEnd:state.selectedWordEnd||0,excerpt:excerpt(text),createdAt:new Date().toISOString(),status:'open'};
+async function handleAction(act,book,ch){
+  const text=ch.paragraphs[state.selectedParagraph]||'';
+  const spoken=(state.isSpeaking&&state.speakingPIndex===state.selectedParagraph&&state.speakingSegments?.[state.speakingSIndex])?state.speakingSegments[state.speakingSIndex]:null;
+  const anchor=makePassageAnchor(book,ch,state.selectedParagraph,text,{start:state.selectedCharOffset||0,end:state.selectedWordEnd||0,spokenSegment:spoken,precision:'sentence'});
+  const base={
+    bookId:book.id,bookTitle:book.title,chapterIndex:state.chapterIndex,chapterTitle:chapterLabel(ch,book),
+    paragraphIndex:state.selectedParagraph,charOffset:anchor.charStart||0,wordEnd:anchor.charEnd||anchor.charStart||0,
+    anchor,excerpt:excerpt(anchor.selectedText||text),createdAt:new Date().toISOString(),status:'open'
+  };
   if(act==='start'){ startSpeech(true); return} if(act==='queue'){navigate('queue');return}
   if(act==='bookmark'){await idbPut('items',{...base,id:uid(),type:'bookmark',note:''});showToast('Bookmarked');updateQueueBadge();return}
   if(act==='note') return promptItem('note','Add note','What did you notice?',base);
@@ -907,7 +1094,7 @@ async function handleAction(act,book,ch){ const text=ch.paragraphs[state.selecte
   if(act==='voice') return voiceNote(base);
 }
 function promptItem(type,title,placeholder,base){
-  modalForm.innerHTML=`<h3>${title}</h3><div class="source-chip">${escapeHtml(base.chapterTitle)} · paragraph ${base.paragraphIndex+1}</div><div class="excerpt">${escapeHtml(base.excerpt)}</div><textarea id="itemText" placeholder="${escapeHtml(placeholder)}" autofocus></textarea><div class="row between"><button value="cancel" class="button secondary">Cancel</button><div class="row"><button type="button" id="dictateItem" class="ghost">🎙 Dictate</button><button id="saveItem" value="default" class="button">Save</button></div></div>`;
+  modalForm.innerHTML=`<h3>${title}</h3><div class="source-chip">${escapeHtml(base.chapterTitle)} · paragraph ${base.paragraphIndex+1} · exact passage</div><div class="excerpt passage-preview">${referenceExcerptHtml(base)}</div><textarea id="itemText" placeholder="${escapeHtml(placeholder)}" autofocus></textarea><div class="row between"><button value="cancel" class="button secondary">Cancel</button><div class="row"><button type="button" id="dictateItem" class="ghost">🎙 Dictate</button><button id="saveItem" value="default" class="button">Save</button></div></div>`;
   modal.showModal();
   attachDictation($('#dictateItem'),$('#itemText'));
   setTimeout(()=>$('#itemText')?.focus(),50);
@@ -918,8 +1105,8 @@ async function voiceNote(base){
   let stream=null,recorder=null,chunks=[],audioBlob=null,previewUrl=null,recording=false,recordStartedAt=0,audioDurationSec=0,timer=null;
 
   modalForm.innerHTML=`<h3>Voice note</h3>
-    <div class="source-chip">${escapeHtml(base.chapterTitle)} · paragraph ${base.paragraphIndex+1}</div>
-    <div class="excerpt">${escapeHtml(base.excerpt)}</div>
+    <div class="source-chip">${escapeHtml(base.chapterTitle)} · paragraph ${base.paragraphIndex+1} · exact passage</div>
+    <div class="excerpt passage-preview">${referenceExcerptHtml(base)}</div>
     <div id="voiceRecordStatus" class="sub">${canRecord?'Record an audio note. It stays in this browser.':'Audio recording is not available in this browser.'}</div>
     <div id="recordTimer" class="record-timer">0:00</div>
     <audio id="voicePreview" class="voice-preview hidden" controls></audio>
@@ -1056,8 +1243,8 @@ function itemHtml(i,bookMap,queue=false,actioned=false){
       <div class="row">${queue&&!actioned?`<input class="queue-item-check" type="checkbox" data-select-item="${i.id}" aria-label="Select item" />`:''}<span class="pill ${pill}">${label}</span></div>
       <span class="meta item-time">${timeText}${i.durationSec?` · ${formatDuration(i.durationSec)}`:''}</span>
     </div>
-    <div><strong>${escapeHtml(bookMap[i.bookId]?.title||i.bookTitle||'Manuscript')}</strong><div class="source-chip">${escapeHtml((i.chapterTitle==='Beginning'||i.chapterTitle==='Front matter')?(bookMap[i.bookId]?.title||i.bookTitle||'Manuscript'):(i.chapterTitle||'Chapter'))} · paragraph ${(i.paragraphIndex??0)+1}</div></div>
-    <div class="excerpt">${escapeHtml(i.excerpt||'')}</div>
+    <div><strong>${escapeHtml(bookMap[i.bookId]?.title||i.bookTitle||'Manuscript')}</strong><div class="source-chip">${escapeHtml((i.chapterTitle==='Beginning'||i.chapterTitle==='Front matter')?(bookMap[i.bookId]?.title||i.bookTitle||'Manuscript'):(i.chapterTitle||'Chapter'))} · paragraph ${(i.paragraphIndex??0)+1}${i.anchor?' · anchored':''}</div></div>
+    <div class="excerpt passage-reference-preview">${referenceExcerptHtml(i)}</div>
     ${i.note?`<div class="note-text">${escapeHtml(i.note)}</div>`:''}
     ${hasAudio?`<audio class="saved-voice-note" controls data-audio-item="${i.id}"></audio>`:''}
     <div class="row">
@@ -1069,7 +1256,9 @@ function itemHtml(i,bookMap,queue=false,actioned=false){
 }
 function chatPacket(i){
   const audioNote=i.type==='voice'?'\nAudio: Voice-note audio is stored in Storyline and is not included in clipboard text.':'';
-  return `Storyline Studio revision item\n\nBook: ${i.bookTitle}\nLocation: ${i.chapterTitle}, paragraph ${(i.paragraphIndex||0)+1}\nType: ${i.type}\nCreated: ${formatItemTime(i.createdAt)}\n\nPassage:\n${i.excerpt||''}\n\nMy note/question:\n${i.note||''}${audioNote}\n\nPlease answer using the manuscript context I provide, and do not revise the manuscript unless I explicitly ask.`;
+  const a=i.anchor;
+  const reference=a?`\nAnchor: ${a.chapterTitle||i.chapterTitle}, paragraph ${(a.paragraphIndex??i.paragraphIndex??0)+1}, ${a.precision||'passage'} reference\nSelected passage: ${a.selectedText||i.excerpt||''}\nContext before: ${a.prefixContext||''}\nContext after: ${a.suffixContext||''}`:`\nPassage: ${i.excerpt||''}`;
+  return `Storyline Studio revision item\n\nBook: ${i.bookTitle}\nLocation when captured: ${i.chapterTitle}, paragraph ${(i.paragraphIndex||0)+1}\nType: ${i.type}\nCreated: ${formatItemTime(i.createdAt)}${reference}\n\nMy note/question:\n${i.note||''}${audioNote}\n\nPlease answer using the manuscript context I provide, and do not revise the manuscript unless I explicitly ask.`;
 }
 async function copyItemsForChat(items){
   if(!items.length)return;
@@ -1114,14 +1303,22 @@ function wireItemButtons(){
     else if(i?.audioBlob)blob=i.audioBlob;
     if(blob){const u=URL.createObjectURL(blob);savedAudioObjectUrls.add(u);a.src=u;a.dataset.objectUrl=u;}
   });
-  $$('[data-open-item]').forEach(b=>b.onclick=async()=>{
+  $('[data-open-item]').forEach(b=>b.onclick=async()=>{
     const i=await idbGet('items',b.dataset.openItem);
     if(!i)return;
-    const book=await idbGet('books',i.bookId);
+    let book=await idbGet('books',i.bookId);
+    if(!book){
+      const candidates=(await idbGetAll('books')).filter(x=>x.title===i.bookTitle);
+      if(candidates.length===1)book=candidates[0];
+    }
     if(!book){showToast('That manuscript is no longer in this browser.');return}
-    state.bookId=i.bookId; state.chapterIndex=i.chapterIndex??0; state.selectedParagraph=i.paragraphIndex??0;
-    state.selectedCharOffset=i.charOffset??0; state.selectedWordEnd=i.wordEnd??0;
-    savePrefs({lastBookId:state.bookId}); await saveProgress(book); navigate('reader');
+    const resolved=resolvePassageAnchor(book,i);
+    state.bookId=book.id;state.chapterIndex=resolved.chapterIndex;state.selectedParagraph=resolved.paragraphIndex;
+    state.selectedCharOffset=resolved.start||0;state.selectedWordEnd=resolved.end||resolved.start||0;
+    state.pendingPassageReference=resolved;
+    i.lastResolved={bookId:book.id,chapterIndex:resolved.chapterIndex,paragraphIndex:resolved.paragraphIndex,charStart:resolved.start||0,charEnd:resolved.end||0,score:resolved.score||0,moved:!!resolved.moved,unverified:!!resolved.unverified,resolvedAt:new Date().toISOString()};
+    await idbPut('items',i);
+    savePrefs({lastBookId:state.bookId});await saveProgress(book);navigate('reader');
   });
   $$('[data-delete-item]').forEach(b=>b.onclick=async()=>{
     const i=await idbGet('items',b.dataset.deleteItem); if(!i)return;
@@ -1165,5 +1362,5 @@ document.addEventListener('visibilitychange',()=>{if(document.visibilityState===
 window.addEventListener('pagehide',()=>stopAllSpeech());
 if('serviceWorker' in navigator) window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
 
-openDB().then(async()=>{ let p=prefs(); if(p.engine!=='device'){ savePrefs({engine:'device'}); p=prefs(); } state.bookId=p.lastBookId||null; if(state.bookId){ const b=await idbGet('books',state.bookId); if(b){ state.chapterIndex=b.progress?.chapterIndex ?? p.lastChapterIndex ?? 0; state.selectedParagraph=b.progress?.paragraphIndex ?? p.lastParagraphIndex ?? 0; state.selectedCharOffset=b.progress?.charOffset ?? p.lastCharOffset ?? 0; state.selectedWordEnd=b.progress?.wordEnd ?? p.lastWordEnd ?? 0; } } await navigate('library'); }).catch(e=>{view.innerHTML=`<div class="empty">Storyline could not start: ${escapeHtml(e.message)}</div>`});
+openDB().then(async()=>{ await migrateLegacyPassageAnchors(); let p=prefs(); if(p.engine!=='device'){ savePrefs({engine:'device'}); p=prefs(); } state.bookId=p.lastBookId||null; if(state.bookId){ const b=await idbGet('books',state.bookId); if(b){ state.chapterIndex=b.progress?.chapterIndex ?? p.lastChapterIndex ?? 0; state.selectedParagraph=b.progress?.paragraphIndex ?? p.lastParagraphIndex ?? 0; state.selectedCharOffset=b.progress?.charOffset ?? p.lastCharOffset ?? 0; state.selectedWordEnd=b.progress?.wordEnd ?? p.lastWordEnd ?? 0; } } await navigate('library'); }).catch(e=>{view.innerHTML=`<div class="empty">Storyline could not start: ${escapeHtml(e.message)}</div>`});
 })();
