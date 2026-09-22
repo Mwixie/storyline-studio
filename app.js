@@ -283,25 +283,15 @@ function startSpeech(fromSelected=true){
         highlightRange(pIndex,seg.start,seg.end);
         if(st)st.textContent=`Reading paragraph ${pIndex+1} · sentence ${sIndex+1}/${segments.length}`;
         const isFirst=firstAudible; firstAudible=false;
-        const u=new SpeechSynthesisUtterance(seg.text);
+        const firstWord=isFirst?(seg.text.match(/^\S+/)||[''])[0]:'';
+        const speechText=isFirst&&firstWord?`${firstWord}. ${seg.text}`:seg.text;
+        const u=new SpeechSynthesisUtterance(speechText);
         state.activeUtterance=u;
         u.rate=+(p.rate||1.05); u.volume=1; u.pitch=1;
         if(v){u.voice=v;u.lang=v.lang;}else{u.lang=navigator.language||'en-US';}
         u.onend=()=>{if(!state.isSpeaking)return;state.activeUtterance=null;sIndex++;speakSentence();};
         u.onerror=e=>{state.activeUtterance=null;if(e.error!=='canceled'&&e.error!=='interrupted')showToast('The device voice could not continue.');finishSpeech();};
-        if(isFirst){
-          const firstWord=(seg.text.match(/^\S+/)||[''])[0];
-          if(firstWord){
-            const primer=new SpeechSynthesisUtterance(firstWord);
-            primer.rate=u.rate; primer.pitch=1; primer.volume=0.04;
-            if(v){primer.voice=v;primer.lang=v.lang;}else{primer.lang=u.lang;}
-            let launched=false;
-            const launch=()=>{if(launched||!state.isSpeaking)return;launched=true;setTimeout(()=>speechSynthesis.speak(u),70);};
-            primer.onend=launch; primer.onerror=launch;
-            speechSynthesis.speak(primer);
-            setTimeout(launch,500);
-          }else speechSynthesis.speak(u);
-        }else speechSynthesis.speak(u);
+        speechSynthesis.speak(u);
       };
       speakSentence();
     };
@@ -607,30 +597,43 @@ async function renderNotes(){ const books=await idbGetAll('books'); const bookMa
   view.innerHTML=`<section class="hero"><div class="eyebrow">Listening memory</div><h1>Notes & bookmarks</h1><p class="sub">Everything you caught while listening, still attached to where you heard it.</p></section>${items.length?`<div class="list">${items.map(i=>itemHtml(i,bookMap)).join('')}</div>`:`<div class="empty card">No notes yet. This is suspiciously peaceful.</div>`}`; wireItemButtons(); }
 async function renderQueue(){
   const books=await idbGetAll('books'); const bookMap=Object.fromEntries(books.map(b=>[b.id,b]));
-  const items=(await idbGetAll('items')).filter(i=>['question','continuity','note','bookmark','voice'].includes(i.type)).sort((a,b)=>(a.status==='done')-(b.status==='done')||new Date(b.createdAt)-new Date(a.createdAt));
-  const open=items.filter(i=>i.status!=='done').length;
-  view.innerHTML=`<section class="hero"><div class="eyebrow">Revision desk</div><h1>Revision Queue</h1><p class="sub">Everything you captured while reading, in one place.</p></section>
-    <div class="stat-grid"><div class="stat"><b>${open}</b><small>Open</small></div><div class="stat"><b>${items.filter(i=>i.type==='continuity').length}</b><small>Continuity</small></div><div class="stat"><b>${items.filter(i=>['note','voice'].includes(i.type)).length}</b><small>Notes</small></div></div>
-    ${items.length?`<div class="queue-toolbar">
-      <label class="queue-select-all"><input id="selectAllQueue" type="checkbox" /> <span>Select all</span></label>
-      <span id="selectedCount" class="meta">0 selected</span>
-      <div class="queue-bulk-actions">
-        <button id="bulkDone" class="ghost tiny" disabled>Mark selected done</button>
-        <button id="bulkCopy" class="ghost tiny" disabled>Copy selected for ChatGPT</button>
-        <button id="bulkDelete" class="ghost tiny danger-ghost" disabled>Delete selected</button>
-      </div>
-    </div><div class="list queue-list">${items.map(i=>itemHtml(i,bookMap,true)).join('')}</div>`:`<div class="empty card" style="margin-top:16px">Nothing waiting for review.</div>`}`;
+  const all=(await idbGetAll('items')).filter(i=>['question','continuity','note','bookmark','voice'].includes(i.type));
+  const pending=all.filter(i=>i.status!=='done').sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt));
+  const actioned=all.filter(i=>i.status==='done').sort((a,b)=>new Date(b.completedAt||b.createdAt)-new Date(a.completedAt||a.createdAt));
+
+  view.innerHTML=`<section class="hero"><div class="eyebrow">Revision desk</div><h1>Revision Queue</h1><p class="sub">Pending items stay here until you action them.</p></section>
+    <div class="stat-grid"><div class="stat"><b>${pending.length}</b><small>Pending</small></div><div class="stat"><b>${pending.filter(i=>i.type==='continuity').length}</b><small>Continuity</small></div><div class="stat"><b>${actioned.length}</b><small>Actioned</small></div></div>
+
+    <section class="queue-section">
+      <div class="section-heading-row"><h2>Queue</h2><span class="meta">${pending.length} pending</span></div>
+      ${pending.length?`<div class="queue-toolbar">
+        <label class="queue-select-all"><input id="selectAllQueue" type="checkbox" /> <span>Select all</span></label>
+        <span id="selectedCount" class="meta">0 selected</span>
+        <div class="queue-bulk-actions">
+          <button id="bulkDone" class="ghost tiny" disabled>Mark selected done</button>
+          <button id="bulkCopy" class="ghost tiny" disabled>Copy selected for ChatGPT</button>
+          <button id="bulkDelete" class="ghost tiny danger-ghost" disabled>Delete selected</button>
+        </div>
+      </div><div class="list queue-list">${pending.map(i=>itemHtml(i,bookMap,true,false)).join('')}</div>`:`<div class="empty card">Nothing pending.</div>`}
+    </section>
+
+    <section class="actioned-section">
+      <div class="section-heading-row"><div><div class="eyebrow">Completed log</div><h2>Actioned</h2></div><span class="meta">${actioned.length} completed</span></div>
+      ${actioned.length?`<div class="list actioned-list">${actioned.map(i=>itemHtml(i,bookMap,true,true)).join('')}</div>`:`<div class="empty card">Completed items will appear here.</div>`}
+    </section>`;
+
   wireItemButtons();
   wireQueueBulk();
 }
-function itemHtml(i,bookMap,queue=false){
+function itemHtml(i,bookMap,queue=false,actioned=false){
   const label=i.type==='question'?'Ask ChatGPT':i.type==='continuity'?'Continuity':i.type==='bookmark'?'Bookmark':i.type==='voice'?'Voice note':'Note';
   const pill=i.status==='done'?'green':i.type==='question'||i.type==='continuity'?'gold':'';
   const hasAudio=!!(i.audioData||i.audioBlob);
-  return `<article class="list-item ${i.status==='done'?'item-done':''}" data-item="${i.id}">
+  const timeText=actioned?`Actioned ${formatItemTime(i.completedAt||i.createdAt)}`:formatItemTime(i.createdAt);
+  return `<article class="list-item ${actioned?'item-done':''}" data-item="${i.id}">
     <div class="row between">
-      <div class="row">${queue?`<input class="queue-item-check" type="checkbox" data-select-item="${i.id}" aria-label="Select item" />`:''}<span class="pill ${pill}">${label}</span></div>
-      <span class="meta item-time">${formatItemTime(i.createdAt)}${i.durationSec?` · ${formatDuration(i.durationSec)}`:''}</span>
+      <div class="row">${queue&&!actioned?`<input class="queue-item-check" type="checkbox" data-select-item="${i.id}" aria-label="Select item" />`:''}<span class="pill ${pill}">${label}</span></div>
+      <span class="meta item-time">${timeText}${i.durationSec?` · ${formatDuration(i.durationSec)}`:''}</span>
     </div>
     <div><strong>${escapeHtml(bookMap[i.bookId]?.title||i.bookTitle||'Manuscript')}</strong><div class="source-chip">${escapeHtml(i.chapterTitle||'Chapter')} · paragraph ${(i.paragraphIndex??0)+1}</div></div>
     <div class="excerpt">${escapeHtml(i.excerpt||'')}</div>
@@ -638,7 +641,7 @@ function itemHtml(i,bookMap,queue=false){
     ${hasAudio?`<audio class="saved-voice-note" controls data-audio-item="${i.id}"></audio>`:''}
     <div class="row">
       <button data-open-item="${i.id}" class="ghost tiny">Open passage</button>
-      ${queue?`<button data-copy="${i.id}" class="ghost tiny">Copy for ChatGPT</button><button data-done="${i.id}" class="ghost tiny">${i.status==='done'?'Reopen':'Mark done'}</button>`:''}
+      ${queue?`<button data-copy="${i.id}" class="ghost tiny">Copy for ChatGPT</button><button data-done="${i.id}" class="ghost tiny">${actioned?'Reopen':'Mark done'}</button>`:''}
       <button data-delete-item="${i.id}" class="ghost tiny danger-ghost">Delete</button>
     </div>
   </article>`;
@@ -666,7 +669,7 @@ function wireQueueBulk(){
   $('#bulkDone').onclick=async()=>{
     const ids=selectedQueueIds(); if(!ids.length)return;
     if(!confirm(`Mark ${ids.length} selected item${ids.length===1?'':'s'} as done?`))return;
-    for(const id of ids){const i=await idbGet('items',id);if(i){i.status='done';await idbPut('items',i)}}
+    for(const id of ids){const i=await idbGet('items',id);if(i){i.status='done';i.completedAt=new Date().toISOString();await idbPut('items',i)}}
     navigate('queue');
   };
   $('#bulkCopy').onclick=async()=>{
@@ -706,10 +709,11 @@ function wireItemButtons(){
   });
   $$('[data-done]').forEach(b=>b.onclick=async()=>{
     const i=await idbGet('items',b.dataset.done); if(!i)return;
-    const next=i.status==='done'?'open':'done';
-    const verb=next==='done'?'mark this item done':'reopen this item';
-    if(!confirm(`Are you sure you want to ${verb}?`))return;
-    i.status=next; await idbPut('items',i); navigate('queue');
+    if(i.status==='done'){
+      i.status='open'; i.completedAt=null; await idbPut('items',i); navigate('queue'); return;
+    }
+    if(!confirm('Mark this item as done?'))return;
+    i.status='done'; i.completedAt=new Date().toISOString(); await idbPut('items',i); navigate('queue');
   });
   $$('[data-copy]').forEach(b=>b.onclick=async()=>{const i=await idbGet('items',b.dataset.copy);if(i)await copyItemsForChat([i])});
 }
