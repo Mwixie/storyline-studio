@@ -9,7 +9,7 @@ const state = {
   voices:[], voicesReady:false, isSpeaking:false, isPaused:false, deferredPrompt:null, activeUtterance:null, localSpeakingId:null, localTTSReady:false,
   playbackToken:0, speakingPIndex:null, speakingSIndex:null, speakingSegments:null, replayCurrent:null,
   sleepTimerId:null, sleepIntervalId:null, sleepDeadline:null, sleepMinutes:0, wakeLock:null, chapterTransitionNotice:'',
-  pendingPassageReference:null
+  pendingPassageReference:null, activeEngine:'device'
 };
 
 const PREF='storyline.prefs.v1';
@@ -27,7 +27,7 @@ function escapeHtml(s=''){return String(s).replace(/[&<>'"]/g,c=>({'&':'&amp;','
 function prefs(){ try{return JSON.parse(localStorage.getItem(PREF)||'{}')}catch{return{}} }
 function savePrefs(patch){ localStorage.setItem(PREF,JSON.stringify({...prefs(),...patch})); }
 function isIOS(){ return /iPhone|iPad|iPod/i.test(navigator.userAgent||''); }
-function currentEngine(){ return prefs().engine==='local'?'local':'device'; }
+function currentEngine(){ return state.activeEngine==='local'?'local':'device'; }
 function localVoiceVariant(){ const v=prefs().localVariant||'f2'; return ['f2','f3','m3'].includes(v)?v:'f2'; }
 function voiceKey(v){ return v?.voiceURI || `${v?.name||''}|${v?.lang||''}`; }
 function voiceDisplayName(v){ return `${v?.name||'Device voice'}${v?.lang?' · '+v.lang:''}${v?.localService?' · on device':''}`; }
@@ -576,7 +576,7 @@ async function renderReader(){
 function wireReader(book,ch){
   $('#backLibrary').onclick=()=>navigate('library');
   $('#chapterSelect').onchange=async e=>{ stopAllSpeech(); state.chapterIndex=+e.target.value; state.selectedParagraph=0; state.selectedCharOffset=0; state.selectedWordEnd=0; await saveProgress(book); renderReader(); };
-  $('#readingPage p').forEach(p=>p.onclick=async e=>{
+  $$('#readingPage p').forEach(p=>p.onclick=async e=>{
     const paragraphIndex=+p.dataset.p;
     const text=ch.paragraphs[paragraphIndex]||p.textContent||'';
     const offset=caretOffsetInParagraph(p,e);
@@ -587,7 +587,7 @@ function wireReader(book,ch){
     state.selectedCharOffset=seg.start;
     state.selectedWordEnd=wordRangeAt(text,seg.start).end;
     await saveProgress(book);
-    $('#readingPage p').forEach(el=>el.classList.toggle('selected',+el.dataset.p===paragraphIndex));
+    $$('#readingPage p').forEach(el=>el.classList.toggle('selected',+el.dataset.p===paragraphIndex));
     const range=$('#positionRange');if(range)range.value=paragraphIndex;
     const label=$('#positionLabel');if(label)label.textContent=`Paragraph ${paragraphIndex+1} · sentence starts “${excerpt(seg.text,54)}”`;
     highlightRange(paragraphIndex,seg.start,seg.end);
@@ -818,6 +818,7 @@ function toggleSpeech(){
   startSpeech(true);
 }
 function startSpeech(fromSelected=true){
+  state.activeEngine='device';
   if(!state.voicesReady){showToast('Device voices are still loading.');return}
   if(!('speechSynthesis' in window)||typeof SpeechSynthesisUtterance==='undefined'){showToast('Text-to-speech is not available in this browser.');return}
   const paras=$$('#readingPage p').map(p=>(p.textContent||'').trim());
@@ -994,6 +995,7 @@ function clearSentenceHighlights(){
   });
 }
 async function startLocalSpeech(fromSelected=true){
+  state.activeEngine='local';
   const token=++state.playbackToken;
   const paras=$$('#readingPage p').map(p=>(p.textContent||'').trim());
   if(!paras.some(Boolean)){showToast('There is no text to read in this chapter.');return}
@@ -1416,7 +1418,7 @@ function wireQueueBulk(visibleItems=[]){
 }
 function wireItemButtons(visibleItems=[]){
   const visibleMap=new Map(visibleItems.map(i=>[i.id,i]));
-  $('[data-audio-item]').forEach(async a=>{
+  $$('[data-audio-item]').forEach(async a=>{
     const i=visibleMap.get(a.dataset.audioItem)||await idbGet('items',a.dataset.audioItem);
     let blob=null;
     if(i?.audioData)blob=new Blob([i.audioData],{type:i.audioType||'audio/mp4'});
@@ -1453,7 +1455,7 @@ function wireItemButtons(visibleItems=[]){
     if(!confirm('Mark this item as done?'))return;
     i.status='done'; i.completedAt=new Date().toISOString(); await idbPut('items',i); navigate('queue');
   });
-  $('[data-copy]').forEach(b=>b.onclick=()=>{const i=visibleMap.get(b.dataset.copy);if(i)copyItemsForChat([i]);else showToast('That revision item is no longer available.')});
+  $$('[data-copy]').forEach(b=>b.onclick=()=>{const i=visibleMap.get(b.dataset.copy);if(i)copyItemsForChat([i]);else showToast('That revision item is no longer available.')});
 }
 
 $$('[data-nav]').forEach(b=>b.addEventListener('click',()=>navigate(b.dataset.nav)));
