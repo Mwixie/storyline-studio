@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0d0c12" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Storyline" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="styles.css" />
+  <title>Storyline Studio</title>
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <header class="topbar">
+      <button class="brand" data-nav="library" aria-label="Open library">
+        <span class="brand-mark">S</span>
+        <span><strong>Storyline Studio</strong><small>Listen. Notice. Revise.</small></span>
+      </button>
+      <button id="installBtn" class="ghost tiny hidden">Install</button>
+    </header>
+
+    <main id="view" class="view"></main>
+
+    <nav class="bottom-nav" aria-label="Primary">
+      <button data-nav="library" class="nav-item active"><span>▥</span><small>Library</small></button>
+      <button data-nav="reader" class="nav-item"><span>◫</span><small>Read</small></button>
+      <button data-nav="notes" class="nav-item"><span>✎</span><small>Notes</small></button>
+      <button data-nav="queue" class="nav-item"><span>☷</span><small>Queue</small><b id="queueBadge" class="badge hidden">0</b></button>
+    </nav>
+  </div>
+
+  <input id="fileInput" type="file" accept=".docx,.txt,text/plain,application/vnd.openxmlformats-officedocument.wordprocessingml.document" hidden />
+
+  <dialog id="modal" class="modal"><form method="dialog" id="modalForm" class="modal-card"></form></dialog>
+  <div id="toast" class="toast" role="status"></div>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
