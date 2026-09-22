@@ -124,24 +124,100 @@ function splitChapters(paragraphs){
 
 async function parseDocx(file){
   const zip=await JSZip.loadAsync(await file.arrayBuffer());
-  const doc=zip.file('word/document.xml'); if(!doc) throw new Error('This DOCX does not contain a readable document body.');
+  const doc=zip.file('word/document.xml');if(!doc)throw new Error('This DOCX does not contain a readable document body.');
   const xml=await doc.async('string');
   const dom=new DOMParser().parseFromString(xml,'application/xml');
-  const paras=[...dom.getElementsByTagNameNS('*','p')].map(p=>[...p.getElementsByTagNameNS('*','t')].map(t=>t.textContent).join('')).map(x=>x.replace(/\s+/g,' ').trim()).filter(Boolean);
-  return paras;
+  return [...dom.getElementsByTagNameNS('*','p')].map(p=>[...p.getElementsByTagNameNS('*','t')].map(t=>t.textContent).join('')).map(x=>x.replace(/\s+/g,' ').trim()).filter(Boolean);
+}
+function htmlParagraphs(html){
+  const dom=new DOMParser().parseFromString(html,'text/html');
+  dom.querySelectorAll('script,style,noscript,svg,nav').forEach(n=>n.remove());
+  const nodes=[...dom.body.querySelectorAll('h1,h2,h3,h4,h5,h6,p,blockquote,li')];
+  const paras=nodes.map(n=>(n.textContent||'').replace(/\s+/g,' ').trim()).filter(Boolean);
+  if(paras.length)return paras;
+  const text=(dom.body.textContent||'').replace(/\r/g,'');
+  return text.split(/\n\s*\n|\n/).map(x=>x.replace(/\s+/g,' ').trim()).filter(Boolean);
+}
+async function parseHtml(file){return htmlParagraphs(await file.text())}
+async function parseMarkdown(file){
+  const text=(await file.text()).replace(/\r/g,'');
+  return text.split(/\n\s*\n|\n/).map(line=>line.trim())
+    .map(line=>line.replace(/^#{1,6}\s+/,'').replace(/^>\s?/,'').replace(/^[-*+]\s+/,'').trim())
+    .filter(Boolean);
+}
+async function parseOdt(file){
+  const zip=await JSZip.loadAsync(await file.arrayBuffer());
+  const doc=zip.file('content.xml');if(!doc)throw new Error('This ODT does not contain readable document text.');
+  const xml=await doc.async('string'),dom=new DOMParser().parseFromString(xml,'application/xml');
+  return [...dom.getElementsByTagNameNS('*','body')[0]?.getElementsByTagNameNS('*','p')||[]]
+    .map(p=>(p.textContent||'').replace(/\s+/g,' ').trim()).filter(Boolean);
+}
+function zipResolve(base,relative){
+  const stack=(base?base.split('/'):[]);for(const part of String(relative||'').split('/')){
+    if(!part||part==='.')continue;if(part==='..')stack.pop();else stack.push(part);
+  }return stack.join('/');
+}
+async function parseEpub(file){
+  const zip=await JSZip.loadAsync(await file.arrayBuffer());
+  const container=zip.file('META-INF/container.xml');if(!container)throw new Error('This EPUB does not contain a readable package.');
+  const cdom=new DOMParser().parseFromString(await container.async('string'),'application/xml');
+  const rootfile=[...cdom.getElementsByTagNameNS('*','rootfile')][0];
+  const opfPath=rootfile?.getAttribute('full-path');if(!opfPath)throw new Error('The EPUB package file could not be found.');
+  const opf=zip.file(opfPath);if(!opf)throw new Error('The EPUB package file is missing.');
+  const odom=new DOMParser().parseFromString(await opf.async('string'),'application/xml');
+  const base=opfPath.includes('/')?opfPath.slice(0,opfPath.lastIndexOf('/')):'';
+  const manifest=new Map([...odom.getElementsByTagNameNS('*','item')].map(n=>[n.getAttribute('id'),n.getAttribute('href')]));
+  const spine=[...odom.getElementsByTagNameNS('*','itemref')].map(n=>n.getAttribute('idref')).filter(Boolean);
+  const chapters=[];const all=[];
+  for(const id of spine){
+    const href=manifest.get(id);if(!href)continue;
+    const entry=zip.file(zipResolve(base,href.split('#')[0]));if(!entry)continue;
+    const paras=htmlParagraphs(await entry.async('string'));if(!paras.length)continue;
+    all.push(...paras);
+    const heading=paras.find(x=>/^(chapter\b|prologue\b|epilogue\b|part\b)/i.test(x))||paras[0];
+    const body=paras[0]===heading?paras.slice(1):paras;
+    if(body.length)chapters.push({title:heading||`Section ${chapters.length+1}`,paragraphs:body,synthetic:false});
+  }
+  if(!all.length)throw new Error('No readable text was found in this EPUB.');
+  return {paragraphs:all,chapters:chapters.length?chapters:null};
+}
+async function parsePdf(file){
+  if(!window.pdfjsLib)throw new Error('PDF support has not finished loading. Check your connection and try again.');
+  const pdf=await pdfjsLib.getDocument({data:new Uint8Array(await file.arrayBuffer())}).promise;
+  const paras=[];
+  for(let pageNo=1;pageNo<=pdf.numPages;pageNo++){
+    const page=await pdf.getPage(pageNo),content=await page.getTextContent();
+    let line='';
+    for(const item of content.items){
+      const t=(item.str||'').trim();if(t)line+=(line?' ':'')+t;
+      if(item.hasEOL&&line.trim()){paras.push(line.replace(/\s+/g,' ').trim());line=''}
+    }
+    if(line.trim())paras.push(line.replace(/\s+/g,' ').trim());
+  }
+  return paras.filter(Boolean);
 }
 async function importFile(file){
-  if(!file) return; let paragraphs;
+  if(!file)return;
+  let paragraphs,parsedChapters=null;
   try{
-    if(file.name.toLowerCase().endsWith('.docx')) paragraphs=await parseDocx(file);
-    else paragraphs=(await file.text()).replace(/\r/g,'').split(/\n\s*\n|\n/).map(s=>s.trim()).filter(Boolean);
-    if(!paragraphs.length) throw new Error('No manuscript text was found.');
-    let title=file.name.replace(/\.(docx|txt)$/i,'').replace(/[_-]+/g,' ').trim();
+    const name=file.name.toLowerCase();
+    if(name.endsWith('.docx'))paragraphs=await parseDocx(file);
+    else if(name.endsWith('.epub')){const parsed=await parseEpub(file);paragraphs=parsed.paragraphs;parsedChapters=parsed.chapters}
+    else if(name.endsWith('.pdf'))paragraphs=await parsePdf(file);
+    else if(name.endsWith('.odt'))paragraphs=await parseOdt(file);
+    else if(name.endsWith('.html')||name.endsWith('.htm'))paragraphs=await parseHtml(file);
+    else if(name.endsWith('.md')||name.endsWith('.markdown'))paragraphs=await parseMarkdown(file);
+    else if(name.endsWith('.txt'))paragraphs=(await file.text()).replace(/\r/g,'').split(/\n\s*\n|\n/).map(x=>x.trim()).filter(Boolean);
+    else throw new Error('That file type is not supported yet.');
+    if(!paragraphs?.length)throw new Error('No manuscript text was found.');
+    let title=file.name.replace(/\.(docx|epub|pdf|odt|html?|md|markdown|txt)$/i,'').replace(/[_-]+/g,' ').trim();
     const firstUseful=paragraphs.find(p=>p.length>3&&!/^chapter\b/i.test(p));
-    if(/the plus[ -]one problem/i.test(title)||/^the plus[ -]one problem/i.test(firstUseful||'')) title='The Plus-One Problem';
-    const book={id:uid(),title,fileName:file.name,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),chapters:splitChapters(paragraphs),progress:{chapterIndex:0,paragraphIndex:0},version:'Imported manuscript'};
-    await idbPut('books',book); state.bookId=book.id; state.chapterIndex=0; state.selectedParagraph=0; savePrefs({lastBookId:book.id}); showToast(`Imported ${book.chapters.length} chapter${book.chapters.length===1?'':'s'}`); navigate('reader');
-  }catch(e){showToast(e.message||'Could not import manuscript');}
+    if(/the plus[ -]one problem/i.test(title)||/^the plus[ -]one problem/i.test(firstUseful||''))title='The Plus-One Problem';
+    const chapters=parsedChapters||splitChapters(paragraphs);
+    const book={id:uid(),title,fileName:file.name,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),chapters,progress:{chapterIndex:0,paragraphIndex:0},version:'Imported manuscript'};
+    await idbPut('books',book);state.bookId=book.id;state.chapterIndex=0;state.selectedParagraph=0;state.selectedCharOffset=0;state.selectedWordEnd=0;
+    savePrefs({lastBookId:book.id});showToast(`Imported ${book.chapters.length} chapter${book.chapters.length===1?'':'s'}`);navigate('reader');
+  }catch(e){showToast(e.message||'Could not import manuscript')}
 }
 
 async function updateQueueBadge(){ const items=await idbGetAll('items'); const open=items.filter(i=>['question','continuity','note','bookmark','voice'].includes(i.type)&&i.status!=='done').length; const b=$('#queueBadge'); b.textContent=open; b.classList.toggle('hidden',!open); }
@@ -222,7 +298,7 @@ async function renderLibrary(){
   const items=await idbGetAll('items');
   view.innerHTML=`
     <section class="hero"><div class="eyebrow">Your private listening desk</div><h1>Read with your ears.<br>Revise with receipts.</h1><p class="sub">Your manuscript stays in this browser. Storyline remembers where you stopped and keeps every note tied to its exact passage.</p></section>
-    <section class="import-zone"><strong>${books.length?'Add another manuscript':'Bring in a manuscript'}</strong><p class="sub">DOCX or TXT. Chapter headings are detected automatically.</p><button id="importBtn" class="button">Choose manuscript</button><div class="privacy">Local-first: importing a file does not upload it to a server.</div></section>
+    <section class="import-zone"><strong>${books.length?'Add another manuscript':'Bring in a manuscript'}</strong><p class="sub">DOCX, EPUB, PDF, ODT, TXT, Markdown, or HTML. Chapter headings are detected automatically.</p><button id="importBtn" class="button">Choose manuscript</button><div class="privacy">Local-first: importing a file does not upload it to a server.</div></section>
     <section class="backup-card card"><div><div class="eyebrow">Data safety</div><h2>Backup & restore</h2><p class="sub">Export manuscripts, reading positions, Queue and Actioned items, preferences, and saved voice-note audio.</p></div><div class="row backup-actions"><button id="exportBackupBtn" class="ghost">Export backup</button><button id="restoreBackupBtn" class="ghost">Restore backup</button><input id="restoreBackupInput" type="file" accept="application/json,.json" hidden /></div></section>
     ${books.length?`<h2 class="section-title">My manuscripts</h2><div class="grid books">${books.map(b=>bookCard(b,items)).join('')}</div>`:`<div class="empty">Your library is waiting for its first book.</div>`}
   `;
