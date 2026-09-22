@@ -8,12 +8,22 @@ const state = {
   route:'library', bookId:null, chapterIndex:0, selectedParagraph:0, selectedCharOffset:0, selectedWordEnd:0, speakingParagraph:null,
   voices:[], voicesReady:false, isSpeaking:false, isPaused:false, deferredPrompt:null, activeUtterance:null, localSpeakingId:null, localTTSReady:false,
   playbackToken:0, speakingPIndex:null, speakingSIndex:null, speakingSegments:null, replayCurrent:null,
-  sleepTimerId:null, sleepIntervalId:null, sleepDeadline:null, sleepMinutes:0, wakeLock:null, chapterTransitionNotice:''
+  sleepTimerId:null, sleepIntervalId:null, sleepDeadline:null, sleepMinutes:0, wakeLock:null, chapterTransitionNotice:'',
+  cloudReady:false, cloudUser:null, cloudBusy:false, cloudConflict:null, cloudContainer:null, cloudDB:null,
+  cloudProgressTimer:null, cloudLibraryTimer:null, cloudApplyingRemote:false
 };
 
 const PREF='storyline.prefs.v1';
+const SYNC_META='storyline.sync.v1';
+const CLOUD_LIBRARY_RECORD='storyline-library-v1';
+const CLOUD_PROGRESS_RECORD='storyline-progress-v1';
 const dbName='storyline-studio';
 let db;
+function syncMeta(){try{return JSON.parse(localStorage.getItem(SYNC_META)||'{}')}catch{return{}}}
+function saveSyncMeta(patch){localStorage.setItem(SYNC_META,JSON.stringify({...syncMeta(),...patch}))}
+function syncDeviceId(){let m=syncMeta();if(!m.deviceId){m.deviceId=uid();saveSyncMeta({deviceId:m.deviceId})}return m.deviceId}
+function cloudConfig(){return window.STORYLINE_CLOUDKIT_CONFIG||{}}
+function cloudConfigured(){const cfg=cloudConfig();return !!(cfg.enabled&&cfg.containerIdentifier&&cfg.apiToken&&window.CloudKit)}
 const savedAudioObjectUrls=new Set();
 function revokeSavedAudioObjectUrls(){
   for(const url of savedAudioObjectUrls){try{URL.revokeObjectURL(url)}catch{}}
