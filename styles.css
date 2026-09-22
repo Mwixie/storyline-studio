@@ -197,3 +197,14 @@ body{min-height:100dvh}.app-shell{min-height:100dvh;padding-bottom:86px}.topbar{
   .queue-bulk-actions{width:100%;margin-left:0}
   .queue-bulk-actions>*{flex:1 1 30%}
 }
+
+/* Build 16: pending queue + Actioned log */
+.queue-section,.actioned-section{margin-top:24px}
+.section-heading-row{display:flex;justify-content:space-between;align-items:end;gap:12px;margin-bottom:10px}
+.actioned-section{padding-top:22px;border-top:1px solid var(--line)}
+.actioned-list .list-item{background:linear-gradient(160deg,rgba(25,29,26,.9),rgba(20,22,21,.96));border-color:#33453b}
+.actioned-list .pill.green{background:#1d3026;color:#b3ddc2}
+.actioned-list .item-time{color:#8fa999}
+@media(max-width:759px){
+  .section-heading-row{align-items:flex-start}
+}
