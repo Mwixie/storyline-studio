@@ -393,10 +393,11 @@ function setSleepTimer(minutes){
   },n*60000);
 }
 async function requestWakeLock(){
-  if(!state.isSpeaking||!navigator.wakeLock?.request)return;
+  if(!state.isSpeaking||!navigator.wakeLock?.request||document.visibilityState==='hidden')return;
   try{
     if(state.wakeLock)return;
     const lock=await navigator.wakeLock.request('screen');
+    if(!state.isSpeaking){try{await lock.release()}catch{};return}
     state.wakeLock=lock;
     lock.addEventListener?.('release',()=>{if(state.wakeLock===lock)state.wakeLock=null});
   }catch{}
