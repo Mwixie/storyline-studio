@@ -576,7 +576,7 @@ async function renderReader(){
 function wireReader(book,ch){
   $('#backLibrary').onclick=()=>navigate('library');
   $('#chapterSelect').onchange=async e=>{ stopAllSpeech(); state.chapterIndex=+e.target.value; state.selectedParagraph=0; state.selectedCharOffset=0; state.selectedWordEnd=0; await saveProgress(book); renderReader(); };
-  $('#readingPage p').forEach(p=>p.onclick=async e=>{
+  $$('#readingPage p').forEach(p=>p.onclick=async e=>{
     const paragraphIndex=+p.dataset.p;
     const text=ch.paragraphs[paragraphIndex]||p.textContent||'';
     const offset=caretOffsetInParagraph(p,e);
@@ -587,7 +587,7 @@ function wireReader(book,ch){
     state.selectedCharOffset=seg.start;
     state.selectedWordEnd=wordRangeAt(text,seg.start).end;
     await saveProgress(book);
-    $('#readingPage p').forEach(el=>el.classList.toggle('selected',+el.dataset.p===paragraphIndex));
+    $$('#readingPage p').forEach(el=>el.classList.toggle('selected',+el.dataset.p===paragraphIndex));
     const range=$('#positionRange');if(range)range.value=paragraphIndex;
     const label=$('#positionLabel');if(label)label.textContent=`Paragraph ${paragraphIndex+1} · sentence starts “${excerpt(seg.text,54)}”`;
     highlightRange(paragraphIndex,seg.start,seg.end);
@@ -1416,7 +1416,7 @@ function wireQueueBulk(visibleItems=[]){
 }
 function wireItemButtons(visibleItems=[]){
   const visibleMap=new Map(visibleItems.map(i=>[i.id,i]));
-  $('[data-audio-item]').forEach(async a=>{
+  $$('[data-audio-item]').forEach(async a=>{
     const i=visibleMap.get(a.dataset.audioItem)||await idbGet('items',a.dataset.audioItem);
     let blob=null;
     if(i?.audioData)blob=new Blob([i.audioData],{type:i.audioType||'audio/mp4'});
@@ -1453,7 +1453,7 @@ function wireItemButtons(visibleItems=[]){
     if(!confirm('Mark this item as done?'))return;
     i.status='done'; i.completedAt=new Date().toISOString(); await idbPut('items',i); navigate('queue');
   });
-  $('[data-copy]').forEach(b=>b.onclick=()=>{const i=visibleMap.get(b.dataset.copy);if(i)copyItemsForChat([i]);else showToast('That revision item is no longer available.')});
+  $$('[data-copy]').forEach(b=>b.onclick=()=>{const i=visibleMap.get(b.dataset.copy);if(i)copyItemsForChat([i]);else showToast('That revision item is no longer available.')});
 }
 
 $$('[data-nav]').forEach(b=>b.addEventListener('click',()=>navigate(b.dataset.nav)));
