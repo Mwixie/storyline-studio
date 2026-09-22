@@ -131,7 +131,7 @@ async function importFile(file){
   }catch(e){showToast(e.message||'Could not import manuscript');}
 }
 
-async function updateQueueBadge(){ const items=await idbGetAll('items'); const open=items.filter(i=>['question','continuity'].includes(i.type)&&i.status!=='done').length; const b=$('#queueBadge'); b.textContent=open; b.classList.toggle('hidden',!open); }
+async function updateQueueBadge(){ const items=await idbGetAll('items'); const open=items.filter(i=>['question','continuity','note','bookmark','voice'].includes(i.type)&&i.status!=='done').length; const b=$('#queueBadge'); b.textContent=open; b.classList.toggle('hidden',!open); }
 function setNav(route){ $$('.nav-item').forEach(b=>b.classList.toggle('active',b.dataset.nav===route)); }
 async function navigate(route){
   if(route==='reader'&&!state.bookId){ const books=await idbGetAll('books'); if(books[0]) state.bookId=books[0].id; else route='library'; }
@@ -176,7 +176,7 @@ async function renderReader(){
       <div class="player-settings polished-settings">
         <select id="engineSelect" class="select">
           <option value="device" ${currentEngine()==='device'?'selected':''}>Device voice</option>
-          <option value="local" ${currentEngine()==='local'?'selected':''}>Free local voice</option>
+          <option value="local" ${currentEngine()==='local'?'selected':''}>Free local voice · experimental</option>
         </select>
         ${currentEngine()==='local'
           ? `<select id="localVoiceSelect" class="select">
@@ -317,7 +317,7 @@ function ensureLocalTTS(){
   if(state.localTTSReady && window.meSpeak) return Promise.resolve();
   if(window.__storylineLocalTTSLoading) return window.__storylineLocalTTSLoading;
   const base='https://cdn.jsdelivr.net/gh/btopro/mespeak@master/';
-  window.__storylineLocalTTSLoading=new Promise((resolve,reject)=>{
+  const loader=new Promise((resolve,reject)=>{
     const finish=()=>{
       try{
         meSpeak.loadConfig(base+'mespeak_config.json', ok=>{
@@ -334,7 +334,9 @@ function ensureLocalTTS(){
     script.src=base+'mespeak.js'; script.async=true;
     script.onload=finish; script.onerror=()=>reject(new Error('Could not download the free local speech engine.'));
     document.head.appendChild(script);
-  }).catch(e=>{ window.__storylineLocalTTSLoading=null; throw e; });
+  });
+  const timeout=new Promise((_,reject)=>setTimeout(()=>reject(new Error('The experimental local voice did not load. Please use Device voice.')),8000));
+  window.__storylineLocalTTSLoading=Promise.race([loader,timeout]).catch(e=>{window.__storylineLocalTTSLoading=null;throw e});
   return window.__storylineLocalTTSLoading;
 }
 function localSpeed(){
@@ -454,6 +456,34 @@ function markSpeaking(i){
 }
 function finishSpeech(){ state.isSpeaking=false; state.isPaused=false; state.speakingParagraph=null; state.activeUtterance=null; state.localSpeakingId=null; const b=$('#playBtn'); if(b){b.textContent='▶';b.setAttribute('aria-label','Play');} $$('#readingPage p').forEach(p=>p.classList.remove('speaking')); clearSentenceHighlights(); const st=$('#voiceStatus'); if(st)st.textContent=currentEngine()==='local'?'Free local voice ready':'Device voice ready'; }
 
+function attachDictation(button,textarea){
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+  if(!button||!textarea)return;
+  if(!SR){button.disabled=true;button.textContent='Dictation unavailable';return}
+  let recognition=null,active=false,baseText='';
+  button.onclick=()=>{
+    if(active){try{recognition.stop()}catch{}return}
+    recognition=new SR(); recognition.continuous=true; recognition.interimResults=true; recognition.lang='en-US';
+    baseText=textarea.value.trim(); let final='';
+    recognition.onstart=()=>{active=true;button.textContent='■ Stop dictating'};
+    recognition.onresult=e=>{
+      let interim='';
+      for(let i=e.resultIndex;i<e.results.length;i++){
+        const t=e.results[i][0].transcript;
+        if(e.results[i].isFinal)final+=t+' '; else interim+=t;
+      }
+      textarea.value=[baseText,(final+interim).trim()].filter(Boolean).join(baseText?' ':'');
+    };
+    recognition.onend=()=>{active=false;button.textContent='🎙 Dictate'};
+    recognition.onerror=()=>{active=false;button.textContent='🎙 Dictate';showToast('Dictation stopped. You can keep typing.')};
+    try{recognition.start()}catch{}
+  };
+}
+function chooseAudioMime(){
+  if(!window.MediaRecorder)return '';
+  const types=['audio/mp4','audio/webm;codecs=opus','audio/webm'];
+  return types.find(t=>MediaRecorder.isTypeSupported?.(t))||'';
+}
 async function handleAction(act,book,ch){ const text=ch.paragraphs[state.selectedParagraph]||''; const base={bookId:book.id,bookTitle:book.title,chapterIndex:state.chapterIndex,chapterTitle:ch.title,paragraphIndex:state.selectedParagraph,excerpt:excerpt(text),createdAt:new Date().toISOString(),status:'open'};
   if(act==='start'){ if(currentEngine()==='local') startLocalSpeech(true); else startSpeech(true); return} if(act==='queue'){navigate('queue');return}
   if(act==='bookmark'){await idbPut('items',{...base,id:uid(),type:'bookmark',note:''});showToast('Bookmarked');updateQueueBadge();return}
@@ -463,26 +493,92 @@ async function handleAction(act,book,ch){ const text=ch.paragraphs[state.selecte
   if(act==='voice') return voiceNote(base);
 }
 function promptItem(type,title,placeholder,base){
-  modalForm.innerHTML=`<h3>${title}</h3><div class="source-chip">${escapeHtml(base.chapterTitle)} · paragraph ${base.paragraphIndex+1}</div><div class="excerpt">${escapeHtml(base.excerpt)}</div><textarea id="itemText" placeholder="${escapeHtml(placeholder)}" autofocus></textarea><div class="row between"><button value="cancel" class="button secondary">Cancel</button><button id="saveItem" value="default" class="button">Save</button></div>`;
-  modal.showModal(); setTimeout(()=>$('#itemText')?.focus(),50); $('#saveItem').onclick=async e=>{e.preventDefault();const note=$('#itemText').value.trim(); if(!note){showToast('Add a note first');return} await idbPut('items',{...base,id:uid(),type,note}); modal.close(); showToast(type==='question'?'Added to revision queue':'Saved'); updateQueueBadge();};
+  modalForm.innerHTML=`<h3>${title}</h3><div class="source-chip">${escapeHtml(base.chapterTitle)} · paragraph ${base.paragraphIndex+1}</div><div class="excerpt">${escapeHtml(base.excerpt)}</div><textarea id="itemText" placeholder="${escapeHtml(placeholder)}" autofocus></textarea><div class="row between"><button value="cancel" class="button secondary">Cancel</button><div class="row"><button type="button" id="dictateItem" class="ghost">🎙 Dictate</button><button id="saveItem" value="default" class="button">Save</button></div></div>`;
+  modal.showModal();
+  attachDictation($('#dictateItem'),$('#itemText'));
+  setTimeout(()=>$('#itemText')?.focus(),50);
+  $('#saveItem').onclick=async e=>{e.preventDefault();const note=$('#itemText').value.trim(); if(!note){showToast('Add a note first');return} await idbPut('items',{...base,id:uid(),type,note}); modal.close(); showToast(type==='question'?'Added to revision queue':'Saved'); updateQueueBadge();};
 }
-function voiceNote(base){
-  const SR=window.SpeechRecognition||window.webkitSpeechRecognition; if(!SR){ promptItem('note','Voice note unavailable','Speech recognition is not available in this browser. Type the note instead.',base); return; }
-  modalForm.innerHTML=`<h3>Voice note</h3><div class="source-chip">${escapeHtml(base.chapterTitle)} · paragraph ${base.paragraphIndex+1}</div><div id="listening" class="sub">Tap start, then say what you noticed.</div><textarea id="voiceText" placeholder="Your transcription will appear here"></textarea><div class="row between"><button value="cancel" class="button secondary">Cancel</button><button type="button" id="recordBtn" class="ghost">● Start recording</button><button type="button" id="saveVoice" class="button">Save note</button></div>`; modal.showModal(); const r=new SR(); r.continuous=true;r.interimResults=true;r.lang='en-US'; let final=''; r.onresult=e=>{let interim='';for(let i=e.resultIndex;i<e.results.length;i++){const t=e.results[i][0].transcript;if(e.results[i].isFinal)final+=t+' ';else interim+=t;}$('#voiceText').value=(final+interim).trim();};r.onstart=()=>{$('#listening').textContent='Listening…';$('#recordBtn').textContent='■ Stop recording'};r.onend=()=>{$('#listening').textContent='Recording stopped.';$('#recordBtn').textContent='● Start recording'};$('#recordBtn').onclick=()=>{try{if($('#recordBtn').textContent.includes('Stop'))r.stop();else r.start();}catch{}};$('#saveVoice').onclick=async()=>{try{r.stop()}catch{}const note=$('#voiceText').value.trim();if(!note){showToast('Nothing recorded yet');return}await idbPut('items',{...base,id:uid(),type:'note',note,voice:true});modal.close();showToast('Voice note saved');};
+async function voiceNote(base){
+  if(!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder){
+    showToast('Audio recording is not available in this browser.');
+    return;
+  }
+  let stream=null,recorder=null,chunks=[],audioBlob=null,previewUrl=null,recording=false;
+  modalForm.innerHTML=`<h3>Voice note</h3>
+    <div class="source-chip">${escapeHtml(base.chapterTitle)} · paragraph ${base.paragraphIndex+1}</div>
+    <div class="excerpt">${escapeHtml(base.excerpt)}</div>
+    <div id="voiceRecordStatus" class="sub">Record an audio note. It stays in this browser.</div>
+    <audio id="voicePreview" class="voice-preview hidden" controls></audio>
+    <textarea id="voiceCaption" placeholder="Optional caption or typed note"></textarea>
+    <div class="row between">
+      <button value="cancel" class="button secondary">Cancel</button>
+      <div class="row">
+        <button type="button" id="dictateCaption" class="ghost">🎙 Dictate caption</button>
+        <button type="button" id="recordAudioBtn" class="ghost">● Record</button>
+        <button type="button" id="saveAudioNote" class="button">Save voice note</button>
+      </div>
+    </div>`;
+  modal.showModal();
+  attachDictation($('#dictateCaption'),$('#voiceCaption'));
+
+  const cleanup=()=>{
+    try{if(recorder&&recording)recorder.stop()}catch{}
+    try{stream?.getTracks().forEach(t=>t.stop())}catch{}
+    if(previewUrl){URL.revokeObjectURL(previewUrl);previewUrl=null}
+  };
+  modal.onclose=cleanup;
+
+  $('#recordAudioBtn').onclick=async()=>{
+    if(recording){try{recorder.stop()}catch{};return}
+    try{
+      stream=await navigator.mediaDevices.getUserMedia({audio:true});
+      chunks=[]; audioBlob=null;
+      const mime=chooseAudioMime();
+      recorder=mime?new MediaRecorder(stream,{mimeType:mime}):new MediaRecorder(stream);
+      recorder.ondataavailable=e=>{if(e.data&&e.data.size)chunks.push(e.data)};
+      recorder.onstart=()=>{recording=true;$('#recordAudioBtn').textContent='■ Stop';$('#voiceRecordStatus').textContent='Recording…'};
+      recorder.onstop=()=>{
+        recording=false;
+        $('#recordAudioBtn').textContent='● Record again';
+        const type=recorder.mimeType||mime||'audio/mp4';
+        audioBlob=new Blob(chunks,{type});
+        try{stream?.getTracks().forEach(t=>t.stop())}catch{}
+        if(previewUrl)URL.revokeObjectURL(previewUrl);
+        previewUrl=URL.createObjectURL(audioBlob);
+        const a=$('#voicePreview'); a.src=previewUrl;a.classList.remove('hidden');
+        $('#voiceRecordStatus').textContent='Recorded. Play it back before saving if you want.';
+      };
+      recorder.onerror=()=>{recording=false;$('#voiceRecordStatus').textContent='Recording failed. Please try again.'};
+      recorder.start();
+    }catch(e){
+      $('#voiceRecordStatus').textContent='Microphone access was not available.';
+      showToast('Microphone access is needed for a voice note.');
+    }
+  };
+
+  $('#saveAudioNote').onclick=async()=>{
+    if(recording){showToast('Stop the recording before saving.');return}
+    if(!audioBlob){showToast('Record something first.');return}
+    const note=$('#voiceCaption').value.trim();
+    await idbPut('items',{...base,id:uid(),type:'voice',note,voice:true,audioBlob,audioType:audioBlob.type});
+    modal.onclose=null; cleanup(); modal.close(); showToast('Voice note saved'); updateQueueBadge();
+  };
 }
 
-async function renderNotes(){ const books=await idbGetAll('books'); const bookMap=Object.fromEntries(books.map(b=>[b.id,b])); const items=(await idbGetAll('items')).filter(i=>['note','bookmark'].includes(i.type)).sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt));
+async function renderNotes(){ const books=await idbGetAll('books'); const bookMap=Object.fromEntries(books.map(b=>[b.id,b])); const items=(await idbGetAll('items')).filter(i=>['note','bookmark','voice'].includes(i.type)).sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt));
   view.innerHTML=`<section class="hero"><div class="eyebrow">Listening memory</div><h1>Notes & bookmarks</h1><p class="sub">Everything you caught while listening, still attached to where you heard it.</p></section>${items.length?`<div class="list">${items.map(i=>itemHtml(i,bookMap)).join('')}</div>`:`<div class="empty card">No notes yet. This is suspiciously peaceful.</div>`}`; wireItemButtons(); }
-async function renderQueue(){ const books=await idbGetAll('books'); const bookMap=Object.fromEntries(books.map(b=>[b.id,b])); const items=(await idbGetAll('items')).filter(i=>['question','continuity'].includes(i.type)).sort((a,b)=>(a.status==='done')-(b.status==='done')||new Date(b.createdAt)-new Date(a.createdAt)); const open=items.filter(i=>i.status!=='done').length;
-  view.innerHTML=`<section class="hero"><div class="eyebrow">Revision desk</div><h1>Revision Queue</h1><p class="sub">Questions stay questions until you decide what to change.</p></section><div class="stat-grid"><div class="stat"><b>${open}</b><small>Open</small></div><div class="stat"><b>${items.filter(i=>i.type==='continuity').length}</b><small>Continuity</small></div><div class="stat"><b>${items.filter(i=>i.type==='question').length}</b><small>Ask AI</small></div></div>${items.length?`<div class="list" style="margin-top:16px">${items.map(i=>itemHtml(i,bookMap,true)).join('')}</div>`:`<div class="empty card" style="margin-top:16px">Nothing waiting for review.</div>`}`; wireItemButtons(); }
+async function renderQueue(){ const books=await idbGetAll('books'); const bookMap=Object.fromEntries(books.map(b=>[b.id,b])); const items=(await idbGetAll('items')).filter(i=>['question','continuity','note','bookmark','voice'].includes(i.type)).sort((a,b)=>(a.status==='done')-(b.status==='done')||new Date(b.createdAt)-new Date(a.createdAt)); const open=items.filter(i=>i.status!=='done').length;
+  view.innerHTML=`<section class="hero"><div class="eyebrow">Revision desk</div><h1>Revision Queue</h1><p class="sub">Questions stay questions until you decide what to change.</p></section><div class="stat-grid"><div class="stat"><b>${open}</b><small>Open</small></div><div class="stat"><b>${items.filter(i=>i.type==='continuity').length}</b><small>Continuity</small></div><div class="stat"><b>${items.filter(i=>['note','voice'].includes(i.type)).length}</b><small>Notes</small></div></div>${items.length?`<div class="list" style="margin-top:16px">${items.map(i=>itemHtml(i,bookMap,true)).join('')}</div>`:`<div class="empty card" style="margin-top:16px">Nothing waiting for review.</div>`}`; wireItemButtons(); }
 function itemHtml(i,bookMap,queue=false){
-  const label=i.type==='question'?'Ask ChatGPT':i.type==='continuity'?'Continuity':i.type==='bookmark'?'Bookmark':'Note';
+  const label=i.type==='question'?'Ask ChatGPT':i.type==='continuity'?'Continuity':i.type==='bookmark'?'Bookmark':i.type==='voice'?'Voice note':'Note';
   const pill=i.status==='done'?'green':i.type==='question'||i.type==='continuity'?'gold':'';
   return `<article class="list-item" data-item="${i.id}">
     <div class="row between"><span class="pill ${pill}">${label}${i.voice?' · voice':''}</span><span class="meta">${i.status==='done'?'Done':'Open'}</span></div>
     <div><strong>${escapeHtml(bookMap[i.bookId]?.title||i.bookTitle||'Manuscript')}</strong><div class="source-chip">${escapeHtml(i.chapterTitle||'Chapter')} · paragraph ${(i.paragraphIndex??0)+1}</div></div>
     <div class="excerpt">${escapeHtml(i.excerpt||'')}</div>
     ${i.note?`<div class="note-text">${escapeHtml(i.note)}</div>`:''}
+    ${i.audioBlob?`<audio class="saved-voice-note" controls data-audio-item="${i.id}"></audio>`:''}
     <div class="row">
       <button data-open-item="${i.id}" class="ghost tiny">Open passage</button>
       ${queue?`<button data-copy="${i.id}" class="ghost tiny">Copy for ChatGPT</button><button data-done="${i.id}" class="ghost tiny">${i.status==='done'?'Reopen':'Mark done'}</button>`:''}
@@ -491,6 +587,10 @@ function itemHtml(i,bookMap,queue=false){
   </article>`;
 }
 function wireItemButtons(){
+  $$('[data-audio-item]').forEach(async a=>{
+    const i=await idbGet('items',a.dataset.audioItem);
+    if(i?.audioBlob){const u=URL.createObjectURL(i.audioBlob);a.src=u;a.dataset.objectUrl=u;}
+  });
   $$('[data-open-item]').forEach(b=>b.onclick=async()=>{
     const i=await idbGet('items',b.dataset.openItem);
     if(!i)return;
