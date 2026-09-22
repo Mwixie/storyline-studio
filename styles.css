@@ -80,7 +80,7 @@ body{min-height:100dvh}.app-shell{min-height:100dvh;padding-bottom:86px}.topbar{
   body{--nav-w:188px}
   body.nav-collapsed{--nav-w:76px}
   .app-shell{padding-bottom:24px;padding-left:var(--nav-w);transition:padding-left .22s ease}
-  .topbar{left:var(--nav-w);padding-left:28px;padding-right:28px;transition:left .22s ease}
+  .topbar{padding-left:28px;padding-right:28px}
   .view{width:min(1380px,100%);padding:12px 28px 44px}
   .bottom-nav{
     left:0;top:0;bottom:0;transform:none;width:var(--nav-w);
