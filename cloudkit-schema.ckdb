@@ -1,0 +1,15 @@
+DEFINE SCHEMA
+
+RECORD TYPE StorylineLibrary (
+    payload ASSET,
+    updatedAt TIMESTAMP,
+    deviceID STRING,
+    schemaVersion INT64
+);
+
+RECORD TYPE StorylineProgress (
+    payload STRING,
+    updatedAt TIMESTAMP,
+    deviceID STRING,
+    schemaVersion INT64
+);
