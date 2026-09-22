@@ -19,7 +19,7 @@ function escapeHtml(s=''){return String(s).replace(/[&<>'"]/g,c=>({'&':'&amp;','
 function prefs(){ try{return JSON.parse(localStorage.getItem(PREF)||'{}')}catch{return{}} }
 function savePrefs(patch){ localStorage.setItem(PREF,JSON.stringify({...prefs(),...patch})); }
 function isIOS(){ return /iPhone|iPad|iPod/i.test(navigator.userAgent||''); }
-function currentEngine(){ const p=prefs(); return p.engine || (isIOS() ? 'local' : 'device'); }
+function currentEngine(){ const p=prefs(); return p.engine || 'device'; }
 function localVoiceVariant(){ const v=prefs().localVariant||'f2'; return ['f2','f3','m3'].includes(v)?v:'f2'; }
 function excerpt(s,n=180){ const x=(s||'').trim(); return x.length>n?x.slice(0,n-1)+'…':x; }
 function splitSentences(text){
@@ -158,7 +158,7 @@ function wireReader(book,ch){
   $('#nextBtn').onclick=()=>{ stopAllSpeech(); selectParagraph(Math.min(ch.paragraphs.length-1,state.selectedParagraph+1)); };
   $('#testVoiceBtn').onclick=testSelectedVoice;
   $('#testSoundBtn').onclick=testSound;
-  $('#engineSelect').onchange=e=>{ savePrefs({engine:e.target.value}); stopAllSpeech(); renderReader(); };
+  $('#engineSelect').onchange=e=>{ savePrefs({engine:e.target.value,engineChosenByUser:true}); stopAllSpeech(); renderReader(); };
   $('#rateRange').oninput=e=>{const r=+e.target.value; savePrefs({rate:r}); $('#speedLabel').textContent=r+'×'; if(state.isSpeaking){ if(currentEngine()==='local') startLocalSpeech(true); else startSpeech(true); }};
   const voiceSelect=$('#voiceSelect'); if(voiceSelect) voiceSelect.onchange=e=>savePrefs({voiceName:e.target.value});
   const localVoiceSelect=$('#localVoiceSelect'); if(localVoiceSelect) localVoiceSelect.onchange=e=>{ savePrefs({localVariant:e.target.value}); if(state.isSpeaking) startLocalSpeech(true); };
@@ -168,7 +168,7 @@ async function selectParagraph(i,noScroll=false){ state.selectedParagraph=i; $$(
 function scrollSelected(smooth=true){ const el=$(`#readingPage p[data-p="${state.selectedParagraph}"]`); if(el) el.scrollIntoView({block:'center',behavior:smooth?'smooth':'auto'}); }
 async function saveProgress(book){ book.progress={chapterIndex:state.chapterIndex,paragraphIndex:state.selectedParagraph}; book.updatedAt=new Date().toISOString(); await idbPut('books',book); savePrefs({lastBookId:book.id,lastChapterIndex:state.chapterIndex,lastParagraphIndex:state.selectedParagraph}); }
 function loadVoices(){
-  const fill=()=>{ state.voices=speechSynthesis.getVoices(); const sel=$('#voiceSelect'); if(!sel) return; const wanted=prefs().voiceName; sel.innerHTML=state.voices.map(v=>`<option value="${escapeHtml(v.name)}" ${v.name===wanted?'selected':''}>${escapeHtml(v.name)}${v.lang?' · '+escapeHtml(v.lang):''}</option>`).join('')||'<option>Default device voice</option>'; };
+  const fill=()=>{ state.voices=speechSynthesis.getVoices(); const sel=$('#voiceSelect'); if(!sel) return; const wanted=prefs().voiceName || (state.voices.find(v=>v.name==='Samantha')?.name||''); sel.innerHTML=state.voices.map(v=>`<option value="${escapeHtml(v.name)}" ${v.name===wanted?'selected':''}>${escapeHtml(v.name)}${v.lang?' · '+escapeHtml(v.lang):''}</option>`).join('')||'<option>Default device voice</option>'; };
   fill(); speechSynthesis.onvoiceschanged=fill;
 }
 function toggleSpeech(){
@@ -443,5 +443,5 @@ $('#installBtn').onclick=async()=>{if(state.deferredPrompt){state.deferredPrompt
 window.addEventListener('pagehide',()=>stopAllSpeech());
 if('serviceWorker' in navigator) window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
 
-openDB().then(async()=>{ const p=prefs(); state.bookId=p.lastBookId||null; if(state.bookId){ const b=await idbGet('books',state.bookId); if(b){ state.chapterIndex=b.progress?.chapterIndex ?? p.lastChapterIndex ?? 0; state.selectedParagraph=b.progress?.paragraphIndex ?? p.lastParagraphIndex ?? 0; } } await navigate('library'); }).catch(e=>{view.innerHTML=`<div class="empty">Storyline could not start: ${escapeHtml(e.message)}</div>`});
+openDB().then(async()=>{ let p=prefs(); if(isIOS() && p.engine==='local' && !p.engineChosenByUser){ savePrefs({engine:'device'}); p=prefs(); } state.bookId=p.lastBookId||null; if(state.bookId){ const b=await idbGet('books',state.bookId); if(b){ state.chapterIndex=b.progress?.chapterIndex ?? p.lastChapterIndex ?? 0; state.selectedParagraph=b.progress?.paragraphIndex ?? p.lastParagraphIndex ?? 0; } } await navigate('library'); }).catch(e=>{view.innerHTML=`<div class="empty">Storyline could not start: ${escapeHtml(e.message)}</div>`});
 })();
