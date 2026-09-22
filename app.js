@@ -19,6 +19,7 @@ const CLOUD_LIBRARY_RECORD='storyline-library-v1';
 const CLOUD_PROGRESS_RECORD='storyline-progress-v1';
 const dbName='storyline-studio';
 let db;
+let storylineCloud=null;
 function syncMeta(){try{return JSON.parse(localStorage.getItem(SYNC_META)||'{}')}catch{return{}}}
 function saveSyncMeta(patch){localStorage.setItem(SYNC_META,JSON.stringify({...syncMeta(),...patch}))}
 function syncDeviceId(){let m=syncMeta();if(!m.deviceId){m.deviceId=uid();saveSyncMeta({deviceId:m.deviceId})}return m.deviceId}
@@ -120,8 +121,8 @@ async function openDB(){
 function store(name,mode='readonly'){return db.transaction(name,mode).objectStore(name)}
 function idbGetAll(name){return new Promise((res,rej)=>{const r=store(name).getAll();r.onsuccess=()=>res(r.result||[]);r.onerror=()=>rej(r.error)})}
 function idbGet(name,id){return new Promise((res,rej)=>{const r=store(name).get(id);r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)})}
-function idbPut(name,obj){return new Promise((res,rej)=>{const r=store(name,'readwrite').put(obj);r.onsuccess=()=>res(obj);r.onerror=()=>rej(r.error)})}
-function idbDelete(name,id){return new Promise((res,rej)=>{const r=store(name,'readwrite').delete(id);r.onsuccess=()=>res();r.onerror=()=>rej(r.error)})}
+function idbPut(name,obj){return new Promise((res,rej)=>{const r=store(name,'readwrite').put(obj);r.onsuccess=()=>{if(name==='items'&&!state.cloudApplyingRemote)storylineCloud?.markLibraryDirty();res(obj)};r.onerror=()=>rej(r.error)})}
+function idbDelete(name,id){return new Promise((res,rej)=>{const r=store(name,'readwrite').delete(id);r.onsuccess=()=>{if((name==='items'||name==='books')&&!state.cloudApplyingRemote)storylineCloud?.markLibraryDirty();res()};r.onerror=()=>rej(r.error)})}
 function idbClear(name){return new Promise((res,rej)=>{const r=store(name,'readwrite').clear();r.onsuccess=()=>res();r.onerror=()=>rej(r.error)})}
 function replaceLibraryAtomically(books,items){
   return new Promise((res,rej)=>{
@@ -262,7 +263,7 @@ async function importFile(file){
     if(/the plus[ -]one problem/i.test(title)||/^the plus[ -]one problem/i.test(firstUseful||''))title='The Plus-One Problem';
     const chapters=parsedChapters||splitChapters(paragraphs);
     const book={id:uid(),title,fileName:file.name,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),chapters,progress:{chapterIndex:0,paragraphIndex:0,charOffset:0,wordEnd:0,completed:false},version:'Imported manuscript'};
-    await idbPut('books',book);state.bookId=book.id;state.chapterIndex=0;state.selectedParagraph=0;state.selectedCharOffset=0;state.selectedWordEnd=0;
+    await idbPut('books',book);storylineCloud?.markLibraryDirty();state.bookId=book.id;state.chapterIndex=0;state.selectedParagraph=0;state.selectedCharOffset=0;state.selectedWordEnd=0;
     savePrefs({lastBookId:book.id});showToast(`Imported ${book.chapters.length} chapter${book.chapters.length===1?'':'s'}`);navigate('reader');
   }catch(e){showToast(e.message||'Could not import manuscript')}
 }
@@ -338,6 +339,7 @@ async function restoreBackup(file){
     // Replace both stores in one IndexedDB transaction. If any clear/put fails,
     // IndexedDB rolls the entire restore back instead of leaving a half-restored library.
     await replaceLibraryAtomically(data.books,items);
+    storylineCloud?.markLibraryDirty();
 
     if(data.preferences&&typeof data.preferences==='object')localStorage.setItem(PREF,JSON.stringify(data.preferences));
     const p=prefs();
@@ -445,9 +447,11 @@ async function saveProgress(book,{snapshot=null,completed=null,updatePrefs=true}
   if(!book)return;
   const pos=snapshot||progressSnapshot();
   const wasCompleted=book.progress?.completed===true;
-  book.progress={chapterIndex:pos.chapterIndex,paragraphIndex:pos.paragraphIndex,charOffset:pos.charOffset||0,wordEnd:pos.wordEnd||0,completed:completed===null?wasCompleted:!!completed};
-  book.updatedAt=new Date().toISOString();
+  const progressUpdatedAt=new Date().toISOString();
+  book.progress={chapterIndex:pos.chapterIndex,paragraphIndex:pos.paragraphIndex,charOffset:pos.charOffset||0,wordEnd:pos.wordEnd||0,completed:completed===null?wasCompleted:!!completed,updatedAt:progressUpdatedAt};
+  book.updatedAt=progressUpdatedAt;
   await idbPut('books',book);
+  if(!state.cloudApplyingRemote)storylineCloud?.markProgressDirty();
   if(updatePrefs)savePrefs({lastBookId:book.id,lastChapterIndex:pos.chapterIndex,lastParagraphIndex:pos.paragraphIndex,lastCharOffset:pos.charOffset||0,lastWordEnd:pos.wordEnd||0});
 }
 function persistReadingProgress(){
