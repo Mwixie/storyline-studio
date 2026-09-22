@@ -19,7 +19,7 @@ function escapeHtml(s=''){return String(s).replace(/[&<>'"]/g,c=>({'&':'&amp;','
 function prefs(){ try{return JSON.parse(localStorage.getItem(PREF)||'{}')}catch{return{}} }
 function savePrefs(patch){ localStorage.setItem(PREF,JSON.stringify({...prefs(),...patch})); }
 function isIOS(){ return /iPhone|iPad|iPod/i.test(navigator.userAgent||''); }
-function currentEngine(){ const p=prefs(); return p.engine || 'device'; }
+function currentEngine(){ return 'device'; }
 function localVoiceVariant(){ const v=prefs().localVariant||'f2'; return ['f2','f3','m3'].includes(v)?v:'f2'; }
 function excerpt(s,n=180){ const x=(s||'').trim(); return x.length>n?x.slice(0,n-1)+'…':x; }
 function formatItemTime(iso){
@@ -140,7 +140,12 @@ async function importFile(file){
 }
 
 async function updateQueueBadge(){ const items=await idbGetAll('items'); const open=items.filter(i=>['question','continuity','note','bookmark','voice'].includes(i.type)&&i.status!=='done').length; const b=$('#queueBadge'); b.textContent=open; b.classList.toggle('hidden',!open); }
-function setNav(route){ $$('.nav-item').forEach(b=>b.classList.toggle('active',b.dataset.nav===route)); }
+function setNav(route){
+  $$('.nav-item[data-nav]').forEach(b=>b.classList.toggle('active',b.dataset.nav===route));
+  document.body.classList.toggle('reader-route',route==='reader');
+  document.body.classList.remove('mobile-tools-open');
+  const tools=$('#readerNavTools'); if(tools)tools.classList.toggle('hidden',route!=='reader');
+}
 async function navigate(route){
   if(route==='reader'&&!state.bookId){ const books=await idbGetAll('books'); if(books[0]) state.bookId=books[0].id; else route='library'; }
   state.route=route; setNav(route); stopAllSpeech();
@@ -171,37 +176,24 @@ async function renderReader(){
     <section class="reader-header"><div class="row between"><div><div class="eyebrow">${escapeHtml(book.title)}</div><h2 class="reader-title">${escapeHtml(ch.title)}</h2></div><button id="backLibrary" class="ghost tiny">Library</button></div>
     <select id="chapterSelect" class="chapter-select">${book.chapters.map((c,i)=>`<option value="${i}" ${i===state.chapterIndex?'selected':''}>${escapeHtml(c.title)}</option>`).join('')}</select></section>
     <article id="readingPage" class="reading-page" aria-label="Manuscript text">${ch.paragraphs.map((t,i)=>`<p data-p="${i}" class="${i===state.selectedParagraph?'selected':''}">${escapeHtml(t)}</p>`).join('')}</article>
-    <section class="player">
-      <div class="player-main">
+    <section class="player compact-player">
+      <div class="player-main compact-player-main">
         <div class="transport-buttons">
           <button id="prevBtn" class="ghost transport-skip" aria-label="Previous paragraph">‹</button>
           <button id="playBtn" class="button play" aria-label="Play">▶</button>
           <button id="nextBtn" class="ghost transport-skip" aria-label="Next paragraph">›</button>
         </div>
         <div class="transport-progress"><div class="row between"><span id="positionLabel" class="meta">Paragraph ${state.selectedParagraph+1} of ${ch.paragraphs.length}</span><span id="speedLabel" class="meta">${p.rate||1.05}×</span></div><input id="positionRange" class="range" type="range" min="0" max="${Math.max(ch.paragraphs.length-1,0)}" value="${state.selectedParagraph}" /></div>
-        <button id="startBtn" class="ghost tiny">Start here</button>
       </div>
-      <div class="player-settings polished-settings">
-        <select id="engineSelect" class="select">
-          <option value="device" ${currentEngine()==='device'?'selected':''}>Device voice</option>
-          <option value="local" ${currentEngine()==='local'?'selected':''}>Free local voice · experimental</option>
-        </select>
-        ${currentEngine()==='local'
-          ? `<select id="localVoiceSelect" class="select">
-              <option value="f2" ${localVoiceVariant()==='f2'?'selected':''}>Female 2 · softer</option>
-              <option value="f3" ${localVoiceVariant()==='f3'?'selected':''}>Female 3 · brighter</option>
-              <option value="m3" ${localVoiceVariant()==='m3'?'selected':''}>Male 3 · lower</option>
-            </select>`
-          : `<select id="voiceSelect" class="select"><option>Loading voices…</option></select>`}
-        <div class="speed-box"><span class="meta">Speed</span><input id="rateRange" class="range" type="range" min="0.75" max="1.75" step="0.05" value="${p.rate||1.05}" title="Reading speed" /></div>
-      </div>
-      <div class="reader-status-row">
-        <span id="voiceStatus" class="reading-status">${currentEngine()==='local'?'Free local voice ready':'Device voice ready'}</span>
-        <div class="diagnostic-actions"><button id="testVoiceBtn" class="ghost tiny">Test voice</button><button id="testSoundBtn" class="ghost tiny">Audio check</button></div>
-      </div>
-      <div class="quick-actions">
-        <button class="action" data-act="note"><b>✎</b>Add note</button><button class="action" data-act="voice"><b>●</b>Voice note</button><button class="action" data-act="ask"><b>✦</b>Ask ChatGPT</button><button class="action" data-act="continuity"><b>⚑</b>Flag continuity</button><button class="action" data-act="bookmark"><b>⌑</b>Bookmark</button><button class="action primary" data-act="start"><b>▶</b>Start from here</button><button class="action" data-act="queue"><b>☷</b>Revision queue</button>
-      </div>
+      <div class="compact-status"><span id="voiceStatus" class="reading-status">Device voice ready</span></div>
+      <details id="voiceOptions" class="voice-options">
+        <summary><span>Voice & speed</span><span id="voiceSummary" class="meta">Samantha · ${p.rate||1.05}×</span></summary>
+        <div class="voice-options-panel">
+          <select id="voiceSelect" class="select"><option>Loading voices…</option></select>
+          <div class="speed-box"><span class="meta">Speed</span><input id="rateRange" class="range" type="range" min="0.75" max="1.75" step="0.05" value="${p.rate||1.05}" title="Reading speed" /></div>
+          <button id="testVoiceBtn" class="ghost tiny">Test selected voice</button>
+        </div>
+      </details>
     </section>`;
   wireReader(book,ch); loadVoices(); requestAnimationFrame(()=>{ if(state.selectedCharOffset>0) markStartWord(state.selectedParagraph,state.selectedCharOffset,state.selectedWordEnd||state.selectedCharOffset); scrollSelected(false); });
 }
@@ -219,37 +211,38 @@ function wireReader(book,ch){
   });
   $('#positionRange').oninput=e=>{state.selectedCharOffset=0;state.selectedWordEnd=0;selectParagraph(+e.target.value,true);};
   $('#playBtn').onclick=toggleSpeech;
-  $('#startBtn').onclick=()=>startSpeech(true);
   $('#prevBtn').onclick=()=>{ stopAllSpeech(); state.selectedCharOffset=0;state.selectedWordEnd=0;selectParagraph(Math.max(0,state.selectedParagraph-1)); };
   $('#nextBtn').onclick=()=>{ stopAllSpeech(); state.selectedCharOffset=0;state.selectedWordEnd=0;selectParagraph(Math.min(ch.paragraphs.length-1,state.selectedParagraph+1)); };
-  $('#testVoiceBtn').onclick=testSelectedVoice;
-  $('#testSoundBtn').onclick=testSound;
-  $('#engineSelect').onchange=e=>{ savePrefs({engine:e.target.value,engineChosenByUser:true}); stopAllSpeech(); renderReader(); };
-  $('#rateRange').oninput=e=>{const r=+e.target.value; savePrefs({rate:r}); $('#speedLabel').textContent=r+'×'; if(state.isSpeaking){ if(currentEngine()==='local') startLocalSpeech(true); else startSpeech(true); }};
-  const voiceSelect=$('#voiceSelect'); if(voiceSelect) voiceSelect.onchange=e=>savePrefs({voiceName:e.target.value});
-  const localVoiceSelect=$('#localVoiceSelect'); if(localVoiceSelect) localVoiceSelect.onchange=e=>{ savePrefs({localVariant:e.target.value}); if(state.isSpeaking) startLocalSpeech(true); };
-  $$('.action').forEach(b=>b.onclick=()=>handleAction(b.dataset.act,book,ch));
+  $('#testVoiceBtn').onclick=testVoice;
+  $('#rateRange').oninput=e=>{const r=+e.target.value; savePrefs({rate:r}); $('#speedLabel').textContent=r+'×'; updateVoiceSummary(); if(state.isSpeaking) startSpeech(true);};
+  const voiceSelect=$('#voiceSelect'); if(voiceSelect) voiceSelect.onchange=e=>{savePrefs({voiceName:e.target.value});updateVoiceSummary();};
 }
 async function selectParagraph(i,noScroll=false,preserveWord=false){ state.selectedParagraph=i; if(!preserveWord){state.selectedCharOffset=0;state.selectedWordEnd=0;} $$('#readingPage p').forEach(p=>p.classList.toggle('selected',+p.dataset.p===i)); $('#positionRange').value=i; $('#positionLabel').textContent=`Paragraph ${i+1} of ${$('#readingPage').children.length}`; const book=await idbGet('books',state.bookId); await saveProgress(book); if(!noScroll) scrollSelected(); }
 function scrollSelected(smooth=true){ const el=$(`#readingPage p[data-p="${state.selectedParagraph}"]`); if(el) el.scrollIntoView({block:'center',behavior:smooth?'smooth':'auto'}); }
 async function saveProgress(book){ book.progress={chapterIndex:state.chapterIndex,paragraphIndex:state.selectedParagraph,charOffset:state.selectedCharOffset||0,wordEnd:state.selectedWordEnd||0}; book.updatedAt=new Date().toISOString(); await idbPut('books',book); savePrefs({lastBookId:book.id,lastChapterIndex:state.chapterIndex,lastParagraphIndex:state.selectedParagraph,lastCharOffset:state.selectedCharOffset||0,lastWordEnd:state.selectedWordEnd||0}); }
+function updateVoiceSummary(){
+  const sel=$('#voiceSelect'); const summary=$('#voiceSummary'); const st=$('#voiceStatus');
+  const name=sel?.value||prefs().voiceName||'Device voice'; const rate=prefs().rate||1.05;
+  if(summary)summary.textContent=`${name} · ${rate}×`;
+  if(st&&!state.isSpeaking)st.textContent=`${name} ready`;
+}
 function loadVoices(){
-  const fill=()=>{ state.voices=speechSynthesis.getVoices(); const sel=$('#voiceSelect'); if(!sel) return; const wanted=prefs().voiceName || (state.voices.find(v=>v.name==='Samantha')?.name||''); sel.innerHTML=state.voices.map(v=>`<option value="${escapeHtml(v.name)}" ${v.name===wanted?'selected':''}>${escapeHtml(v.name)}${v.lang?' · '+escapeHtml(v.lang):''}</option>`).join('')||'<option>Default device voice</option>'; };
+  const fill=()=>{
+    state.voices=speechSynthesis.getVoices(); const sel=$('#voiceSelect'); if(!sel)return;
+    const wanted=prefs().voiceName || (state.voices.find(v=>v.name==='Samantha')?.name||'');
+    sel.innerHTML=state.voices.map(v=>`<option value="${escapeHtml(v.name)}" ${v.name===wanted?'selected':''}>${escapeHtml(v.name)}${v.lang?' · '+escapeHtml(v.lang):''}</option>`).join('')||'<option>Default device voice</option>';
+    if(wanted&&state.voices.some(v=>v.name===wanted))sel.value=wanted;
+    updateVoiceSummary();
+  };
   fill(); speechSynthesis.onvoiceschanged=fill;
 }
 function toggleSpeech(){
-  const engine=currentEngine();
-  if(engine==='local'){
-    if(state.isSpeaking){ stopAllSpeech(); return; }
-    startLocalSpeech(true); return;
-  }
   if(!('speechSynthesis' in window) || typeof SpeechSynthesisUtterance==='undefined'){ showToast('Text-to-speech is not available in this browser.'); return; }
   if(state.isSpeaking&&!state.isPaused){ speechSynthesis.pause(); state.isPaused=true; $('#playBtn').textContent='▶'; return; }
   if(state.isSpeaking&&state.isPaused){ speechSynthesis.resume(); state.isPaused=false; $('#playBtn').textContent='Ⅱ'; return; }
   startSpeech(true);
 }
 function startSpeech(fromSelected=true){
-  if(currentEngine()==='local'){ startLocalSpeech(fromSelected); return; }
   if(!('speechSynthesis' in window) || typeof SpeechSynthesisUtterance==='undefined'){ showToast('Text-to-speech is not available in this browser.'); return; }
   const paras=$$('#readingPage p').map(p=>(p.textContent||'').trim());
   if(!paras.some(Boolean)){ showToast('There is no text to read in this chapter.'); return; }
@@ -266,6 +259,7 @@ function startSpeech(fromSelected=true){
     const st=$('#voiceStatus'); if(st)st.textContent='Starting…';
     const play=$('#playBtn'); if(play){play.textContent='Ⅱ';play.setAttribute('aria-label','Pause');}
 
+    let firstAudible=true;
     const speakParagraph=()=>{
       if(!state.isSpeaking||pIndex>=paras.length){finishSpeech();return}
       const full=paras[pIndex]; const start=(pIndex===state.selectedParagraph?firstOffset:0);
@@ -286,7 +280,8 @@ function startSpeech(fromSelected=true){
         const seg=segments[sIndex];
         highlightRange(pIndex,seg.start,seg.end);
         if(st)st.textContent=`Reading paragraph ${pIndex+1} · sentence ${sIndex+1}/${segments.length}`;
-        const u=new SpeechSynthesisUtterance(seg.text);
+        const spokenText=firstAudible?`… ${seg.text}`:seg.text; firstAudible=false;
+        const u=new SpeechSynthesisUtterance(spokenText);
         state.activeUtterance=u;
         u.rate=+(p.rate||1.05); u.volume=1; u.pitch=1;
         if(v){u.voice=v;u.lang=v.lang;}else{u.lang=navigator.language||'en-US';}
@@ -297,16 +292,7 @@ function startSpeech(fromSelected=true){
       speakSentence();
     };
 
-    // Safari can clip the first audible word while it opens the speech audio session.
-    // A silent primer opens that session before the real sentence is queued.
-    const primer=new SpeechSynthesisUtterance('.');
-    primer.volume=0; primer.rate=1; primer.pitch=1;
-    if(v){primer.voice=v;primer.lang=v.lang;}
-    let primed=false;
-    const go=()=>{if(primed)return;primed=true;setTimeout(speakParagraph,90);};
-    primer.onend=go; primer.onerror=go;
-    speechSynthesis.speak(primer);
-    setTimeout(go,450);
+    setTimeout(speakParagraph,80);
   };
 
   if(speechSynthesis.speaking||speechSynthesis.pending){
@@ -318,7 +304,7 @@ function stopAllSpeech(){
   try{ if(window.meSpeak) meSpeak.stop(); }catch{}
   state.isSpeaking=false; state.isPaused=false; state.activeUtterance=null; state.localSpeakingId=null; state.speakingParagraph=null;
   const b=$('#playBtn'); if(b){b.textContent='▶';b.setAttribute('aria-label','Play');}
-  const st=$('#voiceStatus'); if(st) st.textContent=currentEngine()==='local'?'Free local voice ready':'Device voice ready';
+  const st=$('#voiceStatus'); if(st) st.textContent='Device voice ready';
   $$('#readingPage p').forEach(p=>p.classList.remove('speaking')); clearSentenceHighlights();
 }
 function ensureLocalTTS(){
@@ -403,7 +389,7 @@ async function startLocalSpeech(fromSelected=true){
   speakParagraph();
 }
 function testSelectedVoice(){
-  if(currentEngine()==='local'){ testLocalVoice(); } else { testVoice(); }
+  testVoice();
 }
 async function testLocalVoice(){
   const st=$('#voiceStatus');if(st)st.textContent='Loading free local voice…';
@@ -462,7 +448,7 @@ function markSpeaking(i){
   const st=$('#voiceStatus');
   if(st) st.textContent=`Reading paragraph ${i+1}`;
 }
-function finishSpeech(){ state.isSpeaking=false; state.isPaused=false; state.speakingParagraph=null; state.activeUtterance=null; state.localSpeakingId=null; const b=$('#playBtn'); if(b){b.textContent='▶';b.setAttribute('aria-label','Play');} $$('#readingPage p').forEach(p=>p.classList.remove('speaking')); clearSentenceHighlights(); const st=$('#voiceStatus'); if(st)st.textContent=currentEngine()==='local'?'Free local voice ready':'Device voice ready'; }
+function finishSpeech(){ state.isSpeaking=false; state.isPaused=false; state.speakingParagraph=null; state.activeUtterance=null; state.localSpeakingId=null; const b=$('#playBtn'); if(b){b.textContent='▶';b.setAttribute('aria-label','Play');} $$('#readingPage p').forEach(p=>p.classList.remove('speaking')); clearSentenceHighlights(); const st=$('#voiceStatus'); if(st)st.textContent='Device voice ready'; }
 
 function attachDictation(button,textarea){
   const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
@@ -493,7 +479,7 @@ function chooseAudioMime(){
   return types.find(t=>MediaRecorder.isTypeSupported?.(t))||'';
 }
 async function handleAction(act,book,ch){ const text=ch.paragraphs[state.selectedParagraph]||''; const base={bookId:book.id,bookTitle:book.title,chapterIndex:state.chapterIndex,chapterTitle:ch.title,paragraphIndex:state.selectedParagraph,charOffset:state.selectedCharOffset||0,wordEnd:state.selectedWordEnd||0,excerpt:excerpt(text),createdAt:new Date().toISOString(),status:'open'};
-  if(act==='start'){ if(currentEngine()==='local') startLocalSpeech(true); else startSpeech(true); return} if(act==='queue'){navigate('queue');return}
+  if(act==='start'){ startSpeech(true); return} if(act==='queue'){navigate('queue');return}
   if(act==='bookmark'){await idbPut('items',{...base,id:uid(),type:'bookmark',note:''});showToast('Bookmarked');updateQueueBadge();return}
   if(act==='note') return promptItem('note','Add note','What did you notice?',base);
   if(act==='continuity') return promptItem('continuity','Flag continuity','What seems inconsistent or needs checking?',base);
@@ -619,6 +605,15 @@ function wireItemButtons(){
 }
 
 $$('[data-nav]').forEach(b=>b.addEventListener('click',()=>navigate(b.dataset.nav)));
+$$('[data-reader-act]').forEach(b=>b.addEventListener('click',async()=>{
+  if(state.route!=='reader'||!state.bookId)return;
+  const book=await idbGet('books',state.bookId); if(!book)return;
+  const ch=book.chapters[state.chapterIndex]; if(!ch)return;
+  document.body.classList.remove('mobile-tools-open');
+  await handleAction(b.dataset.readerAct,book,ch);
+}));
+const readerToolsToggle=$('#readerToolsToggle');
+if(readerToolsToggle)readerToolsToggle.addEventListener('click',()=>document.body.classList.toggle('mobile-tools-open'));
 const navCollapse=$('#navCollapse');
 function applyNavCollapse(){
   const collapsed=!!prefs().navCollapsed;
@@ -633,5 +628,5 @@ $('#installBtn').onclick=async()=>{if(state.deferredPrompt){state.deferredPrompt
 window.addEventListener('pagehide',()=>stopAllSpeech());
 if('serviceWorker' in navigator) window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
 
-openDB().then(async()=>{ let p=prefs(); if(isIOS() && p.engine==='local' && !p.engineChosenByUser){ savePrefs({engine:'device'}); p=prefs(); } state.bookId=p.lastBookId||null; if(state.bookId){ const b=await idbGet('books',state.bookId); if(b){ state.chapterIndex=b.progress?.chapterIndex ?? p.lastChapterIndex ?? 0; state.selectedParagraph=b.progress?.paragraphIndex ?? p.lastParagraphIndex ?? 0; state.selectedCharOffset=b.progress?.charOffset ?? p.lastCharOffset ?? 0; state.selectedWordEnd=b.progress?.wordEnd ?? p.lastWordEnd ?? 0; } } await navigate('library'); }).catch(e=>{view.innerHTML=`<div class="empty">Storyline could not start: ${escapeHtml(e.message)}</div>`});
+openDB().then(async()=>{ let p=prefs(); if(p.engine!=='device'){ savePrefs({engine:'device'}); p=prefs(); } state.bookId=p.lastBookId||null; if(state.bookId){ const b=await idbGet('books',state.bookId); if(b){ state.chapterIndex=b.progress?.chapterIndex ?? p.lastChapterIndex ?? 0; state.selectedParagraph=b.progress?.paragraphIndex ?? p.lastParagraphIndex ?? 0; state.selectedCharOffset=b.progress?.charOffset ?? p.lastCharOffset ?? 0; state.selectedWordEnd=b.progress?.wordEnd ?? p.lastWordEnd ?? 0; } } await navigate('library'); }).catch(e=>{view.innerHTML=`<div class="empty">Storyline could not start: ${escapeHtml(e.message)}</div>`});
 })();
