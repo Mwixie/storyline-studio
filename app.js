@@ -367,7 +367,7 @@ function wireReader(book,ch){
   $('#testVoiceBtn').onclick=testVoice;
   $('#replayBtn').onclick=replayCurrentSentence;
   $('#sleepTimerSelect').onchange=e=>setSleepTimer(+e.target.value);
-  $('#rateRange').oninput=e=>{const r=+e.target.value; savePrefs({rate:r}); $('#speedLabel').textContent=r+'×'; updateVoiceSummary(); if(state.isSpeaking) startSpeech(true);};
+  $('#rateRange').oninput=e=>{const r=+e.target.value; savePrefs({rate:r}); $('#speedLabel').textContent=r+'×'; updateVoiceSummary();};
   const voiceSelect=$('#voiceSelect'); if(voiceSelect) voiceSelect.onchange=e=>{
     const chosen=state.voices.find(v=>voiceKey(v)===e.target.value);
     if(chosen)savePrefs({voiceKey:voiceKey(chosen),voiceName:chosen.name});
