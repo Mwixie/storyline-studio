@@ -115,15 +115,26 @@ function idbDelete(name,id){return new Promise((res,rej)=>{const r=store(name,'r
 function idbClear(name){return new Promise((res,rej)=>{const r=store(name,'readwrite').clear();r.onsuccess=()=>res();r.onerror=()=>rej(r.error)})}
 function replaceLibraryAtomically(books,items){
   return new Promise((res,rej)=>{
-    const tx=db.transaction(['books','items'],'readwrite');
-    const booksStore=tx.objectStore('books'),itemsStore=tx.objectStore('items');
-    let settled=false;
-    tx.oncomplete=()=>{if(!settled){settled=true;res()}};
-    tx.onabort=()=>{if(!settled){settled=true;rej(tx.error||new Error('Restore transaction was rolled back.'))}};
-    tx.onerror=()=>{};
-    booksStore.clear();itemsStore.clear();
-    for(const book of books)booksStore.put(book);
-    for(const item of items)itemsStore.put(item);
+    let tx;
+    try{
+      tx=db.transaction(['books','items'],'readwrite');
+      const booksStore=tx.objectStore('books'),itemsStore=tx.objectStore('items');
+      let settled=false;
+      tx.oncomplete=()=>{if(!settled){settled=true;res()}};
+      tx.onabort=()=>{if(!settled){settled=true;rej(tx.error||new Error('Restore transaction was rolled back.'))}};
+      tx.onerror=()=>{};
+      try{
+        booksStore.clear();itemsStore.clear();
+        for(const book of books)booksStore.put(book);
+        for(const item of items)itemsStore.put(item);
+      }catch(e){
+        try{tx.abort()}catch{}
+        if(!settled){settled=true;rej(e)}
+      }
+    }catch(e){
+      try{tx?.abort()}catch{}
+      rej(e);
+    }
   });
 }
 
@@ -606,6 +617,7 @@ function startSpeech(fromSelected=true){
     if(pIndex>=paras.length){continueChapter();return}
     const full=paras[pIndex];
     const start=(pIndex===state.selectedParagraph?firstOffset:0);
+    if(start>=full.length){pIndex++;firstOffset=0;speakParagraph();return}
     const segments=sentenceSegments(full,start);
     let sIndex=0;
     state.speakingParagraph=pIndex;state.selectedParagraph=pIndex;
@@ -618,13 +630,15 @@ function startSpeech(fromSelected=true){
       if(token!==state.playbackToken||!state.isSpeaking)return;
       if(sIndex>=segments.length){
         const currentP=$(`#readingPage p[data-p="${pIndex}"]`);if(currentP)currentP.textContent=full;
-        state.selectedCharOffset=0;state.selectedWordEnd=0;
+        state.selectedCharOffset=full.length;state.selectedWordEnd=full.length;
+        persistReadingProgress();
         pIndex++;firstOffset=0;speakParagraph();return;
       }
 
       const seg=segments[sIndex];
       state.speakingPIndex=pIndex;state.speakingSIndex=sIndex;state.speakingSegments=segments;
-      state.selectedCharOffset=seg.start;state.selectedWordEnd=seg.end;
+      const startWord=wordRangeAt(full,seg.start);
+      state.selectedCharOffset=seg.start;state.selectedWordEnd=startWord.end;
       persistReadingProgress();
       highlightRange(pIndex,seg.start,seg.end);
       if(st)st.textContent=`Reading paragraph ${pIndex+1} · sentence ${sIndex+1}/${segments.length}`;
