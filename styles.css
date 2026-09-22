@@ -36,3 +36,37 @@ body{min-height:100dvh}.app-shell{min-height:100dvh;padding-bottom:86px}.topbar{
   .diagnostic-actions{width:100%;justify-content:flex-end}
   .reading-status{width:100%;justify-content:center}
 }
+
+/* Build 12: exact start word + real voice notes */
+.word-start{
+  background:rgba(240,214,155,.2);
+  color:#fff5d6;
+  border-bottom:2px solid var(--gold);
+  border-radius:4px;
+  padding:0 2px;
+}
+.saved-voice-note,.voice-preview{
+  width:100%;
+  min-height:42px;
+  margin-top:4px;
+}
+.list-item .saved-voice-note{
+  border-radius:12px;
+}
+#voiceRecordStatus{
+  margin:0;
+}
+.modal-card .row .ghost{
+  white-space:nowrap;
+}
+@media(max-width:620px){
+  .modal-card .row.between{
+    align-items:stretch;
+  }
+  .modal-card .row.between>div.row{
+    width:100%;
+  }
+  .modal-card .row.between>div.row>*{
+    flex:1 1 auto;
+  }
+}
