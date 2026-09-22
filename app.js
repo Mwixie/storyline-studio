@@ -366,8 +366,34 @@ async function renderNotes(){ const books=await idbGetAll('books'); const bookMa
   view.innerHTML=`<section class="hero"><div class="eyebrow">Listening memory</div><h1>Notes & bookmarks</h1><p class="sub">Everything you caught while listening, still attached to where you heard it.</p></section>${items.length?`<div class="list">${items.map(i=>itemHtml(i,bookMap)).join('')}</div>`:`<div class="empty card">No notes yet. This is suspiciously peaceful.</div>`}`; wireItemButtons(); }
 async function renderQueue(){ const books=await idbGetAll('books'); const bookMap=Object.fromEntries(books.map(b=>[b.id,b])); const items=(await idbGetAll('items')).filter(i=>['question','continuity'].includes(i.type)).sort((a,b)=>(a.status==='done')-(b.status==='done')||new Date(b.createdAt)-new Date(a.createdAt)); const open=items.filter(i=>i.status!=='done').length;
   view.innerHTML=`<section class="hero"><div class="eyebrow">Revision desk</div><h1>Revision Queue</h1><p class="sub">Questions stay questions until you decide what to change.</p></section><div class="stat-grid"><div class="stat"><b>${open}</b><small>Open</small></div><div class="stat"><b>${items.filter(i=>i.type==='continuity').length}</b><small>Continuity</small></div><div class="stat"><b>${items.filter(i=>i.type==='question').length}</b><small>Ask AI</small></div></div>${items.length?`<div class="list" style="margin-top:16px">${items.map(i=>itemHtml(i,bookMap,true)).join('')}</div>`:`<div class="empty card" style="margin-top:16px">Nothing waiting for review.</div>`}`; wireItemButtons(); }
-function itemHtml(i,bookMap,queue=false){ const label=i.type==='question'?'Ask ChatGPT':i.type==='continuity'?'Continuity':i.type==='bookmark'?'Bookmark':'Note'; const pill=i.status==='done'?'green':i.type==='question'||i.type==='continuity'?'gold':''; return `<article class="list-item" data-item="${i.id}"><div class="row between"><span class="pill ${pill}">${label}${i.voice?' · voice':''}</span><span class="meta">${i.status==='done'?'Done':'Open'}</span></div><div><strong>${escapeHtml(bookMap[i.bookId]?.title||i.bookTitle||'Manuscript')}</strong><div class="source-chip">${escapeHtml(i.chapterTitle||'Chapter')} · paragraph ${(i.paragraphIndex??0)+1}</div></div><div class="excerpt">${escapeHtml(i.excerpt||'')}</div>${i.note?`<div class="note-text">${escapeHtml(i.note)}</div>`:''}<div class="row">${queue?`<button data-copy="${i.id}" class="ghost tiny">Copy for ChatGPT</button><button data-done="${i.id}" class="ghost tiny">${i.status==='done'?'Reopen':'Mark done'}</button>`:''}<button data-delete-item="${i.id}" class="ghost tiny">Delete</button></div></article>`; }
+function itemHtml(i,bookMap,queue=false){
+  const label=i.type==='question'?'Ask ChatGPT':i.type==='continuity'?'Continuity':i.type==='bookmark'?'Bookmark':'Note';
+  const pill=i.status==='done'?'green':i.type==='question'||i.type==='continuity'?'gold':'';
+  return `<article class="list-item" data-item="${i.id}">
+    <div class="row between"><span class="pill ${pill}">${label}${i.voice?' · voice':''}</span><span class="meta">${i.status==='done'?'Done':'Open'}</span></div>
+    <div><strong>${escapeHtml(bookMap[i.bookId]?.title||i.bookTitle||'Manuscript')}</strong><div class="source-chip">${escapeHtml(i.chapterTitle||'Chapter')} · paragraph ${(i.paragraphIndex??0)+1}</div></div>
+    <div class="excerpt">${escapeHtml(i.excerpt||'')}</div>
+    ${i.note?`<div class="note-text">${escapeHtml(i.note)}</div>`:''}
+    <div class="row">
+      <button data-open-item="${i.id}" class="ghost tiny">Open passage</button>
+      ${queue?`<button data-copy="${i.id}" class="ghost tiny">Copy for ChatGPT</button><button data-done="${i.id}" class="ghost tiny">${i.status==='done'?'Reopen':'Mark done'}</button>`:''}
+      <button data-delete-item="${i.id}" class="ghost tiny">Delete</button>
+    </div>
+  </article>`;
+}
 function wireItemButtons(){
+  $$('[data-open-item]').forEach(b=>b.onclick=async()=>{
+    const i=await idbGet('items',b.dataset.openItem);
+    if(!i)return;
+    const book=await idbGet('books',i.bookId);
+    if(!book){showToast('That manuscript is no longer in this browser.');return}
+    state.bookId=i.bookId;
+    state.chapterIndex=i.chapterIndex??0;
+    state.selectedParagraph=i.paragraphIndex??0;
+    savePrefs({lastBookId:state.bookId});
+    await saveProgress(book);
+    navigate('reader');
+  });
   $$('[data-delete-item]').forEach(b=>b.onclick=async()=>{await idbDelete('items',b.dataset.deleteItem);navigate(state.route)});
   $$('[data-done]').forEach(b=>b.onclick=async()=>{const i=await idbGet('items',b.dataset.done);i.status=i.status==='done'?'open':'done';await idbPut('items',i);navigate('queue')});
   $$('[data-copy]').forEach(b=>b.onclick=async()=>{const i=await idbGet('items',b.dataset.copy); const packet=`Storyline Studio revision question\n\nBook: ${i.bookTitle}\nLocation: ${i.chapterTitle}, paragraph ${(i.paragraphIndex||0)+1}\nType: ${i.type}\n\nPassage:\n${i.excerpt}\n\nMy note/question:\n${i.note}\n\nPlease answer using the manuscript context I provide, and do not revise the manuscript unless I explicitly ask.`; try{await navigator.clipboard.writeText(packet);showToast('Copied for ChatGPT')}catch{showToast('Copy was blocked by the browser')}});
