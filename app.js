@@ -9,7 +9,8 @@ const state = {
   voices:[], voicesReady:false, isSpeaking:false, isPaused:false, deferredPrompt:null, activeUtterance:null, localSpeakingId:null, localTTSReady:false,
   playbackToken:0, speakingPIndex:null, speakingSIndex:null, speakingSegments:null, replayCurrent:null,
   sleepTimerId:null, sleepIntervalId:null, sleepDeadline:null, sleepMinutes:0, wakeLock:null, chapterTransitionNotice:'',
-  pendingPassageReference:null, activeEngine:'device', readerSearchQuery:''
+  pendingPassageReference:null, activeEngine:'device', readerSearchQuery:'',
+  followNarrationSuspended:false
 };
 
 const PREF='storyline.prefs.v1';
@@ -264,6 +265,8 @@ function highlightRange(paragraphIndex,start,end){
   const p=$(`#readingPage p[data-p="${paragraphIndex}"]`); if(!p)return;
   const text=p.textContent||''; const a=Math.max(0,Math.min(start,text.length)); const b=Math.max(a,Math.min(end,text.length));
   p.innerHTML=escapeHtml(text.slice(0,a))+`<span class="sentence-speaking">${escapeHtml(text.slice(a,b))}</span>`+escapeHtml(text.slice(b));
+  const sentence=p.querySelector('.sentence-speaking');
+  followNarrationElement(sentence||p);
 }
 
 
@@ -399,6 +402,64 @@ async function parsePdf(file){
   }
   return paras.filter(Boolean);
 }
+async function importPastedText(text,title=''){
+  const source=String(text||'').replace(/\r/g,'').trim();
+  if(!source){showToast('Paste some manuscript text first.');return}
+  const paragraphs=source.split(/\n\s*\n|\n/).map(x=>x.replace(/\s+/g,' ').trim()).filter(Boolean);
+  if(!paragraphs.length){showToast('No manuscript text was found.');return}
+  let bookTitle=String(title||'').trim();
+  if(!bookTitle){
+    const first=paragraphs.find(p=>p.length>3)||'Pasted manuscript';
+    bookTitle=excerpt(first.replace(/^(chapter\s+[^:.-]+|prologue|epilogue)\s*[:.-]?\s*/i,''),70)||'Pasted manuscript';
+  }
+  const chapters=splitChapters(paragraphs);
+  const now=new Date().toISOString();
+  const book={id:uid(),title:bookTitle,fileName:'Pasted text',createdAt:now,updatedAt:now,chapters,progress:{chapterIndex:0,paragraphIndex:0,charOffset:0,wordEnd:0,completed:false},version:'Pasted manuscript'};
+  await idbPut('books',book);
+  state.bookId=book.id;state.chapterIndex=0;state.selectedParagraph=0;state.selectedCharOffset=0;state.selectedWordEnd=0;
+  savePrefs({lastBookId:book.id});
+  showToast(`Imported ${book.chapters.length} chapter${book.chapters.length===1?'':'s'} from pasted text`);
+  await navigate('reader');
+}
+function pastedFileFromTransfer(transfer){
+  const files=[...(transfer?.files||[])];
+  if(files.length)return files[0];
+  const items=[...(transfer?.items||[])];
+  const fileItem=items.find(item=>item.kind==='file');
+  return fileItem?.getAsFile?.()||null;
+}
+function openPasteImport(initialText=''){
+  modalForm.innerHTML=`<h3>Paste manuscript</h3>
+    <p class="sub">Paste manuscript text below, or paste/drop a copied manuscript file here.</p>
+    <input id="pasteTitle" class="select" type="text" placeholder="Title (optional)" />
+    <textarea id="pasteManuscriptText" class="paste-manuscript-text" placeholder="Paste manuscript text here…">${escapeHtml(initialText)}</textarea>
+    <div id="pasteFileDrop" class="paste-file-drop" tabindex="0">Paste or drop a DOCX, EPUB, PDF, ODT, Markdown, HTML, or TXT file here</div>
+    <div class="row between"><button value="cancel" class="button secondary">Cancel</button><button type="button" id="importPastedTextBtn" class="button">Import pasted text</button></div>`;
+  modal.showModal();
+  const textarea=$('#pasteManuscriptText'),drop=$('#pasteFileDrop');
+  const handleTransfer=async transfer=>{
+    const file=pastedFileFromTransfer(transfer);
+    if(file){modal.close();await importFile(file);return true}
+    const text=transfer?.getData?.('text/plain')||'';
+    if(text){textarea.value=text;return true}
+    return false;
+  };
+  textarea.onpaste=async e=>{
+    const file=pastedFileFromTransfer(e.clipboardData);
+    if(file){e.preventDefault();modal.close();await importFile(file)}
+  };
+  drop.onpaste=async e=>{e.preventDefault();if(!await handleTransfer(e.clipboardData))showToast('No text or supported file was found on the clipboard.')};
+  drop.ondragover=e=>{e.preventDefault();drop.classList.add('drag-over')};
+  drop.ondragleave=()=>drop.classList.remove('drag-over');
+  drop.ondrop=async e=>{e.preventDefault();drop.classList.remove('drag-over');if(!await handleTransfer(e.dataTransfer))showToast('No supported file was dropped.')};
+  drop.onkeydown=e=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='v')drop.focus()};
+  $('#importPastedTextBtn').onclick=async()=>{
+    const text=textarea.value,title=$('#pasteTitle')?.value||'';
+    if(!text.trim()){showToast('Paste some manuscript text first.');textarea.focus();return}
+    modal.close();await importPastedText(text,title);
+  };
+  requestAnimationFrame(()=>textarea.focus());
+}
 async function importFile(file){
   if(!file)return;
   let paragraphs,parsedChapters=null;
@@ -508,11 +569,24 @@ async function renderLibrary(){
   const items=await idbGetAll('items');
   view.innerHTML=`
     <section class="hero"><div class="eyebrow">Your private listening desk</div><h1>Read with your ears.<br>Revise with receipts.</h1><p class="sub">Your manuscript stays in this browser. Storyline remembers where you stopped and keeps every note tied to its exact passage.</p></section>
-    <section class="import-zone"><strong>${books.length?'Add another manuscript':'Bring in a manuscript'}</strong><p class="sub">DOCX, EPUB, PDF, ODT, Markdown, HTML, or TXT. Chapter headings are detected automatically.</p><button id="importBtn" class="button">Choose manuscript</button><div class="privacy">Local-first: importing a file does not upload it to a server.</div></section>
+    <section id="importZone" class="import-zone" tabindex="0"><strong>${books.length?'Add another manuscript':'Bring in a manuscript'}</strong><p class="sub">DOCX, EPUB, PDF, ODT, Markdown, HTML, TXT, or pasted text. Chapter headings are detected automatically.</p><div class="row import-actions"><button id="importBtn" class="button">Choose manuscript</button><button id="pasteImportBtn" class="ghost">Paste text or file</button></div><div class="privacy">You can also drag/drop or paste a copied manuscript file here. Everything stays local to this browser.</div></section>
     <section class="backup-card card"><div><div class="eyebrow">Data safety</div><h2>Backup & restore</h2><p class="sub">Export manuscripts, reading positions, Queue and Actioned items, preferences, and saved voice-note audio.</p></div><div class="row backup-actions"><button id="exportBackupBtn" class="ghost">Export backup</button><button id="restoreBackupBtn" class="ghost">Restore backup</button><input id="restoreBackupInput" type="file" accept="application/json,.json" hidden /></div></section>
     ${books.length?`<h2 class="section-title">My manuscripts</h2><div class="grid books">${books.map(b=>bookCard(b,items)).join('')}</div>`:`<div class="empty">Your library is waiting for its first book.</div>`}
   `;
   $('#importBtn').onclick=()=>fileInput.click();
+  $('#pasteImportBtn').onclick=()=>openPasteImport();
+  const importZone=$('#importZone');
+  importZone.onpaste=async e=>{
+    if(e.target.closest('input,textarea'))return;
+    e.preventDefault();
+    const file=pastedFileFromTransfer(e.clipboardData);
+    if(file){await importFile(file);return}
+    const text=e.clipboardData?.getData?.('text/plain')||'';
+    if(text)openPasteImport(text);else showToast('No manuscript text or file was found on the clipboard.');
+  };
+  importZone.ondragover=e=>{e.preventDefault();importZone.classList.add('drag-over')};
+  importZone.ondragleave=()=>importZone.classList.remove('drag-over');
+  importZone.ondrop=async e=>{e.preventDefault();importZone.classList.remove('drag-over');const file=pastedFileFromTransfer(e.dataTransfer);if(file)await importFile(file);else showToast('Drop a supported manuscript file here.')};
   $('#exportBackupBtn').onclick=exportBackup;
   $('#restoreBackupBtn').onclick=()=>$('#restoreBackupInput').click();
   $('#restoreBackupInput').onchange=e=>{const file=e.target.files?.[0];e.target.value='';restoreBackup(file)};
@@ -588,7 +662,7 @@ async function renderReader(){
         </div>
         <div class="transport-progress"><div class="row between"><span id="positionLabel" class="meta">Paragraph ${state.selectedParagraph+1} of ${ch.paragraphs.length}</span><span id="speedLabel" class="meta">${p.rate||1.05}×</span></div><input id="positionRange" class="range" type="range" min="0" max="${Math.max(ch.paragraphs.length-1,0)}" value="${state.selectedParagraph}" /></div>
       </div>
-      <div class="compact-status"><span id="voiceStatus" class="reading-status">Loading device voices…</span></div>
+      <div class="compact-status"><span id="voiceStatus" class="reading-status">Loading device voices…</span><button id="resumeFollowBtn" class="ghost tiny hidden">↧ Resume follow</button></div>
       <details id="voiceOptions" class="voice-options">
         <summary><span>Voice & speed</span><span id="voiceSummary" class="meta">Samantha · ${p.rate||1.05}×</span></summary>
         <div class="voice-options-panel">
@@ -620,6 +694,15 @@ async function renderReader(){
 
 function wireReader(book,ch){
   $('#backLibrary').onclick=()=>navigate('library');
+  const readingPage=$('#readingPage'),resumeFollow=$('#resumeFollowBtn');
+  const suspendFollow=()=>{
+    if(!state.isSpeaking||state.followNarrationSuspended)return;
+    state.followNarrationSuspended=true;updateFollowControl();
+  };
+  readingPage?.addEventListener('touchmove',suspendFollow,{passive:true});
+  readingPage?.addEventListener('wheel',suspendFollow,{passive:true});
+  if(resumeFollow)resumeFollow.onclick=()=>resumeNarrationFollow();
+  updateFollowControl();
   const searchInput=$('#readerSearchInput'),searchBtn=$('#readerSearchBtn'),searchClear=$('#readerSearchClear');
   const runSearch=()=>{renderReaderSearchResults(book,searchInput?.value||'');searchClear?.classList.toggle('hidden',!String(searchInput?.value||'').trim());wireReaderSearchResults(book)};
   if(searchBtn)searchBtn.onclick=runSearch;
@@ -699,6 +782,21 @@ function wireReaderSearchResults(book){
 }
 async function selectParagraph(i,noScroll=false,preserveWord=false){ state.selectedParagraph=i; if(!preserveWord){state.selectedCharOffset=0;state.selectedWordEnd=0;} $$('#readingPage p').forEach(p=>p.classList.toggle('selected',+p.dataset.p===i)); $('#positionRange').value=i; $('#positionLabel').textContent=`Paragraph ${i+1} of ${$('#readingPage').children.length}`; const book=await idbGet('books',state.bookId); await saveProgress(book); if(!noScroll) scrollSelected(); }
 function scrollSelected(smooth=true){ const el=$(`#readingPage p[data-p="${state.selectedParagraph}"]`); if(el) el.scrollIntoView({block:'center',behavior:smooth?'smooth':'auto'}); }
+function updateFollowControl(){
+  const btn=$('#resumeFollowBtn');if(btn)btn.classList.toggle('hidden',!state.followNarrationSuspended);
+}
+function followNarrationElement(el,{force=false}={}){
+  if(!el||state.followNarrationSuspended)return;
+  const rect=el.getBoundingClientRect();
+  const top=Math.max(90,window.innerHeight*.18),bottom=Math.min(window.innerHeight-150,window.innerHeight*.72);
+  const outside=rect.top<top||rect.bottom>bottom;
+  if(force||outside)el.scrollIntoView({block:'center',behavior:'smooth'});
+}
+function resumeNarrationFollow(){
+  state.followNarrationSuspended=false;updateFollowControl();
+  const el=$(`#readingPage p[data-p="${state.speakingPIndex??state.selectedParagraph}"]`);
+  followNarrationElement(el,{force:true});
+}
 function progressSnapshot(){return {chapterIndex:state.chapterIndex,paragraphIndex:state.selectedParagraph,charOffset:state.selectedCharOffset||0,wordEnd:state.selectedWordEnd||0}}
 async function saveProgress(book,{snapshot=null,completed=null,updatePrefs=true}={}){
   if(!book)return;
@@ -900,6 +998,7 @@ function toggleSpeech(){
 }
 function startSpeech(fromSelected=true){
   state.activeEngine='device';
+  if(fromSelected){state.followNarrationSuspended=false;updateFollowControl()}
   if(!state.voicesReady){showToast('Device voices are still loading.');return}
   if(!('speechSynthesis' in window)||typeof SpeechSynthesisUtterance==='undefined'){showToast('Text-to-speech is not available in this browser.');return}
   const paras=$$('#readingPage p').map(p=>(p.textContent||'').trim());
@@ -1077,6 +1176,7 @@ function clearSentenceHighlights(){
 }
 async function startLocalSpeech(fromSelected=true){
   state.activeEngine='local';
+  if(fromSelected){state.followNarrationSuspended=false;updateFollowControl()}
   const token=++state.playbackToken;
   const paras=$$('#readingPage p').map(p=>(p.textContent||'').trim());
   if(!paras.some(Boolean)){showToast('There is no text to read in this chapter.');return}
@@ -1210,7 +1310,7 @@ function testVoice(){
 function markSpeaking(i){
   $$('#readingPage p').forEach(p=>p.classList.toggle('speaking',+p.dataset.p===i));
   const el=$(`#readingPage p[data-p="${i}"]`);
-  if(el) el.scrollIntoView({block:'center',behavior:'smooth'});
+  followNarrationElement(el);
   const st=$('#voiceStatus');
   if(st) st.textContent=`Reading paragraph ${i+1}`;
 }
