@@ -691,7 +691,10 @@ function wireReaderSearchResults(book){
     }
     await saveProgress(book);
     await renderReader();
-    if(play)startSpeechFromSelection();
+    if(play){
+      await new Promise(resolve=>requestAnimationFrame(resolve));
+      startSpeechFromSelection();
+    }
   });
 }
 async function selectParagraph(i,noScroll=false,preserveWord=false){ state.selectedParagraph=i; if(!preserveWord){state.selectedCharOffset=0;state.selectedWordEnd=0;} $$('#readingPage p').forEach(p=>p.classList.toggle('selected',+p.dataset.p===i)); $('#positionRange').value=i; $('#positionLabel').textContent=`Paragraph ${i+1} of ${$('#readingPage').children.length}`; const book=await idbGet('books',state.bookId); await saveProgress(book); if(!noScroll) scrollSelected(); }
