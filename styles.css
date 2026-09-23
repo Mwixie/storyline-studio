@@ -367,3 +367,39 @@ body{min-height:100dvh}.app-shell{min-height:100dvh;padding-bottom:86px}.topbar{
   font:inherit;
   line-height:1.5;
 }
+
+
+/* Build 32: paste/file import + smart narration follow */
+.import-actions{
+  justify-content:center;
+  flex-wrap:wrap;
+  margin-top:12px;
+}
+.import-zone.drag-over,.paste-file-drop.drag-over{
+  border-color:var(--gold);
+  background:rgba(214,179,106,.08);
+}
+.paste-manuscript-text{
+  min-height:38vh!important;
+}
+.paste-file-drop{
+  border:1px dashed #554a5e;
+  border-radius:14px;
+  padding:16px;
+  text-align:center;
+  color:var(--muted);
+  background:rgba(16,15,20,.55);
+  outline:none;
+}
+.paste-file-drop:focus{
+  border-color:var(--gold);
+}
+.compact-status{
+  gap:10px;
+  align-items:center;
+  flex-wrap:wrap;
+}
+#resumeFollowBtn{
+  color:var(--gold2);
+  border-color:#514738;
+}
