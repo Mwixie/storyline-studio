@@ -1443,21 +1443,23 @@ function fallbackCopyText(text){
   let ok=false;try{ok=document.execCommand('copy')}catch{}
   ta.remove();return ok;
 }
+function showManualCopy(text){
+  modalForm.innerHTML=`<h3>Copy text</h3><p class="sub">Automatic copy was blocked by the browser. The full text is selected below so you can copy it manually.</p><textarea id="manualCopyText" class="manual-copy-text" readonly>${escapeHtml(text)}</textarea><div class="row between"><span class="meta">Press and hold, then Copy.</span><button value="default" class="button">Close</button></div>`;
+  modal.showModal();
+  requestAnimationFrame(()=>{const ta=$('#manualCopyText');if(ta){ta.focus();ta.select();ta.setSelectionRange(0,ta.value.length)}});
+}
 function copyTextReliable(text,successMessage='Copied'){
   if(!text)return false;
+  const failed=()=>{if(fallbackCopyText(text))showToast(successMessage);else showManualCopy(text)};
   if(navigator.clipboard?.writeText){
     try{
       const result=navigator.clipboard.writeText(text);
-      Promise.resolve(result).then(()=>showToast(successMessage)).catch(()=>{
-        if(fallbackCopyText(text))showToast(successMessage);
-        else showToast('Copy was blocked. Press and hold the text to copy manually.');
-      });
+      Promise.resolve(result).then(()=>showToast(successMessage)).catch(failed);
       return true;
     }catch{}
   }
-  const ok=fallbackCopyText(text);
-  showToast(ok?successMessage:'Copy was blocked. Press and hold the text to copy manually.');
-  return ok;
+  if(fallbackCopyText(text)){showToast(successMessage);return true}
+  showManualCopy(text);return false;
 }
 function copyItemsForChat(items){
   if(!items.length)return false;
