@@ -679,15 +679,19 @@ function wireReaderSearchResults(book){
     const play=!!e.target.closest('[data-search-play]');
     stopAllSpeech();
     state.chapterIndex=result.chapterIndex;state.selectedParagraph=result.paragraphIndex;
-    state.selectedCharOffset=result.start;state.selectedWordEnd=result.end;
-    state.pendingPassageReference={chapterIndex:result.chapterIndex,paragraphIndex:result.paragraphIndex,start:result.start,end:result.end,moved:false};
+    const targetText=book.chapters[result.chapterIndex]?.paragraphs?.[result.paragraphIndex]||'';
+    if(play){
+      const seg=sentenceAtOffset(targetText,result.start);
+      state.selectedCharOffset=seg?.start??result.start;
+      state.selectedWordEnd=seg?wordRangeAt(targetText,seg.start).end:result.end;
+      state.pendingPassageReference=null;
+    }else{
+      state.selectedCharOffset=result.start;state.selectedWordEnd=result.end;
+      state.pendingPassageReference={chapterIndex:result.chapterIndex,paragraphIndex:result.paragraphIndex,start:result.start,end:result.end,moved:false};
+    }
     await saveProgress(book);
     await renderReader();
-    if(play){
-      const targetText=book.chapters[result.chapterIndex]?.paragraphs?.[result.paragraphIndex]||'';
-      const seg=sentenceAtOffset(targetText,result.start);
-      if(seg){state.selectedCharOffset=seg.start;state.selectedWordEnd=wordRangeAt(targetText,seg.start).end;await saveProgress(book);startSpeechFromSelection()}
-    }
+    if(play)startSpeechFromSelection();
   });
 }
 async function selectParagraph(i,noScroll=false,preserveWord=false){ state.selectedParagraph=i; if(!preserveWord){state.selectedCharOffset=0;state.selectedWordEnd=0;} $$('#readingPage p').forEach(p=>p.classList.toggle('selected',+p.dataset.p===i)); $('#positionRange').value=i; $('#positionLabel').textContent=`Paragraph ${i+1} of ${$('#readingPage').children.length}`; const book=await idbGet('books',state.bookId); await saveProgress(book); if(!noScroll) scrollSelected(); }
