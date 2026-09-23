@@ -857,7 +857,7 @@ async function mediaMoveParagraph(delta){
   await saveProgress(book);
   await renderReader();
   updateNowPlaying();
-  startSpeech(true);
+  startSpeechFromSelection();
 }
 function setupMediaSession(){
   if(!('mediaSession' in navigator))return;
@@ -870,7 +870,7 @@ function setupMediaSession(){
       setMediaPlaybackState('playing');
       return;
     }
-    if(!state.isSpeaking)startSpeech(true);
+    if(!state.isSpeaking)startSpeechFromSelection();
   });
   safe('pause',()=>{
     if(!state.isSpeaking||state.isPaused)return;
@@ -1263,7 +1263,7 @@ async function handleAction(act,book,ch){
     paragraphIndex:state.selectedParagraph,charOffset:anchor.charStart||0,wordEnd:anchor.charEnd||anchor.charStart||0,
     anchor,excerpt:excerpt(anchor.selectedText||text),createdAt:new Date().toISOString(),status:'open'
   };
-  if(act==='start'){ startSpeech(true); return} if(act==='queue'){navigate('queue');return}
+  if(act==='start'){ startSpeechFromSelection(); return} if(act==='queue'){navigate('queue');return}
   if(act==='bookmark'){await idbPut('items',{...base,id:uid(),type:'bookmark',note:''});showToast('Bookmarked');updateQueueBadge();return}
   if(act==='note') return promptItem('note','Add note','What did you notice?',base);
   if(act==='continuity') return promptItem('continuity','Flag continuity','What seems inconsistent or needs checking?',base);
@@ -1545,7 +1545,7 @@ $$('[data-nav]').forEach(b=>b.addEventListener('click',()=>navigate(b.dataset.na
 $$('[data-reader-act]').forEach(b=>b.addEventListener('click',async()=>{
   if(state.route!=='reader'||!state.bookId)return;
   document.body.classList.remove('mobile-tools-open');
-  if(b.dataset.readerAct==='start'){ startSpeech(true); return; }
+  if(b.dataset.readerAct==='start'){ startSpeechFromSelection(); return; }
   const book=await idbGet('books',state.bookId); if(!book)return;
   const ch=book.chapters[state.chapterIndex]; if(!ch)return;
   await handleAction(b.dataset.readerAct,book,ch);
