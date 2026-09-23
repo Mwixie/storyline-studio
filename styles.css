@@ -359,3 +359,11 @@ body{min-height:100dvh}.app-shell{min-height:100dvh;padding-bottom:86px}.topbar{
   .reader-search-row #readerSearchClear{grid-column:1/-1;justify-self:start}
   .reader-search-actions{align-items:flex-start;flex-direction:column}
 }
+
+.manual-copy-text{
+  width:100%;
+  min-height:45vh;
+  resize:vertical;
+  font:inherit;
+  line-height:1.5;
+}
