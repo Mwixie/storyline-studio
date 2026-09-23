@@ -9,7 +9,7 @@ const state = {
   voices:[], voicesReady:false, isSpeaking:false, isPaused:false, deferredPrompt:null, activeUtterance:null, localSpeakingId:null, localTTSReady:false,
   playbackToken:0, speakingPIndex:null, speakingSIndex:null, speakingSegments:null, replayCurrent:null,
   sleepTimerId:null, sleepIntervalId:null, sleepDeadline:null, sleepMinutes:0, wakeLock:null, chapterTransitionNotice:'',
-  pendingPassageReference:null, activeEngine:'device'
+  pendingPassageReference:null, activeEngine:'device', readerSearchQuery:''
 };
 
 const PREF='storyline.prefs.v1';
@@ -521,6 +521,46 @@ async function renderLibrary(){
 }
 function chapterLabel(ch,book){ return (ch?.synthetic||ch?.title==='Beginning'||ch?.title==='Front matter')?(book?.title||'Manuscript'):(ch?.title||'Manuscript'); }
 function readerChapterTitle(ch){ return (ch?.synthetic||ch?.title==='Beginning'||ch?.title==='Front matter')?'':(ch?.title||''); }
+function searchBook(book,query,limit=400){
+  const q=String(query||'').trim();if(!q)return {query:'',results:[],truncated:false};
+  const needle=q.toLocaleLowerCase();
+  const results=[];let truncated=false;
+  outer:for(let ci=0;ci<book.chapters.length;ci++){
+    const ch=book.chapters[ci];
+    for(let pi=0;pi<ch.paragraphs.length;pi++){
+      const text=String(ch.paragraphs[pi]||''),hay=text.toLocaleLowerCase();
+      let from=0;
+      while(from<=hay.length){
+        const start=hay.indexOf(needle,from);if(start<0)break;
+        const end=start+q.length;
+        const before=text.slice(Math.max(0,start-90),start);
+        const match=text.slice(start,end);
+        const after=text.slice(end,Math.min(text.length,end+90));
+        results.push({chapterIndex:ci,paragraphIndex:pi,start,end,chapterTitle:chapterLabel(ch,book),before,match,after});
+        if(results.length>=limit){truncated=true;break outer}
+        from=start+Math.max(1,q.length);
+      }
+    }
+  }
+  return {query:q,results,truncated};
+}
+function searchResultHtml(result,index){
+  return `<button type="button" class="reader-search-result" data-search-result="${index}">
+    <span class="reader-search-location">${escapeHtml(result.chapterTitle)} · paragraph ${result.paragraphIndex+1}</span>
+    <span class="reader-search-snippet">${result.before?'…'+escapeHtml(result.before):''}<mark>${escapeHtml(result.match)}</mark>${result.after?escapeHtml(result.after)+'…':''}</span>
+    <span class="reader-search-actions"><span>Go to match</span><span data-search-play="${index}">▶ Play from here</span></span>
+  </button>`;
+}
+function renderReaderSearchResults(book,query){
+  const panel=$('#readerSearchResults'),status=$('#readerSearchStatus');if(!panel||!status)return;
+  const found=searchBook(book,query);
+  state.readerSearchQuery=found.query;
+  if(!found.query){panel.innerHTML='';panel.classList.add('hidden');status.textContent='';return}
+  status.textContent=found.results.length?(found.truncated?`Showing first ${found.results.length} matches`:`${found.results.length} match${found.results.length===1?'':'es'}`):'No matches';
+  panel.innerHTML=found.results.length?found.results.map(searchResultHtml).join(''):'<div class="reader-search-empty">No matches in this manuscript.</div>';
+  panel.classList.remove('hidden');
+  panel.dataset.searchResults=JSON.stringify(found.results);
+}
 function bookCard(b,items){ const total=b.chapters.reduce((n,c)=>n+c.paragraphs.length,0); let before=0; for(let i=0;i<(b.progress?.chapterIndex||0);i++) before+=b.chapters[i]?.paragraphs.length||0; before+=b.progress?.paragraphIndex||0; const pct=b.progress?.completed===true?100:Math.max(0,Math.min(100,Math.round((before/Math.max(total,1))*100))); const count=items.filter(i=>i.bookId===b.id&&['note','question','continuity'].includes(i.type)).length;
   return `<article class="card book-card" data-id="${b.id}"><div><div class="eyebrow">${escapeHtml(b.version||'Manuscript')}</div><div class="book-title">${escapeHtml(b.title)}</div><p class="meta">${b.chapters.length} chapter${b.chapters.length===1?'':'s'} · ${count} note${count===1?'':'s'}</p></div><div class="stack"><div class="row between"><span class="meta">${pct}% listened</span><button data-delete="${b.id}" class="ghost tiny">Remove</button></div><div class="progress"><i style="width:${pct}%"></i></div><button class="button">Continue reading</button></div></article>`;
 }
@@ -531,7 +571,12 @@ async function renderReader(){
   const p=prefs();
   view.innerHTML=`
     <section class="reader-header"><div class="row between"><div><div class="eyebrow">${escapeHtml(book.title)}</div>${readerChapterTitle(ch)?`<h2 class="reader-title">${escapeHtml(readerChapterTitle(ch))}</h2>`:''}</div><button id="backLibrary" class="ghost tiny">Library</button></div>
-    <select id="chapterSelect" class="chapter-select">${book.chapters.map((c,i)=>`<option value="${i}" ${i===state.chapterIndex?'selected':''}>${escapeHtml(chapterLabel(c,book))}</option>`).join('')}</select></section>
+    <select id="chapterSelect" class="chapter-select">${book.chapters.map((c,i)=>`<option value="${i}" ${i===state.chapterIndex?'selected':''}>${escapeHtml(chapterLabel(c,book))}</option>`).join('')}</select>
+    <div class="reader-search">
+      <div class="reader-search-row"><input id="readerSearchInput" class="select reader-search-input" type="search" value="${escapeHtml(state.readerSearchQuery)}" placeholder="Search this manuscript…" aria-label="Search this manuscript" /><button id="readerSearchBtn" class="ghost">Search</button><button id="readerSearchClear" class="ghost tiny ${state.readerSearchQuery?'':'hidden'}" aria-label="Clear search">Clear</button></div>
+      <div class="row between"><span id="readerSearchStatus" class="meta"></span><span class="meta">Word or phrase · all chapters</span></div>
+      <div id="readerSearchResults" class="reader-search-results hidden"></div>
+    </div></section>
     <article id="readingPage" class="reading-page" aria-label="Manuscript text">${ch.paragraphs.map((t,i)=>`<p data-p="${i}" class="${i===state.selectedParagraph?'selected':''}">${escapeHtml(t)}</p>`).join('')}</article>
     <section class="player compact-player">
       <div class="player-main compact-player-main">
@@ -575,6 +620,13 @@ async function renderReader(){
 
 function wireReader(book,ch){
   $('#backLibrary').onclick=()=>navigate('library');
+  const searchInput=$('#readerSearchInput'),searchBtn=$('#readerSearchBtn'),searchClear=$('#readerSearchClear');
+  const runSearch=()=>{renderReaderSearchResults(book,searchInput?.value||'');searchClear?.classList.toggle('hidden',!String(searchInput?.value||'').trim());wireReaderSearchResults(book)};
+  if(searchBtn)searchBtn.onclick=runSearch;
+  if(searchInput)searchInput.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();runSearch()}else if(e.key==='Escape'){e.preventDefault();searchInput.value='';state.readerSearchQuery='';renderReaderSearchResults(book,'');searchClear?.classList.add('hidden')}};
+  if(searchClear)searchClear.onclick=()=>{if(searchInput)searchInput.value='';state.readerSearchQuery='';renderReaderSearchResults(book,'');searchClear.classList.add('hidden');searchInput?.focus()};
+  if(state.readerSearchQuery){renderReaderSearchResults(book,state.readerSearchQuery);wireReaderSearchResults(book)}
+
   $('#chapterSelect').onchange=async e=>{ stopAllSpeech(); state.chapterIndex=+e.target.value; state.selectedParagraph=0; state.selectedCharOffset=0; state.selectedWordEnd=0; await saveProgress(book); renderReader(); };
   $$('#readingPage p').forEach(p=>p.onclick=async e=>{
     const paragraphIndex=+p.dataset.p;
@@ -615,6 +667,35 @@ function wireReader(book,ch){
   const restoreVoices=$('#restoreVoicesBtn');if(restoreVoices)restoreVoices.onclick=()=>{
     savePrefs({hiddenVoiceKeys:[],hiddenVoices:[]});loadVoices();showToast('Hidden voices restored');
   };
+}
+function readerSearchResultsFromPanel(){
+  const panel=$('#readerSearchResults');if(!panel?.dataset.searchResults)return [];
+  try{return JSON.parse(panel.dataset.searchResults)}catch{return []}
+}
+function wireReaderSearchResults(book){
+  const results=readerSearchResultsFromPanel();
+  $$('[data-search-result]').forEach(btn=>btn.onclick=async e=>{
+    const index=Number(btn.dataset.searchResult),result=results[index];if(!result)return;
+    const play=!!e.target.closest('[data-search-play]');
+    stopAllSpeech();
+    state.chapterIndex=result.chapterIndex;state.selectedParagraph=result.paragraphIndex;
+    const targetText=book.chapters[result.chapterIndex]?.paragraphs?.[result.paragraphIndex]||'';
+    if(play){
+      const seg=sentenceAtOffset(targetText,result.start);
+      state.selectedCharOffset=seg?.start??result.start;
+      state.selectedWordEnd=seg?wordRangeAt(targetText,seg.start).end:result.end;
+      state.pendingPassageReference=null;
+    }else{
+      state.selectedCharOffset=result.start;state.selectedWordEnd=result.end;
+      state.pendingPassageReference={chapterIndex:result.chapterIndex,paragraphIndex:result.paragraphIndex,start:result.start,end:result.end,moved:false};
+    }
+    await saveProgress(book);
+    await renderReader();
+    if(play){
+      await new Promise(resolve=>requestAnimationFrame(resolve));
+      startSpeechFromSelection();
+    }
+  });
 }
 async function selectParagraph(i,noScroll=false,preserveWord=false){ state.selectedParagraph=i; if(!preserveWord){state.selectedCharOffset=0;state.selectedWordEnd=0;} $$('#readingPage p').forEach(p=>p.classList.toggle('selected',+p.dataset.p===i)); $('#positionRange').value=i; $('#positionLabel').textContent=`Paragraph ${i+1} of ${$('#readingPage').children.length}`; const book=await idbGet('books',state.bookId); await saveProgress(book); if(!noScroll) scrollSelected(); }
 function scrollSelected(smooth=true){ const el=$(`#readingPage p[data-p="${state.selectedParagraph}"]`); if(el) el.scrollIntoView({block:'center',behavior:smooth?'smooth':'auto'}); }
@@ -776,7 +857,7 @@ async function mediaMoveParagraph(delta){
   await saveProgress(book);
   await renderReader();
   updateNowPlaying();
-  startSpeech(true);
+  startSpeechFromSelection();
 }
 function setupMediaSession(){
   if(!('mediaSession' in navigator))return;
@@ -789,7 +870,7 @@ function setupMediaSession(){
       setMediaPlaybackState('playing');
       return;
     }
-    if(!state.isSpeaking)startSpeech(true);
+    if(!state.isSpeaking)startSpeechFromSelection();
   });
   safe('pause',()=>{
     if(!state.isSpeaking||state.isPaused)return;
@@ -1182,7 +1263,7 @@ async function handleAction(act,book,ch){
     paragraphIndex:state.selectedParagraph,charOffset:anchor.charStart||0,wordEnd:anchor.charEnd||anchor.charStart||0,
     anchor,excerpt:excerpt(anchor.selectedText||text),createdAt:new Date().toISOString(),status:'open'
   };
-  if(act==='start'){ startSpeech(true); return} if(act==='queue'){navigate('queue');return}
+  if(act==='start'){ startSpeechFromSelection(); return} if(act==='queue'){navigate('queue');return}
   if(act==='bookmark'){await idbPut('items',{...base,id:uid(),type:'bookmark',note:''});showToast('Bookmarked');updateQueueBadge();return}
   if(act==='note') return promptItem('note','Add note','What did you notice?',base);
   if(act==='continuity') return promptItem('continuity','Flag continuity','What seems inconsistent or needs checking?',base);
@@ -1365,21 +1446,23 @@ function fallbackCopyText(text){
   let ok=false;try{ok=document.execCommand('copy')}catch{}
   ta.remove();return ok;
 }
+function showManualCopy(text){
+  modalForm.innerHTML=`<h3>Copy text</h3><p class="sub">Automatic copy was blocked by the browser. The full text is selected below so you can copy it manually.</p><textarea id="manualCopyText" class="manual-copy-text" readonly>${escapeHtml(text)}</textarea><div class="row between"><span class="meta">Press and hold, then Copy.</span><button value="default" class="button">Close</button></div>`;
+  modal.showModal();
+  requestAnimationFrame(()=>{const ta=$('#manualCopyText');if(ta){ta.focus();ta.select();ta.setSelectionRange(0,ta.value.length)}});
+}
 function copyTextReliable(text,successMessage='Copied'){
   if(!text)return false;
+  const failed=()=>{if(fallbackCopyText(text))showToast(successMessage);else showManualCopy(text)};
   if(navigator.clipboard?.writeText){
     try{
       const result=navigator.clipboard.writeText(text);
-      Promise.resolve(result).then(()=>showToast(successMessage)).catch(()=>{
-        if(fallbackCopyText(text))showToast(successMessage);
-        else showToast('Copy was blocked. Press and hold the text to copy manually.');
-      });
+      Promise.resolve(result).then(()=>showToast(successMessage)).catch(failed);
       return true;
     }catch{}
   }
-  const ok=fallbackCopyText(text);
-  showToast(ok?successMessage:'Copy was blocked. Press and hold the text to copy manually.');
-  return ok;
+  if(fallbackCopyText(text)){showToast(successMessage);return true}
+  showManualCopy(text);return false;
 }
 function copyItemsForChat(items){
   if(!items.length)return false;
@@ -1462,7 +1545,7 @@ $$('[data-nav]').forEach(b=>b.addEventListener('click',()=>navigate(b.dataset.na
 $$('[data-reader-act]').forEach(b=>b.addEventListener('click',async()=>{
   if(state.route!=='reader'||!state.bookId)return;
   document.body.classList.remove('mobile-tools-open');
-  if(b.dataset.readerAct==='start'){ startSpeech(true); return; }
+  if(b.dataset.readerAct==='start'){ startSpeechFromSelection(); return; }
   const book=await idbGet('books',state.bookId); if(!book)return;
   const ch=book.chapters[state.chapterIndex]; if(!ch)return;
   await handleAction(b.dataset.readerAct,book,ch);
