@@ -787,10 +787,16 @@ function updateFollowControl(){
 }
 function followNarrationElement(el,{force=false}={}){
   if(!el||state.followNarrationSuspended)return;
-  const rect=el.getBoundingClientRect();
-  const top=Math.max(90,window.innerHeight*.18),bottom=Math.min(window.innerHeight-150,window.innerHeight*.72);
-  const outside=rect.top<top||rect.bottom>bottom;
-  if(force||outside)el.scrollIntoView({block:'center',behavior:'smooth'});
+  const page=$('#readingPage');if(!page)return;
+  const pageRect=page.getBoundingClientRect(),rect=el.getBoundingClientRect();
+  const margin=Math.min(96,Math.max(42,page.clientHeight*.2));
+  const safeTop=pageRect.top+margin,safeBottom=pageRect.bottom-margin;
+  const outside=rect.top<safeTop||rect.bottom>safeBottom;
+  if(force||outside){
+    const targetCenter=(rect.top+rect.bottom)/2;
+    const pageCenter=(pageRect.top+pageRect.bottom)/2;
+    page.scrollTo({top:page.scrollTop+(targetCenter-pageCenter),behavior:'smooth'});
+  }
 }
 function resumeNarrationFollow(){
   state.followNarrationSuspended=false;updateFollowControl();
