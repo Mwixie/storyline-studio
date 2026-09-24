@@ -34,6 +34,11 @@ function voiceKey(v){ return v?.voiceURI || `${v?.name||''}|${v?.lang||''}`; }
 function isSamanthaVoice(v){return /^samantha(?:\b|\s|\()/i.test(String(v?.name||'').trim())}
 function samanthaVoices(){return state.voices.filter(isSamanthaVoice)}
 function voiceDisplayName(v){ return `${v?.name||'Samantha'}${v?.lang?' · '+v.lang:''} · ${v?.localService?'On device':'Online'}`; }
+const READING_RATES=[0.75,0.80,0.85,0.90,0.95,1.00,1.05,1.10,1.15,1.20,1.25,1.30,1.35,1.40,1.45,1.50,1.55,1.60,1.65,1.70,1.75];
+function rateOptions(selected){
+  const wanted=Number(selected||1.05);
+  return READING_RATES.map(r=>`<option value="${r.toFixed(2)}" ${Math.abs(r-wanted)<.001?'selected':''}>${r.toFixed(2)}×</option>`).join('');
+}
 function excerpt(s,n=180){ const x=(s||'').trim(); return x.length>n?x.slice(0,n-1)+'…':x; }
 function anchorNormalize(s=''){
   return String(s).normalize?.('NFKC').toLowerCase()
@@ -670,8 +675,9 @@ async function renderReader(){
         <div class="voice-options-panel">
           <select id="voiceSelect" class="select"><option>Loading Samantha…</option></select>
           <label class="voice-style-setting"><span class="meta">Reading style</span><select id="readingStyleSelect" class="select"><option value="natural" ${(p.readingStyle||'natural')==='natural'?'selected':''}>Natural · flowing</option><option value="standard" ${p.readingStyle==='standard'?'selected':''}>Standard · sentence by sentence</option></select><small class="meta">Natural keeps Samantha speaking across a few sentences for smoother phrasing.</small></label>
-          <div class="speed-box"><span class="meta">Speed</span><input id="rateRange" class="range" type="range" min="0.75" max="1.75" step="0.05" value="${p.rate||1.05}" title="Reading speed" /></div>
+          <label class="speed-box"><span class="meta">Speed</span><select id="rateSelect" class="select" title="Reading speed">${rateOptions(p.rate||1.05)}</select><small class="meta">Changes take effect immediately while reading.</small></label>
           <button id="testVoiceBtn" class="ghost tiny">Preview Samantha here</button>
+          <div id="voiceAvailabilityNote" class="meta voice-availability-note"></div>
           <div class="sleep-box"><span class="meta">Sleep timer</span><select id="sleepTimerSelect" class="select"><option value="0">Off</option><option value="15">15 min</option><option value="30">30 min</option><option value="45">45 min</option><option value="60">60 min</option></select><span id="sleepTimerStatus" class="meta">Sleep timer off</span></div>
           <label class="chapter-advance-toggle"><input id="autoAdvanceToggle" type="checkbox" ${p.autoAdvance!==false?'checked':''} /><span><strong>Continue to next chapter</strong><small>Keep reading automatically when a chapter ends.</small></span></label>
           <div class="wake-note meta">Screen stays awake while Storyline reads, when supported. Manually locking the device can still pause playback.</div>
@@ -738,15 +744,23 @@ function wireReader(book,ch){
   $('#replayBtn').onclick=replayCurrentSentence;
   $('#sleepTimerSelect').onchange=e=>setSleepTimer(+e.target.value);
   $('#autoAdvanceToggle').onchange=e=>savePrefs({autoAdvance:e.target.checked});
-  $('#rateRange').oninput=e=>{const r=+e.target.value; savePrefs({rate:r}); $('#speedLabel').textContent=r+'×'; updateVoiceSummary();};
+  const rateSelect=$('#rateSelect');if(rateSelect)rateSelect.onchange=e=>{
+    const rate=Number(e.target.value)||1.05;
+    savePrefs({rate});
+    const label=$('#speedLabel');if(label)label.textContent=rate.toFixed(2)+'×';
+    updateVoiceSummary();
+    restartNarrationForSettingChange('Speed changed');
+  };
   const voiceSelect=$('#voiceSelect'); if(voiceSelect) voiceSelect.onchange=e=>{
     const chosen=samanthaVoices().find(v=>voiceKey(v)===e.target.value);
     if(chosen)savePrefs({voiceKey:voiceKey(chosen),voiceName:chosen.name});
     updateVoiceSummary();
+    restartNarrationForSettingChange('Samantha changed');
   };
   const readingStyle=$('#readingStyleSelect');if(readingStyle)readingStyle.onchange=e=>{
     savePrefs({readingStyle:e.target.value==='standard'?'standard':'natural'});
     updateVoiceSummary();
+    restartNarrationForSettingChange('Reading style changed');
   };
 }
 function readerSearchResultsFromPanel(){
@@ -819,8 +833,8 @@ function persistReadingProgress(){
 function updateVoiceSummary(){
   const sel=$('#voiceSelect'); const summary=$('#voiceSummary'); const st=$('#voiceStatus');
   const option=sel?.selectedOptions?.[0],name=option?.dataset?.name||prefs().voiceName||'Samantha';
-  const rate=prefs().rate||1.05,style=(prefs().readingStyle||'natural')==='standard'?'Standard':'Natural';
-  if(summary)summary.textContent=`${name} · ${style} · ${rate}×`;
+  const rate=Number(prefs().rate||1.05),style=(prefs().readingStyle||'natural')==='standard'?'Standard':'Natural';
+  if(summary)summary.textContent=`${name} · ${style} · ${rate.toFixed(2)}×`;
   if(st&&!state.isSpeaking)st.textContent=state.voicesReady?`${option?.textContent||name} ready`:'Samantha unavailable';
 }
 function setSpeechControlsReady(ready){
@@ -854,6 +868,15 @@ function loadVoices(){
     const installed=samanthas.filter(v=>v.localService);
     const online=samanthas.filter(v=>!v.localService);
     sel.innerHTML=groupHtml('Samantha · on device',installed)+groupHtml('Samantha · online',online);
+    const availability=$('#voiceAvailabilityNote');
+    if(availability){
+      const parts=[];
+      if(installed.length)parts.push(`${installed.length} on device`);
+      if(online.length)parts.push(`${online.length} online`);
+      availability.textContent=samanthas.length
+        ? `This browser currently exposes ${samanthas.length} Samantha voice${samanthas.length===1?'':'s'} (${parts.join(', ')}). Storyline can only show voices the browser provides.`
+        : 'This browser is not currently exposing a Samantha voice to Storyline.';
+    }
 
     if(!samanthas.length){
       sel.innerHTML='<option value="">Samantha is not available in this browser</option>';
@@ -1111,9 +1134,9 @@ function startSpeech(fromSelected=true){
     const naturalChunkFrom=index=>{
       const startIndex=index,startChar=segments[index].start;
       let endIndex=index;
-      while(endIndex+1<segments.length&&endIndex-startIndex<2){
+      while(endIndex+1<segments.length&&endIndex-startIndex<5){
         const candidateEnd=segments[endIndex+1].end;
-        if(candidateEnd-startChar>460)break;
+        if(candidateEnd-startChar>900)break;
         endIndex++;
       }
       const endChar=segments[endIndex].end;
