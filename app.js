@@ -39,6 +39,16 @@ function rateOptions(selected){
   const wanted=Number(selected||1.05);
   return READING_RATES.map(r=>`<option value="${r.toFixed(2)}" ${Math.abs(r-wanted)<.001?'selected':''}>${r.toFixed(2)}×</option>`).join('');
 }
+const DIALOGUE_PITCHES=[0.70,0.80,0.90,1.00,1.05,1.10,1.15,1.20,1.25,1.30,1.35,1.40];
+const DIALOGUE_RATE_OFFSETS=[-0.10,-0.05,0,0.05,0.10];
+function dialoguePitchOptions(selected){
+  const wanted=Number(selected??1.15);
+  return DIALOGUE_PITCHES.map(v=>`<option value="${v.toFixed(2)}" ${Math.abs(v-wanted)<.001?'selected':''}>${v.toFixed(2)}× pitch</option>`).join('');
+}
+function dialogueRateOptions(selected){
+  const wanted=Number(selected??0);
+  return DIALOGUE_RATE_OFFSETS.map(v=>`<option value="${v.toFixed(2)}" ${Math.abs(v-wanted)<.001?'selected':''}>${v>0?'+':''}${v.toFixed(2)}× rate</option>`).join('');
+}
 function regexEscape(s=''){return String(s).replace(/[.*+?^${}()|[\]\\]/g,'\\function rateOptions(selected){
   const wanted=Number(selected||1.05);
   return READING_RATES.map(r=>`<option value="${r.toFixed(2)}" ${Math.abs(r-wanted)<.001?'selected':''}>${r.toFixed(2)}×</option>`).join('');
@@ -918,6 +928,14 @@ async function renderReader(){
           <select id="voiceSelect" class="select"><option>Loading Samantha…</option></select>
           <label class="voice-style-setting"><span class="meta">Reading style</span><select id="readingStyleSelect" class="select"><option value="natural" ${(p.readingStyle||'natural')==='natural'?'selected':''}>Natural · flowing</option><option value="standard" ${p.readingStyle==='standard'?'selected':''}>Standard · sentence by sentence</option></select><small class="meta">Natural keeps Samantha speaking across a few sentences for smoother phrasing.</small></label>
           <label class="speed-box"><span class="meta">Speed</span><select id="rateSelect" class="select" title="Reading speed">${rateOptions(p.rate||1.05)}</select><small class="meta">Changes take effect immediately while reading.</small></label>
+          <div class="dialogue-settings">
+            <label class="chapter-advance-toggle"><input id="dialogueToggle" type="checkbox" ${p.dialogueEnabled?'checked':''} /><span><strong>Dialogue voice</strong><small>Use a shifted voice for quoted dialogue.</small></span></label>
+            <div id="dialogueControls" class="dialogue-controls ${p.dialogueEnabled?'':'hidden'}">
+              <label><span class="meta">Dialogue Samantha</span><select id="dialogueVoiceSelect" class="select"><option value="">Same Samantha</option></select></label>
+              <label><span class="meta">Pitch</span><select id="dialoguePitchSelect" class="select">${dialoguePitchOptions(p.dialoguePitch??1.15)}</select></label>
+              <label><span class="meta">Rate offset</span><select id="dialogueRateSelect" class="select">${dialogueRateOptions(p.dialogueRateOffset??0)}</select></label>
+            </div>
+          </div>
           <button id="testVoiceBtn" class="ghost tiny">Preview Samantha here</button>
           <div id="voiceAvailabilityNote" class="meta voice-availability-note"></div>
           <div class="sleep-box"><span class="meta">Sleep timer</span><select id="sleepTimerSelect" class="select"><option value="0">Off</option><option value="15">15 min</option><option value="30">30 min</option><option value="45">45 min</option><option value="60">60 min</option></select><span id="sleepTimerStatus" class="meta">Sleep timer off</span></div>
@@ -1004,6 +1022,15 @@ function wireReader(book,ch){
     updateVoiceSummary();
     restartNarrationForSettingChange('Reading style changed');
   };
+  const dialogueToggle=$('#dialogueToggle'),dialogueControls=$('#dialogueControls');
+  if(dialogueToggle)dialogueToggle.onchange=e=>{
+    savePrefs({dialogueEnabled:e.target.checked});
+    dialogueControls?.classList.toggle('hidden',!e.target.checked);
+    restartNarrationForSettingChange(e.target.checked?'Dialogue voice on':'Dialogue voice off');
+  };
+  const dialogueVoice=$('#dialogueVoiceSelect');if(dialogueVoice)dialogueVoice.onchange=e=>{savePrefs({dialogueVoiceKey:e.target.value});restartNarrationForSettingChange('Dialogue voice changed')};
+  const dialoguePitch=$('#dialoguePitchSelect');if(dialoguePitch)dialoguePitch.onchange=e=>{savePrefs({dialoguePitch:Number(e.target.value)||1});restartNarrationForSettingChange('Dialogue pitch changed')};
+  const dialogueRate=$('#dialogueRateSelect');if(dialogueRate)dialogueRate.onchange=e=>{savePrefs({dialogueRateOffset:Number(e.target.value)||0});restartNarrationForSettingChange('Dialogue rate changed')};
 }
 function readerSearchResultsFromPanel(){
   const panel=$('#readerSearchResults');if(!panel?.dataset.searchResults)return [];
