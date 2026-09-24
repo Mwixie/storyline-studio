@@ -39,6 +39,134 @@ function rateOptions(selected){
   const wanted=Number(selected||1.05);
   return READING_RATES.map(r=>`<option value="${r.toFixed(2)}" ${Math.abs(r-wanted)<.001?'selected':''}>${r.toFixed(2)}×</option>`).join('');
 }
+function regexEscape(s=''){return String(s).replace(/[.*+?^${}()|[\]\\]/g,'\\function rateOptions(selected){
+  const wanted=Number(selected||1.05);
+  return READING_RATES.map(r=>`<option value="${r.toFixed(2)}" ${Math.abs(r-wanted)<.001?'selected':''}>${r.toFixed(2)}×</option>`).join('');
+}
+')}
+function pronunciationRegex(entry){
+  const raw=String(entry?.match||'').trim();
+  if(!raw)return null;
+  const escaped=regexEscape(raw);
+  const simple=/^[A-Za-z0-9 ]+$/.test(raw);
+  return new RegExp(simple?`\\b${escaped}\\b`:escaped,'gi');
+}
+function pronunciationMatches(source,entries=[]){
+  const matches=[];
+  const sorted=[...entries].filter(x=>x?.match&&x?.replacement).sort((a,b)=>b.match.length-a.match.length);
+  for(const entry of sorted){
+    const re=pronunciationRegex(entry);if(!re)continue;
+    for(const m of source.matchAll(re))matches.push({start:m.index,end:m.index+m[0].length,replacement:String(entry.replacement),entry});
+  }
+  matches.sort((a,b)=>a.start-b.start||(b.end-b.start)-(a.end-a.start));
+  const chosen=[];let cursor=-1;
+  for(const m of matches){if(m.start<cursor)continue;chosen.push(m);cursor=m.end}
+  return chosen;
+}
+function transformSpeechText(source,entries=[],sourceBase=0){
+  const text=String(source||''),matches=pronunciationMatches(text,entries);
+  if(!matches.length)return {text,mapIndex:i=>sourceBase+Math.max(0,Math.min(Number(i)||0,text.length))};
+  let spoken='',srcPos=0;
+  const spans=[];
+  for(const m of matches){
+    if(m.start>srcPos){
+      const part=text.slice(srcPos,m.start),spokenStart=spoken.length;
+      spoken+=part;spans.push({spokenStart,spokenEnd:spoken.length,sourceStart:sourceBase+srcPos,sourceEnd:sourceBase+m.start,replace:false});
+    }
+    const spokenStart=spoken.length;
+    spoken+=m.replacement;
+    spans.push({spokenStart,spokenEnd:spoken.length,sourceStart:sourceBase+m.start,sourceEnd:sourceBase+m.end,replace:true});
+    srcPos=m.end;
+  }
+  if(srcPos<text.length){
+    const spokenStart=spoken.length;
+    spoken+=text.slice(srcPos);spans.push({spokenStart,spokenEnd:spoken.length,sourceStart:sourceBase+srcPos,sourceEnd:sourceBase+text.length,replace:false});
+  }
+  const mapIndex=i=>{
+    const pos=Math.max(0,Math.min(Number(i)||0,spoken.length));
+    const span=spans.find(s=>pos>=s.spokenStart&&pos<=s.spokenEnd)||spans[spans.length-1];
+    if(!span)return sourceBase;
+    if(!span.replace)return Math.min(span.sourceEnd,span.sourceStart+(pos-span.spokenStart));
+    const spokenLen=Math.max(1,span.spokenEnd-span.spokenStart),sourceLen=Math.max(1,span.sourceEnd-span.sourceStart);
+    return Math.min(span.sourceEnd,span.sourceStart+Math.round(((pos-span.spokenStart)/spokenLen)*sourceLen));
+  };
+  return {text:spoken,mapIndex};
+}
+function dialogueRanges(source,start=0,end=source.length){
+  const text=String(source||''),a=Math.max(0,start),b=Math.min(text.length,end);
+  const ranges=[];let cursor=a,dialogueStart=null,quoteType=null;
+  const push=(s,e,kind)=>{if(e>s)ranges.push({start:s,end:e,kind})};
+  for(let i=a;i<b;i++){
+    const ch=text[i],prev=text[i-1]||'',next=text[i+1]||'';
+    let isQuote=false,type='';
+    if(ch==='“'){isQuote=true;type='curly';if(dialogueStart!==null)continue}
+    else if(ch==='”'){isQuote=true;type='curly-close'}
+    else if(ch==='"'){isQuote=true;type='double'}
+    else if(ch==="'"||ch==='’'){
+      if(/[A-Za-z]/.test(prev)&&/[A-Za-z]/.test(next))continue;
+      isQuote=true;type='single';
+    }
+    if(!isQuote)continue;
+    if(dialogueStart===null){
+      push(cursor,i,'narration');dialogueStart=i;quoteType=type==='curly'?'curly':type;cursor=i;
+    }else{
+      const closes=quoteType==='curly'?type==='curly-close':quoteType===type;
+      if(closes){push(dialogueStart,i+1,'dialogue');cursor=i+1;dialogueStart=null;quoteType=null}
+    }
+  }
+  if(dialogueStart!==null)push(dialogueStart,b,'narration');else push(cursor,b,'narration');
+  return ranges.length?ranges:[{start:a,end:b,kind:'narration'}];
+}
+function speechPiecesForRange(source,start,end,book,settings={}){
+  const pronunciations=book?.pronunciations||[];
+  const ranges=settings.dialogueEnabled?dialogueRanges(source,start,end):[{start,end,kind:'narration'}];
+  return ranges.map(range=>{
+    const transformed=transformSpeechText(source.slice(range.start,range.end),pronunciations,range.start);
+    return {...range,text:transformed.text,mapIndex:transformed.mapIndex};
+  }).filter(x=>x.text);
+}
+function selectedReaderText(){
+  try{
+    const selection=window.getSelection?.();if(!selection||selection.isCollapsed)return '';
+    const text=selection.toString().trim();if(!text)return '';
+    const node=selection.anchorNode,el=node?.nodeType===1?node:node?.parentElement;
+    return el?.closest?.('#readingPage')?text:'';
+  }catch{return ''}
+}
+function pronunciationManager(book,prefill=''){
+  const rows=(book.pronunciations||[]).map(p=>`<div class="pronunciation-row" data-pronunciation="${p.id}"><div><strong>${escapeHtml(p.match)}</strong><span> → “${escapeHtml(p.replacement)}”</span></div><div class="row"><button type="button" class="ghost tiny" data-pron-edit="${p.id}">Edit</button><button type="button" class="ghost tiny danger-ghost" data-pron-delete="${p.id}">Delete</button></div></div>`).join('');
+  modalForm.innerHTML=`<h3>Pronunciations</h3><p class="sub">Storyline changes only what the voice says. Your manuscript text stays untouched.</p>
+    <div class="pronunciation-add"><input id="pronMatch" class="select" maxlength="100" placeholder="Word or phrase" value="${escapeHtml(prefill)}" /><input id="pronReplacement" class="select" maxlength="160" placeholder="Say it as…" /></div>
+    <div class="row between"><span class="meta">${(book.pronunciations||[]).length}/200 saved</span><button type="button" id="pronSave" class="button">Add pronunciation</button></div>
+    <div class="pronunciation-list">${rows||'<div class="empty">No custom pronunciations yet.</div>'}</div>
+    <div class="row between"><span class="meta">Longest matching phrase wins.</span><button value="default" class="ghost">Close</button></div>`;
+  modal.showModal();
+  const saveEntry=async(existingId=null)=>{
+    const match=$('#pronMatch').value.trim(),replacement=$('#pronReplacement').value.trim();
+    if(!match||!replacement){showToast('Add both the written form and how it should sound.');return}
+    const list=[...(book.pronunciations||[])];
+    if(!existingId&&list.length>=200){showToast('This book already has 200 pronunciations.');return}
+    const duplicate=list.find(x=>x.id!==existingId&&x.match.toLowerCase()===match.toLowerCase());
+    if(duplicate){showToast('That pronunciation already exists.');return}
+    const found=list.find(x=>x.id===existingId);
+    if(found){found.match=match;found.replacement=replacement;found.updatedAt=new Date().toISOString()}
+    else list.push({id:uid(),match,replacement,createdAt:new Date().toISOString()});
+    book.pronunciations=list;book.updatedAt=new Date().toISOString();await idbPut('books',book);
+    pronunciationManager(book);
+    if(state.isSpeaking)restartNarrationForSettingChange('Pronunciation updated');
+  };
+  $('#pronSave').onclick=()=>saveEntry();
+  $('[data-pron-edit]').forEach(btn=>btn.onclick=()=>{
+    const p=(book.pronunciations||[]).find(x=>x.id===btn.dataset.pronEdit);if(!p)return;
+    $('#pronMatch').value=p.match;$('#pronReplacement').value=p.replacement;
+    $('#pronSave').textContent='Save change';$('#pronSave').onclick=()=>saveEntry(p.id);
+  });
+  $('[data-pron-delete]').forEach(btn=>btn.onclick=async()=>{
+    book.pronunciations=(book.pronunciations||[]).filter(x=>x.id!==btn.dataset.pronDelete);
+    book.updatedAt=new Date().toISOString();await idbPut('books',book);pronunciationManager(book);
+  });
+  requestAnimationFrame(()=>$('#pronReplacement')?.focus());
+}
 function excerpt(s,n=180){ const x=(s||'').trim(); return x.length>n?x.slice(0,n-1)+'…':x; }
 function anchorNormalize(s=''){
   return String(s).normalize?.('NFKC').toLowerCase()
