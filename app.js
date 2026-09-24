@@ -10,7 +10,8 @@ const state = {
   playbackToken:0, speakingPIndex:null, speakingSIndex:null, speakingSegments:null, replayCurrent:null,
   sleepTimerId:null, sleepIntervalId:null, sleepDeadline:null, sleepMinutes:0, wakeLock:null, chapterTransitionNotice:'',
   pendingPassageReference:null, activeEngine:'device', readerSearchQuery:'',
-  followNarrationSuspended:false, readerBook:null, recapBookId:null, selectedReaderPhrase:''
+  followNarrationSuspended:false, readerBook:null, recapBookId:null, selectedReaderPhrase:'',
+  liveCharOffset:null, pendingHandoffContext:null, handoffScanStop:null
 };
 
 const PREF='storyline.prefs.v1';
