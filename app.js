@@ -1236,13 +1236,14 @@ async function renderLibrary(){
   const books=(await idbGetAll('books')).sort((a,b)=>new Date(b.updatedAt)-new Date(a.updatedAt));
   const items=await idbGetAll('items');
   view.innerHTML=`
-    <section class="hero"><div class="eyebrow">Your private listening desk</div><h1>Read with your ears.<br>Revise with receipts.</h1><p class="sub">Your manuscript stays in this browser. Storyline remembers where you stopped and keeps every note tied to its exact passage.</p></section>
+    <section class="hero"><div class="eyebrow">Your private listening desk</div><h1>Read with your ears.<br>Revise with receipts.</h1><p class="sub">Your manuscript stays in this browser. Storyline remembers where you stopped and keeps every note tied to its exact passage.</p><div class="row hero-actions"><button id="receiveHandoffBtn" class="ghost">Receive handoff</button></div></section>
     <section id="importZone" class="import-zone" tabindex="0"><strong>${books.length?'Add another manuscript':'Bring in a manuscript'}</strong><p class="sub">DOCX, EPUB, PDF, ODT, Markdown, HTML, TXT, or pasted text. Chapter headings are detected automatically.</p><div class="row import-actions"><button id="importBtn" class="button">Choose manuscript</button><button id="pasteImportBtn" class="ghost">Paste text or file</button></div><div class="privacy">You can also drag/drop or paste a copied manuscript file here. Everything stays local to this browser.</div></section>
     <section class="backup-card card"><div><div class="eyebrow">Data safety</div><h2>Backup & restore</h2><p class="sub">Export manuscripts, reading positions, Queue and Actioned items, preferences, and saved voice-note audio.</p></div><div class="row backup-actions"><button id="exportBackupBtn" class="ghost">Export backup</button><button id="restoreBackupBtn" class="ghost">Restore backup</button><input id="restoreBackupInput" type="file" accept="application/json,.json" hidden /></div></section>
     ${books.length?`<h2 class="section-title">My manuscripts</h2><div class="grid books">${books.map(b=>bookCard(b,items)).join('')}</div>`:`<div class="empty">Your library is waiting for its first book.</div>`}
   `;
   $('#importBtn').onclick=()=>fileInput.click();
   $('#pasteImportBtn').onclick=()=>openPasteImport();
+  const receiveHandoff=$('#receiveHandoffBtn');if(receiveHandoff)receiveHandoff.onclick=()=>openHandoffReceiver();
   const importZone=$('#importZone');
   importZone.onpaste=async e=>{
     if(e.target.closest('input,textarea'))return;
@@ -1388,6 +1389,7 @@ async function renderReader(){
     <section class="reader-header"><div class="row between"><div><div class="eyebrow">${escapeHtml(book.title)}</div>${readerChapterTitle(ch)?`<h2 class="reader-title">${escapeHtml(readerChapterTitle(ch))}</h2>`:''}</div><button id="backLibrary" class="ghost tiny">Library</button></div>
     <select id="chapterSelect" class="chapter-select">${book.chapters.map((c,i)=>`<option value="${i}" ${i===state.chapterIndex?'selected':''}>${escapeHtml(chapterLabel(c,book))} · ${readingMinutesLabel(chapterWordCount(c))}</option>`).join('')}</select>
     ${recapCardHtml(book)}
+    ${handoffLandingCardHtml(book)}
     <div class="reader-search">
       <div class="reader-search-row"><input id="readerSearchInput" class="select reader-search-input" type="search" value="${escapeHtml(state.readerSearchQuery)}" placeholder="Search this manuscript…" aria-label="Search this manuscript" /><button id="readerSearchBtn" class="ghost">Search</button><button id="readerSearchClear" class="ghost tiny ${state.readerSearchQuery?'':'hidden'}" aria-label="Clear search">Clear</button></div>
       <div class="row between"><span id="readerSearchStatus" class="meta"></span><span class="meta">Word or phrase · all chapters</span></div>
@@ -1511,6 +1513,7 @@ function wireReader(book,ch){
   };
   const recapResume=$('#recapResume');if(recapResume)recapResume.onclick=()=>{state.recapBookId=null;$('#recapCard')?.remove();scrollSelected(false)};
   const recapDismiss=$('#recapDismiss');if(recapDismiss)recapDismiss.onclick=()=>{state.recapBookId=null;$('#recapCard')?.remove()};
+  const handoffDismiss=$('#dismissHandoffLanding');if(handoffDismiss)handoffDismiss.onclick=()=>{state.pendingHandoffContext=null;$('#handoffLandingCard')?.remove()};
   const recapStart=$('#recapChapterStart');if(recapStart)recapStart.onclick=async()=>{
     state.recapBookId=null;state.selectedParagraph=0;state.selectedCharOffset=0;state.selectedWordEnd=0;
     await saveProgress(book);await renderReader();
@@ -1913,7 +1916,7 @@ function startSpeech(fromSelected=true,{preserveFollow=false}={}){
       const seg=segments[index];if(!seg)return;
       state.speakingPIndex=pIndex;state.speakingSIndex=index;state.speakingSegments=segments;
       const startWord=wordRangeAt(full,seg.start);
-      state.selectedCharOffset=seg.start;state.selectedWordEnd=startWord.end;
+      state.selectedCharOffset=seg.start;state.selectedWordEnd=startWord.end;state.liveCharOffset=seg.start;
       persistReadingProgress();
       updateReadingTimeMeta(book);
       highlightRange(pIndex,seg.start,seg.end);
@@ -1957,6 +1960,8 @@ function startSpeech(fromSelected=true,{preserveFollow=false}={}){
         if(pieceIndex>=pieces.length){onDone();return}
         const piece=pieces[pieceIndex++];
         speakPiece(piece,nextPiece,sourceIndex=>{
+          state.liveCharOffset=Math.max(0,Math.min(sourceIndex,full.length));
+          const liveWord=wordRangeAt(full,state.liveCharOffset);state.selectedWordEnd=Math.max(state.liveCharOffset,liveWord.end||state.liveCharOffset);
           const next=sentenceIndexAtSource(sourceIndex);
           if(next!==highlighted){highlighted=next;setSentenceState(next)}
         });
@@ -2026,7 +2031,7 @@ function stopAllSpeech(){
   try{if(window.meSpeak)meSpeak.stop()}catch{}
   state.isSpeaking=false;state.isPaused=false;state.activeUtterance=null;state.localSpeakingId=null;state.speakingParagraph=null;
   setMediaPlaybackState('none');
-  state.speakingPIndex=null;state.speakingSIndex=null;state.speakingSegments=null;state.replayCurrent=null;
+  state.speakingPIndex=null;state.speakingSIndex=null;state.speakingSegments=null;state.replayCurrent=null;state.liveCharOffset=null;
   clearSleepTimer();releaseWakeLock();
   const b=$('#playBtn');if(b){b.textContent='▶';b.setAttribute('aria-label','Play')}
   const replay=$('#replayBtn');if(replay)replay.disabled=true;
@@ -2139,7 +2144,7 @@ async function startLocalSpeech(fromSelected=true,{preserveFollow=false}={}){
       }
       const sentenceIndex=sIndex,part=sentenceParts[sentenceIndex],settings=prefs();
       state.speakingPIndex=pIndex;state.speakingSIndex=sentenceIndex;state.speakingSegments=sentenceParts;
-      state.selectedCharOffset=part.start;state.selectedWordEnd=wordRangeAt(full,part.start).end;
+      state.selectedCharOffset=part.start;state.selectedWordEnd=wordRangeAt(full,part.start).end;state.liveCharOffset=part.start;
       persistReadingProgress();updateReadingTimeMeta(book);highlightSentence(pIndex,sentenceIndex,sentenceParts);
       if(st)st.textContent=`Reading paragraph ${pIndex+1} · sentence ${sentenceIndex+1}/${sentenceParts.length}`;
       const pieces=speechPiecesForRange(full,part.start,part.end,book,{dialogueEnabled:!!settings.dialogueEnabled});
@@ -2291,6 +2296,7 @@ async function handleAction(act,book,ch){
     anchor,excerpt:excerpt(anchor.selectedText||text),createdAt:new Date().toISOString(),status:'open'
   };
   if(act==='start'){ startSpeechFromSelection(); return} if(act==='queue'){navigate('queue');return}
+  if(act==='handoff'){openHandoffSender(book);return}
   if(act==='pronunciations'){pronunciationManager(book,selectedReaderText());return}
   if(act==='bookmark'){await idbPut('items',{...base,id:uid(),type:'bookmark',note:''});showToast('Bookmarked');updateQueueBadge();return}
   if(act==='note') return promptItem('note','Add note','What did you notice?',base);
