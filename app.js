@@ -2249,25 +2249,32 @@ function wireReaderSearchResults(book){
   const results=readerSearchResultsFromPanel();
   $$('[data-search-result]').forEach(btn=>btn.onclick=async e=>{
     const index=Number(btn.dataset.searchResult),result=results[index];if(!result)return;
+    if(result.kind==='item'){
+      const item=await idbGet('items',result.itemId);if(!item){showToast('That revision item is no longer available.');return}
+      let resolved=resolvePassageAnchor(book,item);
+      if(resolved.unverified&&item.migrationUncertain&&item.migrationFallback){
+        const f=item.migrationFallback,ch=book.chapters[Math.max(0,Math.min(f.chapterIndex||0,book.chapters.length-1))];
+        const pi=Math.max(0,Math.min(f.paragraphIndex||0,Math.max(0,(ch?.paragraphs?.length||1)-1))),text=String(ch?.paragraphs?.[pi]||'');
+        const start=Math.max(0,Math.min(f.charStart||0,text.length)),end=Math.max(start,Math.min(f.charEnd||start,text.length));
+        resolved={chapterIndex:Math.max(0,Math.min(f.chapterIndex||0,book.chapters.length-1)),paragraphIndex:pi,start,end,score:item.migrationScore||0,moved:true,unverified:true,migrationFallback:true};
+      }
+      stopAllSpeech();state.chapterIndex=resolved.chapterIndex;state.selectedParagraph=resolved.paragraphIndex;
+      state.selectedCharOffset=resolved.start||0;state.selectedWordEnd=resolved.end||resolved.start||0;state.pendingPassageReference=resolved;
+      await saveProgress(book);await renderReader();showToast(result.field==='transcript'?'Opened voice-note transcript location':'Opened revision item');
+      return;
+    }
     const play=!!e.target.closest('[data-search-play]');
-    stopAllSpeech();
-    state.chapterIndex=result.chapterIndex;state.selectedParagraph=result.paragraphIndex;
+    stopAllSpeech();state.chapterIndex=result.chapterIndex;state.selectedParagraph=result.paragraphIndex;
     const targetText=book.chapters[result.chapterIndex]?.paragraphs?.[result.paragraphIndex]||'';
     if(play){
       const seg=sentenceAtOffset(targetText,result.start);
-      state.selectedCharOffset=seg?.start??result.start;
-      state.selectedWordEnd=seg?wordRangeAt(targetText,seg.start).end:result.end;
-      state.pendingPassageReference=null;
+      state.selectedCharOffset=seg?.start??result.start;state.selectedWordEnd=seg?wordRangeAt(targetText,seg.start).end:result.end;state.pendingPassageReference=null;
     }else{
       state.selectedCharOffset=result.start;state.selectedWordEnd=result.end;
       state.pendingPassageReference={chapterIndex:result.chapterIndex,paragraphIndex:result.paragraphIndex,start:result.start,end:result.end,moved:false};
     }
-    await saveProgress(book);
-    await renderReader();
-    if(play){
-      await new Promise(resolve=>requestAnimationFrame(resolve));
-      startSpeechFromSelection();
-    }
+    await saveProgress(book);await renderReader();
+    if(play){await new Promise(resolve=>requestAnimationFrame(resolve));startSpeechFromSelection()}
   });
 }
 async function selectParagraph(i,noScroll=false,preserveWord=false){ state.selectedParagraph=i; if(!preserveWord){state.selectedCharOffset=0;state.selectedWordEnd=0;} $$('#readingPage p').forEach(p=>p.classList.toggle('selected',+p.dataset.p===i)); $('#positionRange').value=i; $('#positionLabel').textContent=readerPositionLabel(book,state.chapterIndex,i,$('#readingPage').children.length); const book=await idbGet('books',state.bookId); await saveProgress(book); updateReadingTimeMeta(book); if(!noScroll) scrollSelected(); }
