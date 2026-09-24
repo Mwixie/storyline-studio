@@ -1333,17 +1333,32 @@ async function testSound(){
 function testVoice(){
   if(!('speechSynthesis' in window) || typeof SpeechSynthesisUtterance==='undefined'){ showToast('Text-to-speech is not available in this browser.'); return; }
   stopAllSpeech();
-  const p=prefs(); const selectedKey=$('#voiceSelect')?.value||p.voiceKey;
-  const v=state.voices.find(x=>voiceKey(x)===selectedKey) || state.voices.find(x=>x.name===p.voiceName) || state.voices.find(x=>x.lang==='en-US') || state.voices[0];
-  const u=new SpeechSynthesisUtterance('Storyline Studio voice test.');
+  const p=prefs(),selectedKey=$('#voiceSelect')?.value||p.voiceKey;
+  const voices=samanthaVoices();
+  const v=voices.find(x=>voiceKey(x)===selectedKey)||voices.find(x=>x.localService)||voices[0];
+  if(!v){showToast('Samantha is not available in this browser.');return}
+
+  const source=$(`#readingPage p[data-p="${state.selectedParagraph}"]`)?.textContent||'';
+  const start=Math.max(0,Math.min(state.selectedCharOffset||0,source.length));
+  const parts=sentenceSegments(source,start);
+  const natural=(p.readingStyle||'natural')==='natural';
+  let sample='Storyline Studio Samantha preview.';
+  if(parts.length){
+    if(natural){
+      let end=0;
+      while(end+1<parts.length&&end<2&&parts[end+1].end-parts[0].start<=420)end++;
+      sample=source.slice(parts[0].start,parts[end].end);
+    }else sample=parts[0].text;
+  }
+
+  const u=new SpeechSynthesisUtterance(sample);
   state.activeUtterance=u;
-  u.volume=1; u.rate=1; u.pitch=1;
-  if(v){ u.voice=v; u.lang=v.lang; } else { u.lang='en-US'; }
+  u.volume=1;u.rate=+(p.rate||1.05);u.pitch=1;u.voice=v;u.lang=v.lang||'en-US';
   const st=$('#voiceStatus');
-  if(st) st.textContent='Testing…';
-  u.onstart=()=>{if(state.activeUtterance!==u)return;if(st)st.textContent='Test is speaking';showToast('Voice test started')};
-  u.onend=()=>{if(state.activeUtterance!==u)return;state.activeUtterance=null;if(st)st.textContent='Test finished';showToast('Voice test finished')};
-  u.onerror=e=>{if(state.activeUtterance!==u)return;state.activeUtterance=null;if(e.error==='canceled'||e.error==='interrupted')return;if(st)st.textContent='Voice error: '+(e.error||'unknown');showToast('Voice error: '+(e.error||'unknown'))};
+  if(st)st.textContent=`Previewing ${voiceDisplayName(v)}…`;
+  u.onstart=()=>{if(state.activeUtterance!==u)return;showToast('Samantha preview started')};
+  u.onend=()=>{if(state.activeUtterance!==u)return;state.activeUtterance=null;if(st)st.textContent=`${voiceDisplayName(v)} ready`;showToast('Samantha preview finished')};
+  u.onerror=e=>{if(state.activeUtterance!==u)return;state.activeUtterance=null;if(e.error==='canceled'||e.error==='interrupted')return;if(st)st.textContent='Samantha preview error';showToast('Samantha preview could not continue')};
   speechSynthesis.resume();
   speechSynthesis.speak(u);
 }
