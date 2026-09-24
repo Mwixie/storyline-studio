@@ -514,3 +514,66 @@ body{min-height:100dvh}.app-shell{min-height:100dvh;padding-bottom:86px}.topbar{
   max-width:min(92%,420px);
 }
 .selection-pronunciation.hidden{display:none}
+
+
+/* Build 41: portable QR handoff */
+.hero-actions{margin-top:14px}
+.handoff-qr{
+  width:320px;
+  max-width:100%;
+  min-height:320px;
+  margin:14px auto;
+  padding:16px;
+  border-radius:16px;
+  background:#fff;
+  display:grid;
+  place-items:center;
+}
+.handoff-qr img,.handoff-qr canvas{
+  display:block;
+  max-width:100%;
+  height:auto!important;
+}
+.handoff-location{
+  display:flex;
+  justify-content:space-between;
+  gap:12px;
+  align-items:center;
+  flex-wrap:wrap;
+}
+.handoff-actions,.handoff-receive-actions{
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+}
+.handoff-video{
+  width:100%;
+  max-height:50vh;
+  border-radius:14px;
+  background:#000;
+  object-fit:cover;
+}
+.handoff-paste{
+  display:grid;
+  gap:6px;
+}
+.handoff-paste textarea{
+  min-height:120px;
+}
+.handoff-landing{
+  margin:12px 0;
+  display:grid;
+  gap:10px;
+}
+.handoff-landing h3{margin:.2rem 0}
+.handoff-landing blockquote{
+  margin:6px 0 0;
+  padding:10px 12px;
+  border-left:3px solid var(--gold);
+  background:rgba(214,179,106,.06);
+  line-height:1.55;
+}
+@media(max-width:520px){
+  .handoff-qr{width:292px;min-height:292px;padding:12px}
+  .handoff-location{align-items:flex-start}
+}
