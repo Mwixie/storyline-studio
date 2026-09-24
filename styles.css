@@ -403,3 +403,19 @@ body{min-height:100dvh}.app-shell{min-height:100dvh;padding-bottom:86px}.topbar{
   color:var(--gold2);
   border-color:#514738;
 }
+
+
+/* Build 34: Samantha natural-voice test */
+.voice-style-setting{
+  display:grid;
+  gap:5px;
+  align-self:stretch;
+}
+.voice-style-setting small{
+  line-height:1.35;
+}
+@media(min-width:900px){
+  .voice-options-panel{
+    grid-template-columns:minmax(210px,1fr) minmax(220px,1fr) minmax(140px,.65fr) auto;
+  }
+}
