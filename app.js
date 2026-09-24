@@ -10,7 +10,7 @@ const state = {
   playbackToken:0, speakingPIndex:null, speakingSIndex:null, speakingSegments:null, replayCurrent:null,
   sleepTimerId:null, sleepIntervalId:null, sleepDeadline:null, sleepMinutes:0, wakeLock:null, chapterTransitionNotice:'',
   pendingPassageReference:null, activeEngine:'device', readerSearchQuery:'',
-  followNarrationSuspended:false, readerBook:null, recapBookId:null
+  followNarrationSuspended:false, readerBook:null, recapBookId:null, selectedReaderPhrase:''
 };
 
 const PREF='storyline.prefs.v1';
@@ -137,11 +137,13 @@ function speechPiecesForRange(source,start,end,book,settings={}){
 }
 function selectedReaderText(){
   try{
-    const selection=window.getSelection?.();if(!selection||selection.isCollapsed)return '';
-    const text=selection.toString().trim();if(!text)return '';
-    const node=selection.anchorNode,el=node?.nodeType===1?node:node?.parentElement;
-    return el?.closest?.('#readingPage')?text:'';
-  }catch{return ''}
+    const selection=window.getSelection?.();
+    if(selection&&!selection.isCollapsed){
+      const text=selection.toString().trim(),node=selection.anchorNode,el=node?.nodeType===1?node:node?.parentElement;
+      if(text&&el?.closest?.('#readingPage')){state.selectedReaderPhrase=text;return text}
+    }
+  }catch{}
+  return state.selectedReaderPhrase||'';
 }
 function pronunciationManager(book,prefill=''){
   const rows=(book.pronunciations||[]).map(p=>`<div class="pronunciation-row" data-pronunciation="${p.id}"><div><strong>${escapeHtml(p.match)}</strong><span> → “${escapeHtml(p.replacement)}”</span></div><div class="row"><button type="button" class="ghost tiny" data-pron-edit="${p.id}">Edit</button><button type="button" class="ghost tiny danger-ghost" data-pron-delete="${p.id}">Delete</button></div></div>`).join('');
@@ -985,6 +987,10 @@ function updateReadingTimeMeta(book){
   if(!ch||!el)return;
   el.textContent=readingMinutesLabel(remainingChapterWords(ch,state.selectedParagraph,state.selectedCharOffset||0))+' left in chapter';
 }
+function refreshChapterTimeOptions(book){
+  const sel=$('#chapterSelect');if(!sel||!book?.chapters)return;
+  [...sel.options].forEach((opt,i)=>{const ch=book.chapters[i];if(ch)opt.textContent=`${chapterLabel(ch,book)} · ${readingMinutesLabel(chapterWordCount(ch))}`});
+}
 function relativeDateText(iso){
   const t=Date.parse(iso||'');if(!Number.isFinite(t))return '';
   const diff=Date.now()-t,day=86400000;
@@ -1015,14 +1021,14 @@ function recapSentences(book,progress,limit=3){
 function shouldShowRecap(book){
   const p=book?.progress;if(!p||p.completed||state.recapBookId!==book.id)return false;
   const moved=(p.chapterIndex||0)>0||(p.paragraphIndex||0)>0||(p.charOffset||0)>0;
-  const t=Date.parse(p.updatedAt||'');
+  const t=Date.parse(p.updatedAt||book.updatedAt||'');
   return moved&&Number.isFinite(t)&&(Date.now()-t)>=86400000;
 }
 function recapCardHtml(book){
   if(!shouldShowRecap(book))return '';
   const p=book.progress,ch=book.chapters[p.chapterIndex||0],sentences=recapSentences(book,p);
   return `<section id="recapCard" class="recap-card card">
-    <div><div class="eyebrow">Pick up the thread</div><h3>Last read ${escapeHtml(relativeDateText(p.updatedAt))}</h3>
+    <div><div class="eyebrow">Pick up the thread</div><h3>Last read ${escapeHtml(relativeDateText(p.updatedAt||book.updatedAt))}</h3>
     <p class="meta">${escapeHtml(chapterLabel(ch,book))} · paragraph ${(p.paragraphIndex||0)+1} of ${ch?.paragraphs?.length||0}</p>
     ${sentences.length?`<blockquote>${escapeHtml(sentences.join(' '))}</blockquote>`:''}</div>
     <div class="row recap-actions"><button id="recapResume" class="button">Resume</button><button id="recapChapterStart" class="ghost">Chapter start</button><button id="recapDismiss" class="ghost">Dismiss</button></div>
@@ -1102,6 +1108,9 @@ async function renderReader(){
 function wireReader(book,ch){
   $('#backLibrary').onclick=()=>navigate('library');
   const readingPage=$('#readingPage'),resumeFollow=$('#resumeFollowBtn');
+  const cacheReaderSelection=()=>{setTimeout(()=>{const text=selectedReaderText();if(text)state.selectedReaderPhrase=text},0)};
+  readingPage?.addEventListener('mouseup',cacheReaderSelection);
+  readingPage?.addEventListener('touchend',cacheReaderSelection,{passive:true});
   const suspendFollow=()=>{
     if(!state.isSpeaking||state.followNarrationSuspended)return;
     state.followNarrationSuspended=true;updateFollowControl();
@@ -1158,7 +1167,7 @@ function wireReader(book,ch){
     const rate=Number(e.target.value)||1.05;
     savePrefs({rate});
     const label=$('#speedLabel');if(label)label.textContent=rate.toFixed(2)+'×';
-    updateVoiceSummary();updateReadingTimeMeta(book);
+    updateVoiceSummary();updateReadingTimeMeta(book);refreshChapterTimeOptions(book);
     restartNarrationForSettingChange('Speed changed');
   };
   const voiceSelect=$('#voiceSelect'); if(voiceSelect) voiceSelect.onchange=e=>{
@@ -1550,6 +1559,7 @@ function startSpeech(fromSelected=true,{preserveFollow=false}={}){
       const startWord=wordRangeAt(full,seg.start);
       state.selectedCharOffset=seg.start;state.selectedWordEnd=startWord.end;
       persistReadingProgress();
+      updateReadingTimeMeta(book);
       highlightRange(pIndex,seg.start,seg.end);
       if(st)st.textContent=`${naturalMode?'Natural · ':''}paragraph ${pIndex+1} · sentence ${index+1}/${segments.length}`;
       if(replay)replay.disabled=false;
@@ -1774,7 +1784,7 @@ async function startLocalSpeech(fromSelected=true,{preserveFollow=false}={}){
       const sentenceIndex=sIndex,part=sentenceParts[sentenceIndex],settings=prefs();
       state.speakingPIndex=pIndex;state.speakingSIndex=sentenceIndex;state.speakingSegments=sentenceParts;
       state.selectedCharOffset=part.start;state.selectedWordEnd=wordRangeAt(full,part.start).end;
-      persistReadingProgress();highlightSentence(pIndex,sentenceIndex,sentenceParts);
+      persistReadingProgress();updateReadingTimeMeta(book);highlightSentence(pIndex,sentenceIndex,sentenceParts);
       if(st)st.textContent=`Reading paragraph ${pIndex+1} · sentence ${sentenceIndex+1}/${sentenceParts.length}`;
       const pieces=speechPiecesForRange(full,part.start,part.end,book,{dialogueEnabled:!!settings.dialogueEnabled});
       let pieceIndex=0;
