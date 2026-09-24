@@ -507,3 +507,10 @@ body{min-height:100dvh}.app-shell{min-height:100dvh;padding-bottom:86px}.topbar{
 }
 
 .dialogue-note{grid-column:1/-1;line-height:1.4}
+
+.selection-pronunciation{
+  margin:8px auto 0;
+  display:block;
+  max-width:min(92%,420px);
+}
+.selection-pronunciation.hidden{display:none}
