@@ -667,11 +667,11 @@ async function renderReader(){
           <button id="nextBtn" class="ghost transport-skip" aria-label="Next paragraph">›</button>
           <button id="replayBtn" class="ghost transport-replay" aria-label="Replay current sentence" disabled>↺</button>
         </div>
-        <div class="transport-progress"><div class="row between"><span id="positionLabel" class="meta">Paragraph ${state.selectedParagraph+1} of ${ch.paragraphs.length}</span><span id="speedLabel" class="meta">${p.rate||1.05}×</span></div><input id="positionRange" class="range" type="range" min="0" max="${Math.max(ch.paragraphs.length-1,0)}" value="${state.selectedParagraph}" /></div>
+        <div class="transport-progress"><div class="row between"><span id="positionLabel" class="meta">Paragraph ${state.selectedParagraph+1} of ${ch.paragraphs.length}</span><span id="speedLabel" class="meta">${Number(p.rate||1.05).toFixed(2)}×</span></div><input id="positionRange" class="range" type="range" min="0" max="${Math.max(ch.paragraphs.length-1,0)}" value="${state.selectedParagraph}" /></div>
       </div>
       <div class="compact-status"><span id="voiceStatus" class="reading-status">Loading device voices…</span><button id="resumeFollowBtn" class="ghost tiny hidden">↧ Resume follow</button></div>
       <details id="voiceOptions" class="voice-options">
-        <summary><span>Voice & speed</span><span id="voiceSummary" class="meta">Samantha · ${p.rate||1.05}×</span></summary>
+        <summary><span>Voice & speed</span><span id="voiceSummary" class="meta">Samantha · ${(p.readingStyle||'natural')==='standard'?'Standard':'Natural'} · ${Number(p.rate||1.05).toFixed(2)}×</span></summary>
         <div class="voice-options-panel">
           <select id="voiceSelect" class="select"><option>Loading Samantha…</option></select>
           <label class="voice-style-setting"><span class="meta">Reading style</span><select id="readingStyleSelect" class="select"><option value="natural" ${(p.readingStyle||'natural')==='natural'?'selected':''}>Natural · flowing</option><option value="standard" ${p.readingStyle==='standard'?'selected':''}>Standard · sentence by sentence</option></select><small class="meta">Natural keeps Samantha speaking across a few sentences for smoother phrasing.</small></label>
@@ -1007,6 +1007,30 @@ function startSpeechFromSelection(){
   if(currentEngine()==='local'){startLocalSpeech(true);return}
   startSpeech(true);
 }
+function restartNarrationForSettingChange(message='Playback setting changed'){
+  const wasSpeaking=state.isSpeaking,wasPaused=state.isPaused,engine=currentEngine();
+  const followSuspended=state.followNarrationSuspended;
+  if(!wasSpeaking){showToast(message);return}
+
+  state.playbackToken++;
+  try{speechSynthesis.cancel()}catch{}
+  try{if(window.meSpeak)meSpeak.stop()}catch{}
+  state.isSpeaking=false;state.isPaused=false;state.activeUtterance=null;state.localSpeakingId=null;state.speakingParagraph=null;
+  state.speakingPIndex=null;state.speakingSIndex=null;state.speakingSegments=null;state.replayCurrent=null;
+  setMediaPlaybackState('none');
+  const play=$('#playBtn');if(play){play.textContent='▶';play.setAttribute('aria-label','Play')}
+  const replay=$('#replayBtn');if(replay)replay.disabled=true;
+  state.followNarrationSuspended=followSuspended;updateFollowControl();
+
+  if(wasPaused){showToast(message+' · press Play to resume');return}
+  requestAnimationFrame(()=>{
+    state.followNarrationSuspended=followSuspended;updateFollowControl();
+    if(engine==='local')startLocalSpeech(true,{preserveFollow:true});
+    else startSpeech(true,{preserveFollow:true});
+    state.followNarrationSuspended=followSuspended;updateFollowControl();
+    showToast(message);
+  });
+}
 function toggleSpeech(){
   if(currentEngine()==='local'){
     if(state.isSpeaking){stopAllSpeech();return}
@@ -1018,9 +1042,9 @@ function toggleSpeech(){
   if(state.isSpeaking&&state.isPaused){ speechSynthesis.resume(); state.isPaused=false; $('#playBtn').textContent='Ⅱ'; setMediaPlaybackState('playing'); return; }
   startSpeech(true);
 }
-function startSpeech(fromSelected=true){
+function startSpeech(fromSelected=true,{preserveFollow=false}={}){
   state.activeEngine='device';
-  if(fromSelected){state.followNarrationSuspended=false;updateFollowControl()}
+  if(fromSelected&&!preserveFollow){state.followNarrationSuspended=false;updateFollowControl()}
   if(!state.voicesReady){showToast('Device voices are still loading.');return}
   if(!('speechSynthesis' in window)||typeof SpeechSynthesisUtterance==='undefined'){showToast('Text-to-speech is not available in this browser.');return}
   const paras=$$('#readingPage p').map(p=>(p.textContent||'').trim());
@@ -1237,9 +1261,9 @@ function clearSentenceHighlights(){
     if(p.querySelector('.sentence-speaking')) p.textContent=p.textContent;
   });
 }
-async function startLocalSpeech(fromSelected=true){
+async function startLocalSpeech(fromSelected=true,{preserveFollow=false}={}){
   state.activeEngine='local';
-  if(fromSelected){state.followNarrationSuspended=false;updateFollowControl()}
+  if(fromSelected&&!preserveFollow){state.followNarrationSuspended=false;updateFollowControl()}
   const token=++state.playbackToken;
   const paras=$$('#readingPage p').map(p=>(p.textContent||'').trim());
   if(!paras.some(Boolean)){showToast('There is no text to read in this chapter.');return}
