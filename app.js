@@ -152,7 +152,7 @@ function selectedReaderText(){
 function speakPronunciationPreview(text){
   const value=String(text||'').trim();if(!value)return;
   if(!('speechSynthesis' in window)||typeof SpeechSynthesisUtterance==='undefined'){showToast('Voice preview is not available in this browser.');return}
-  try{speechSynthesis.cancel()}catch{}
+  if(state.isSpeaking)stopAllSpeech();else try{speechSynthesis.cancel()}catch{}
   const p=prefs(),voices=samanthaVoices(),selectedKey=$('#voiceSelect')?.value||p.voiceKey;
   const v=voices.find(x=>voiceKey(x)===selectedKey)||voices.find(x=>x.localService)||voices[0]||null;
   const u=new SpeechSynthesisUtterance(value);u.rate=Number(p.rate||1.05);u.pitch=1;u.volume=1;
