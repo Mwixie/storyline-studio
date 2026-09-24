@@ -1137,6 +1137,12 @@ function loadVoices(){
     const installed=samanthas.filter(v=>v.localService);
     const online=samanthas.filter(v=>!v.localService);
     sel.innerHTML=groupHtml('Samantha · on device',installed)+groupHtml('Samantha · online',online);
+    const dialogueSel=$('#dialogueVoiceSelect');
+    if(dialogueSel){
+      dialogueSel.innerHTML='<option value="">Same Samantha</option>'+groupHtml('Samantha · on device',installed)+groupHtml('Samantha · online',online);
+      const wantedDialogue=p.dialogueVoiceKey||'';
+      dialogueSel.value=samanthas.some(v=>voiceKey(v)===wantedDialogue)?wantedDialogue:'';
+    }
     const availability=$('#voiceAvailabilityNote');
     if(availability){
       const parts=[];
@@ -1735,6 +1741,7 @@ async function handleAction(act,book,ch){
     anchor,excerpt:excerpt(anchor.selectedText||text),createdAt:new Date().toISOString(),status:'open'
   };
   if(act==='start'){ startSpeechFromSelection(); return} if(act==='queue'){navigate('queue');return}
+  if(act==='pronunciations'){pronunciationManager(book,selectedReaderText());return}
   if(act==='bookmark'){await idbPut('items',{...base,id:uid(),type:'bookmark',note:''});showToast('Bookmarked');updateQueueBadge();return}
   if(act==='note') return promptItem('note','Add note','What did you notice?',base);
   if(act==='continuity') return promptItem('continuity','Flag continuity','What seems inconsistent or needs checking?',base);
