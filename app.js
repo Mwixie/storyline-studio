@@ -1126,7 +1126,7 @@ function wireReader(book,ch){
   if(state.readerSearchQuery){renderReaderSearchResults(book,state.readerSearchQuery);wireReaderSearchResults(book)}
 
   $('#chapterSelect').onchange=async e=>{ stopAllSpeech(); state.chapterIndex=+e.target.value; state.selectedParagraph=0; state.selectedCharOffset=0; state.selectedWordEnd=0; await saveProgress(book); renderReader(); };
-  $('#readingPage p').forEach(p=>p.onclick=async e=>{
+  $$('#readingPage p').forEach(p=>p.onclick=async e=>{
     const selection=window.getSelection?.();
     if(selection&&!selection.isCollapsed&&selection.toString().trim()){
       state.selectedReaderPhrase=selection.toString().trim();return;
