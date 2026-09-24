@@ -474,7 +474,8 @@ function pdfJoinLinesToParagraphs(pages){
       if(gap>0&&gap<100)gaps.push(gap);
     }
     const normalGap=pdfMedian(gaps)||pdfMedian(usable.map(x=>x.height))||12;
-    const leftEdge=pdfMedian(usable.filter(x=>!pdfHeadingLike(x.text)).map(x=>x.xStart))||0;
+    const starts=usable.filter(x=>!pdfHeadingLike(x.text)).map(x=>x.xStart).filter(Number.isFinite).sort((a,b)=>a-b);
+    const leftEdge=starts.length?starts[Math.floor((starts.length-1)*.2)]:0;
     usable.forEach((line,index)=>all.push({...line,normalGap,leftEdge,pageBreak:index===0&&all.length>0}));
   }
 
@@ -490,7 +491,7 @@ function pdfJoinLinesToParagraphs(pages){
       const samePage=prev.pageNo===line.pageNo;
       const gap=samePage?prev.y-line.y:line.normalGap;
       const largeGap=samePage&&gap>Math.max(line.normalGap*1.48,line.height*1.55);
-      const indented=line.xStart>line.leftEdge+Math.max(9,line.height*.65);
+      const indented=line.xStart>=line.leftEdge+Math.max(7,line.height*.55);
       const prevWasHeading=pdfHeadingLike(prev.text);
       newParagraph=largeGap||indented||prevWasHeading;
       if(line.pageBreak&&!indented&&!largeGap&&!prevWasHeading)newParagraph=false;
