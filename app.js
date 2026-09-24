@@ -148,7 +148,7 @@ function pronunciationManager(book,prefill=''){
     <div class="row between"><span class="meta">${(book.pronunciations||[]).length}/200 saved</span><button type="button" id="pronSave" class="button">Add pronunciation</button></div>
     <div class="pronunciation-list">${rows||'<div class="empty">No custom pronunciations yet.</div>'}</div>
     <div class="row between"><span class="meta">Longest matching phrase wins.</span><button value="default" class="ghost">Close</button></div>`;
-  modal.showModal();
+  if(!modal.open)modal.showModal();
   const saveEntry=async(existingId=null)=>{
     const match=$('#pronMatch').value.trim(),replacement=$('#pronReplacement').value.trim();
     if(!match||!replacement){showToast('Add both the written form and how it should sound.');return}
@@ -878,7 +878,7 @@ async function openRevisionChecklist(book){
     modalForm.innerHTML=`<h3>Revision checklist</h3><div class="row between"><span class="meta">${escapeHtml(book.title)}</span><select id="revisionFilter" class="select"><option value="pending" ${filter==='pending'?'selected':''}>Pending only</option><option value="actioned" ${filter==='actioned'?'selected':''}>Actioned only</option><option value="all" ${filter==='all'?'selected':''}>Everything</option></select></div>
       <textarea id="revisionChecklistPreview" class="revision-checklist-preview" readonly>${escapeHtml(preview)}</textarea>
       <div class="row between"><button value="cancel" class="ghost">Close</button><div class="row"><button type="button" id="copyRevisionChecklist" class="ghost">Copy</button><button type="button" id="downloadRevisionChecklist" class="button">Download .md</button></div></div>`;
-    modal.showModal();
+    if(!modal.open)modal.showModal();
     $('#revisionFilter').onchange=e=>{filter=e.target.value;render()};
     $('#copyRevisionChecklist').onclick=()=>{const items=filtered();if(!items.length){showToast('No revision items in this view.');return}copyTextReliable(revisionChecklistMarkdown(book,items),'Revision checklist copied')};
     $('#downloadRevisionChecklist').onclick=()=>{const items=filtered();if(!items.length){showToast('No revision items in this view.');return}
