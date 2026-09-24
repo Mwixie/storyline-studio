@@ -924,7 +924,7 @@ function pdfJoinLinesToRecords(pages){
       const indented=line.xStart>=line.leftEdge+Math.max(7,line.height*.55);
       const prevWasHeading=pdfHeadingLike(prev.text);
       newParagraph=largeGap||indented||prevWasHeading;
-      if(line.pageBreak&&!indented&&!largeGap&&!prevWasHeading)newParagraph=false;
+      if(line.pageBreak&&!indented&&!largeGap&&!prevWasHeading)newParagraph=!!line.ocr;
     }
     if(newParagraph&&current)flush();
 
