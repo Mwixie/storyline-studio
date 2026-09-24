@@ -1881,9 +1881,15 @@ function readerPositionLabel(book,chapterIndex,paragraphIndex,total,extra=''){
   const source=sourceRefFor(book,chapterIndex,paragraphIndex),sourceText=pdfSourceLabel(source);
   return [`Paragraph ${paragraphIndex+1} of ${total}`,sourceText,extra].filter(Boolean).join(' · ');
 }
-function bookCard(b,items){ const total=b.chapters.reduce((n,c)=>n+c.paragraphs.length,0); let before=0; for(let i=0;i<(b.progress?.chapterIndex||0);i++) before+=b.chapters[i]?.paragraphs.length||0; before+=b.progress?.paragraphIndex||0; const pct=b.progress?.completed===true?100:Math.max(0,Math.min(100,Math.round((before/Math.max(total,1))*100))); const count=items.filter(i=>i.bookId===b.id&&['note','question','continuity','bookmark','voice'].includes(i.type)).length;
+function bookCard(b,items){
+  const total=b.chapters.reduce((n,ch)=>n+ch.paragraphs.length,0);let before=0;
+  for(let i=0;i<(b.progress?.chapterIndex||0);i++)before+=b.chapters[i]?.paragraphs.length||0;
+  before+=b.progress?.paragraphIndex||0;
+  const pct=b.progress?.completed===true?100:Math.max(0,Math.min(100,Math.round((before/Math.max(total,1))*100)));
+  const count=items.filter(i=>i.bookId===b.id&&['note','question','continuity','bookmark','voice'].includes(i.type)).length;
   const totalWords=b.chapters.reduce((n,ch)=>n+chapterWordCount(ch),0);
-  return `<article class="card book-card" data-id="${b.id}"><div><div class="eyebrow">${escapeHtml(b.version||'Manuscript')}</div><div class="book-title">${escapeHtml(b.title)}</div><p class="meta">${b.chapters.length} chapter${b.chapters.length===1?'':'s'} · ${readingMinutesLabel(totalWords)} · ${count} revision item${count===1?'':'s'}</p></div><div class="stack"><div class="row between"><span class="meta">${pct}% listened</span><button data-delete="${b.id}" class="ghost tiny">Remove</button></div><div class="progress"><i style="width:${pct}%"></i></div><div class="row book-actions"><button class="button">Continue reading</button><button data-export-revisions="${b.id}" class="ghost tiny">Revision checklist</button></div></div></article>`;
+  const versionLabel=b.revisionIndex?`Revision ${b.revisionIndex}`:(b.version||'Manuscript');
+  return `<article class="card book-card" data-id="${b.id}"><div><div class="eyebrow">${escapeHtml(versionLabel)}</div><div class="book-title">${escapeHtml(b.title)}</div><p class="meta">${b.chapters.length} chapter${b.chapters.length===1?'':'s'} · ${readingMinutesLabel(totalWords)} · ${count} revision item${count===1?'':'s'}</p>${b.revisionPending?'<p class="meta revision-pending-label">New revision · comparison pending</p>':''}</div><div class="stack"><div class="row between"><span class="meta">${pct}% listened</span><button data-delete="${b.id}" class="ghost tiny">Remove</button></div><div class="progress"><i style="width:${pct}%"></i></div><div class="row book-actions"><button class="button">Continue reading</button><button data-export-revisions="${b.id}" class="ghost tiny">Revision checklist</button></div></div></article>`;
 }
 
 async function renderReader(){
@@ -3050,10 +3056,10 @@ function itemHtml(i,bookMap,queue=false,actioned=false){
   const timeText=actioned?`Actioned ${formatItemTime(i.completedAt||i.createdAt)}`:formatItemTime(i.createdAt);
   return `<article class="list-item ${actioned?'item-done':''}" data-item="${i.id}">
     <div class="row between">
-      <div class="row">${queue&&!actioned?`<input class="queue-item-check" type="checkbox" data-select-item="${i.id}" aria-label="Select item" />`:''}<span class="pill ${pill}">${label}</span></div>
+      <div class="row">${queue&&!actioned?`<input class="queue-item-check" type="checkbox" data-select-item="${i.id}" aria-label="Select item" />`:''}<span class="pill ${pill}">${label}</span>${i.migrationUncertain?'<span class="pill gold">Needs location review</span>':''}</div>
       <span class="meta item-time">${timeText}${i.durationSec?` · ${formatDuration(i.durationSec)}`:''}</span>
     </div>
-    <div><strong>${escapeHtml(bookMap[i.bookId]?.title||i.bookTitle||'Manuscript')}</strong><div class="source-chip">${escapeHtml((i.chapterTitle==='Beginning'||i.chapterTitle==='Front matter')?(bookMap[i.bookId]?.title||i.bookTitle||'Manuscript'):(i.chapterTitle||'Chapter'))} · paragraph ${(i.paragraphIndex??0)+1}${i.anchor?' · anchored':''}</div></div>
+    <div><strong>${escapeHtml(bookMap[i.bookId]?.title||i.bookTitle||'Manuscript')}</strong><div class="source-chip">${escapeHtml((i.chapterTitle==='Beginning'||i.chapterTitle==='Front matter')?(bookMap[i.bookId]?.title||i.bookTitle||'Manuscript'):(i.chapterTitle||'Chapter'))} · paragraph ${(i.paragraphIndex??0)+1}${i.anchor?' · anchored':''}${i.migrationUncertain?' · location not verified':''}</div></div>
     <div class="excerpt passage-reference-preview">${referenceExcerptHtml(i)}</div>
     ${i.note?`<div class="note-text">${escapeHtml(i.note)}</div>`:''}
     ${hasAudio?`<audio class="saved-voice-note" controls data-audio-item="${i.id}"></audio>`:''}
