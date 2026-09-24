@@ -10,7 +10,7 @@ const state = {
   playbackToken:0, speakingPIndex:null, speakingSIndex:null, speakingSegments:null, replayCurrent:null,
   sleepTimerId:null, sleepIntervalId:null, sleepDeadline:null, sleepMinutes:0, wakeLock:null, chapterTransitionNotice:'',
   pendingPassageReference:null, activeEngine:'device', readerSearchQuery:'',
-  followNarrationSuspended:false
+  followNarrationSuspended:false, readerBook:null
 };
 
 const PREF='storyline.prefs.v1';
@@ -900,6 +900,7 @@ function bookCard(b,items){ const total=b.chapters.reduce((n,c)=>n+c.paragraphs.
 
 async function renderReader(){
   const book=await idbGet('books',state.bookId); if(!book){navigate('library');return}
+  state.readerBook=book;
   state.chapterIndex=Math.max(0,Math.min(state.chapterIndex,book.chapters.length-1)); const ch=book.chapters[state.chapterIndex]; state.selectedParagraph=Math.max(0,Math.min(state.selectedParagraph,ch.paragraphs.length-1));
   const p=prefs();
   view.innerHTML=`
@@ -1320,10 +1321,12 @@ function toggleSpeech(){
 function startSpeech(fromSelected=true,{preserveFollow=false}={}){
   state.activeEngine='device';
   if(fromSelected&&!preserveFollow){state.followNarrationSuspended=false;updateFollowControl()}
-  if(!state.voicesReady){showToast('Device voices are still loading.');return}
+  if(!state.voicesReady){showToast('Samantha is still loading.');return}
   if(!('speechSynthesis' in window)||typeof SpeechSynthesisUtterance==='undefined'){showToast('Text-to-speech is not available in this browser.');return}
   const paras=$$('#readingPage p').map(p=>(p.textContent||'').trim());
   if(!paras.some(Boolean)){showToast('There is no text to read in this chapter.');return}
+  const book=state.readerBook;
+  if(!book){showToast('The manuscript is still loading.');return}
 
   const token=++state.playbackToken;
   try{speechSynthesis.cancel()}catch{}
@@ -1342,7 +1345,7 @@ function startSpeech(fromSelected=true,{preserveFollow=false}={}){
   const play=$('#playBtn');if(play){play.textContent='Ⅱ';play.setAttribute('aria-label','Pause')}
   const replay=$('#replayBtn');if(replay)replay.disabled=true;
 
-  const currentVoice=()=>{
+  const mainVoice=()=>{
     const p=prefs(),selectedKey=$('#voiceSelect')?.value||p.voiceKey;
     const voices=samanthaVoices();
     return voices.find(x=>voiceKey(x)===selectedKey)||
@@ -1350,25 +1353,28 @@ function startSpeech(fromSelected=true,{preserveFollow=false}={}){
       voices.find(x=>x.localService)||
       voices[0]||null;
   };
+  const dialogueVoice=()=>{
+    const p=prefs(),voices=samanthaVoices(),key=p.dialogueVoiceKey||'';
+    return voices.find(x=>voiceKey(x)===key)||mainVoice();
+  };
 
   const continueChapter=async()=>{
     if(token!==state.playbackToken||!state.isSpeaking)return;
-    const book=await idbGet('books',state.bookId);
+    const fresh=await idbGet('books',state.bookId);
     if(token!==state.playbackToken||!state.isSpeaking)return;
-    if(!book){finishSpeech(token);return}
-    if(state.chapterIndex>=book.chapters.length-1){await saveProgress(book,{completed:true});finishSpeech(token);return}
+    if(!fresh){finishSpeech(token);return}
+    state.readerBook=fresh;
+    if(state.chapterIndex>=fresh.chapters.length-1){await saveProgress(fresh,{completed:true});finishSpeech(token);return}
     if(prefs().autoAdvance===false){finishSpeech(token);return}
-    const completedLabel=chapterLabel(book.chapters[state.chapterIndex],book);
+    const completedLabel=chapterLabel(fresh.chapters[state.chapterIndex],fresh);
     state.chapterIndex++;state.selectedParagraph=0;state.selectedCharOffset=0;state.selectedWordEnd=0;state.speakingParagraph=null;
-    await saveProgress(book);
+    await saveProgress(fresh);
     if(token!==state.playbackToken||!state.isSpeaking)return;
-    const notice=`${completedLabel} complete · continuing to ${chapterLabel(book.chapters[state.chapterIndex],book)}…`;
-    state.chapterTransitionNotice=notice;
-    showToast(notice);
-    await renderReader();
-    updateNowPlaying();
+    const notice=`${completedLabel} complete · continuing to ${chapterLabel(fresh.chapters[state.chapterIndex],fresh)}…`;
+    state.chapterTransitionNotice=notice;showToast(notice);
+    await renderReader();updateNowPlaying();
     if(token!==state.playbackToken||!state.isSpeaking)return;
-    startSpeech(false);
+    startSpeech(false,{preserveFollow:true});
   };
 
   const speakParagraph=()=>{
@@ -1385,31 +1391,9 @@ function startSpeech(fromSelected=true,{preserveFollow=false}={}){
     const range=$('#positionRange');if(range)range.value=pIndex;
     const label=$('#positionLabel');if(label)label.textContent=`Paragraph ${pIndex+1} of ${paras.length}`;
 
-    const naturalMode=(prefs().readingStyle||'natural')==='natural';
-
-    const speakUtterance=(text,onDone,onBoundary=null)=>{
-      const u=new SpeechSynthesisUtterance(text);
-      state.activeUtterance=u;
-      const p=prefs(),v=currentVoice();
-      u.rate=+(p.rate||1.05);u.volume=1;u.pitch=1;
-      if(v){u.voice=v;u.lang=v.lang}else{u.lang='en-US'}
-      u.onstart=()=>{if(token===state.playbackToken&&state.activeUtterance===u)requestWakeLock()};
-      u.onboundary=e=>{
-        if(token!==state.playbackToken||state.activeUtterance!==u||!onBoundary)return;
-        onBoundary(e);
-      };
-      u.onend=()=>{
-        if(token!==state.playbackToken||state.activeUtterance!==u)return;
-        state.activeUtterance=null;onDone();
-      };
-      u.onerror=e=>{
-        if(token!==state.playbackToken||state.activeUtterance!==u)return;
-        state.activeUtterance=null;
-        if(e.error==='canceled'||e.error==='interrupted')return;
-        showToast('Samantha could not continue reading.');finishSpeech(token);
-      };
-      speechSynthesis.speak(u);
-    };
+    const p=prefs();
+    const naturalMode=(p.readingStyle||'natural')==='natural';
+    const dialogueEnabled=!!p.dialogueEnabled;
 
     const setSentenceState=index=>{
       const seg=segments[index];if(!seg)return;
@@ -1420,14 +1404,49 @@ function startSpeech(fromSelected=true,{preserveFollow=false}={}){
       highlightRange(pIndex,seg.start,seg.end);
       if(st)st.textContent=`${naturalMode?'Natural · ':''}paragraph ${pIndex+1} · sentence ${index+1}/${segments.length}`;
       if(replay)replay.disabled=false;
-      state.replayCurrent=()=>{
-        if(token!==state.playbackToken||!state.isSpeaking)return;
-        state.isPaused=false;
-        const playBtn=$('#playBtn');if(playBtn){playBtn.textContent='Ⅱ';playBtn.setAttribute('aria-label','Pause')}
-        try{speechSynthesis.cancel()}catch{}
-        speechSynthesis.resume();
-        speakUtterance(seg.text,()=>{sIndex=index+1;speakNext()});
+    };
+    const sentenceIndexAtSource=absolute=>{
+      for(let i=0;i<segments.length;i++)if(absolute<segments[i].end)return i;
+      return Math.max(0,segments.length-1);
+    };
+    const speakPiece=(piece,onDone,onMappedBoundary=null)=>{
+      const u=new SpeechSynthesisUtterance(piece.text);
+      state.activeUtterance=u;
+      const settings=prefs(),isDialogue=piece.kind==='dialogue'&&settings.dialogueEnabled;
+      const v=isDialogue?dialogueVoice():mainVoice();
+      const baseRate=Number(settings.rate||1.05);
+      u.rate=Math.max(.5,Math.min(2,isDialogue?baseRate+Number(settings.dialogueRateOffset||0):baseRate));
+      u.volume=1;u.pitch=isDialogue?Number(settings.dialoguePitch??1.15):1;
+      if(v){u.voice=v;u.lang=v.lang}else{u.lang='en-US'}
+      u.onstart=()=>{if(token===state.playbackToken&&state.activeUtterance===u)requestWakeLock()};
+      u.onboundary=e=>{
+        if(token!==state.playbackToken||state.activeUtterance!==u||!onMappedBoundary)return;
+        const rel=Number(e.charIndex);if(!Number.isFinite(rel))return;
+        onMappedBoundary(piece.mapIndex(rel));
       };
+      u.onend=()=>{if(token!==state.playbackToken||state.activeUtterance!==u)return;state.activeUtterance=null;onDone()};
+      u.onerror=e=>{
+        if(token!==state.playbackToken||state.activeUtterance!==u)return;
+        state.activeUtterance=null;
+        if(e.error==='canceled'||e.error==='interrupted')return;
+        showToast('Samantha could not continue reading.');finishSpeech(token);
+      };
+      speechSynthesis.speak(u);
+    };
+    const speakRange=(sourceStart,sourceEnd,onDone)=>{
+      const pieces=speechPiecesForRange(full,sourceStart,sourceEnd,book,{dialogueEnabled});
+      let pieceIndex=0,highlighted=sentenceIndexAtSource(sourceStart);
+      setSentenceState(highlighted);
+      const nextPiece=()=>{
+        if(token!==state.playbackToken||!state.isSpeaking)return;
+        if(pieceIndex>=pieces.length){onDone();return}
+        const piece=pieces[pieceIndex++];
+        speakPiece(piece,nextPiece,sourceIndex=>{
+          const next=sentenceIndexAtSource(sourceIndex);
+          if(next!==highlighted){highlighted=next;setSentenceState(next)}
+        });
+      };
+      nextPiece();
     };
 
     const naturalChunkFrom=index=>{
@@ -1438,42 +1457,45 @@ function startSpeech(fromSelected=true,{preserveFollow=false}={}){
         if(candidateEnd-startChar>900)break;
         endIndex++;
       }
-      const endChar=segments[endIndex].end;
-      return {startIndex,endIndex,startChar,endChar,text:full.slice(startChar,endChar)};
+      return {startIndex,endIndex,startChar,endChar:segments[endIndex].end};
     };
 
     const speakNext=()=>{
       if(token!==state.playbackToken||!state.isSpeaking)return;
       if(sIndex>=segments.length){
         const currentP=$(`#readingPage p[data-p="${pIndex}"]`);if(currentP)currentP.textContent=full;
+        if(prefs().repeatParagraph){
+          state.selectedCharOffset=0;state.selectedWordEnd=0;firstOffset=0;
+          persistReadingProgress();speakParagraph();return;
+        }
         state.selectedCharOffset=full.length;state.selectedWordEnd=full.length;
-        persistReadingProgress();
-        pIndex++;firstOffset=0;speakParagraph();return;
+        persistReadingProgress();pIndex++;firstOffset=0;speakParagraph();return;
       }
 
       if(!naturalMode){
         const index=sIndex,seg=segments[index];
         setSentenceState(index);
-        speakUtterance(seg.text,()=>{sIndex=index+1;speakNext()});
+        state.replayCurrent=()=>{
+          if(token!==state.playbackToken||!state.isSpeaking)return;
+          state.isPaused=false;
+          const b=$('#playBtn');if(b){b.textContent='Ⅱ';b.setAttribute('aria-label','Pause')}
+          try{speechSynthesis.cancel()}catch{};speechSynthesis.resume();
+          speakRange(seg.start,seg.end,()=>{sIndex=index+1;speakNext()});
+        };
+        speakRange(seg.start,seg.end,()=>{sIndex=index+1;speakNext()});
         return;
       }
 
       const chunk=naturalChunkFrom(sIndex);
-      let highlighted=chunk.startIndex;
-      setSentenceState(highlighted);
-      speakUtterance(chunk.text,()=>{
-        sIndex=chunk.endIndex+1;
-        speakNext();
-      },e=>{
-        const rel=Number(e.charIndex);
-        if(!Number.isFinite(rel))return;
-        const absolute=chunk.startChar+rel;
-        let next=chunk.endIndex;
-        for(let i=chunk.startIndex;i<=chunk.endIndex;i++){
-          if(absolute<segments[i].end){next=i;break}
-        }
-        if(next!==highlighted){highlighted=next;setSentenceState(next)}
-      });
+      const replayIndex=sIndex,replaySeg=segments[replayIndex];
+      state.replayCurrent=()=>{
+        if(token!==state.playbackToken||!state.isSpeaking)return;
+        state.isPaused=false;
+        const b=$('#playBtn');if(b){b.textContent='Ⅱ';b.setAttribute('aria-label','Pause')}
+        try{speechSynthesis.cancel()}catch{};speechSynthesis.resume();
+        speakRange(replaySeg.start,replaySeg.end,()=>{sIndex=replayIndex+1;speakNext()});
+      };
+      speakRange(chunk.startChar,chunk.endChar,()=>{sIndex=chunk.endIndex+1;speakNext()});
     };
     speakNext();
   };
