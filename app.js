@@ -149,39 +149,96 @@ function selectedReaderText(){
   }catch{}
   return state.selectedReaderPhrase||'';
 }
-function pronunciationManager(book,prefill=''){
-  const rows=(book.pronunciations||[]).map(p=>`<div class="pronunciation-row" data-pronunciation="${p.id}"><div><strong>${escapeHtml(p.match)}</strong><span> → “${escapeHtml(p.replacement)}”</span></div><div class="row"><button type="button" class="ghost tiny" data-pron-edit="${p.id}">Edit</button><button type="button" class="ghost tiny danger-ghost" data-pron-delete="${p.id}">Delete</button></div></div>`).join('');
-  modalForm.innerHTML=`<h3>Pronunciations</h3><p class="sub">Storyline changes only what the voice says. Your manuscript text stays untouched.</p>
-    <div class="pronunciation-add"><input id="pronMatch" class="select" maxlength="100" placeholder="Word or phrase" value="${escapeHtml(prefill)}" /><input id="pronReplacement" class="select" maxlength="160" placeholder="Say it as…" /></div>
-    <div class="row between"><span class="meta">${(book.pronunciations||[]).length}/200 saved</span><button type="button" id="pronSave" class="button">Add pronunciation</button></div>
-    <div class="pronunciation-list">${rows||'<div class="empty">No custom pronunciations yet.</div>'}</div>
-    <div class="row between"><span class="meta">Longest matching phrase wins.</span><button value="default" class="ghost">Close</button></div>`;
+function speakPronunciationPreview(text){
+  const value=String(text||'').trim();if(!value)return;
+  if(!('speechSynthesis' in window)||typeof SpeechSynthesisUtterance==='undefined'){showToast('Voice preview is not available in this browser.');return}
+  try{speechSynthesis.cancel()}catch{}
+  const p=prefs(),voices=samanthaVoices(),selectedKey=$('#voiceSelect')?.value||p.voiceKey;
+  const v=voices.find(x=>voiceKey(x)===selectedKey)||voices.find(x=>x.localService)||voices[0]||null;
+  const u=new SpeechSynthesisUtterance(value);u.rate=Number(p.rate||1.05);u.pitch=1;u.volume=1;
+  if(v){u.voice=v;u.lang=v.lang||'en-US'}else u.lang='en-US';
+  u.onerror=e=>{if(e.error!=='canceled'&&e.error!=='interrupted')showToast('Pronunciation preview could not play.')};
+  speechSynthesis.resume();speechSynthesis.speak(u);
+}
+async function openPronunciationCopy(book){
+  const books=(await idbGetAll('books')).filter(b=>b.id!==book.id&&(b.pronunciations||[]).length);
+  if(!books.length){showToast('No other manuscript has pronunciations to copy yet.');return}
+  modalForm.innerHTML=`<h3>Copy pronunciations from…</h3><p class="sub">Only entries not already in this book will be added.</p>
+    <select id="pronCopyBook" class="select">${books.map(b=>`<option value="${b.id}">${escapeHtml(b.title)} · ${(b.pronunciations||[]).length}</option>`).join('')}</select>
+    <div class="row between"><button type="button" id="pronCopyBack" class="ghost">Back</button><button type="button" id="pronCopyConfirm" class="button">Copy entries</button></div>`;
   if(!modal.open)modal.showModal();
+  $('#pronCopyBack').onclick=()=>pronunciationManager(book,'','book');
+  $('#pronCopyConfirm').onclick=async()=>{
+    const source=await idbGet('books',$('#pronCopyBook').value);if(!source)return;
+    const target=[...(book.pronunciations||[])],seen=new Set(target.map(x=>String(x.match||'').toLowerCase()));
+    let added=0,existing=0,full=0;
+    for(const p of source.pronunciations||[]){
+      const key=String(p.match||'').toLowerCase();
+      if(seen.has(key)){existing++;continue}
+      if(target.length>=200){full++;continue}
+      target.push({...p,id:uid(),createdAt:new Date().toISOString(),copiedFrom:source.id});seen.add(key);added++;
+    }
+    book.pronunciations=target;book.updatedAt=new Date().toISOString();await idbPut('books',book);
+    if(state.bookId===book.id)state.readerBook=book;
+    showToast(`${added} added${existing?`, ${existing} already there`:''}${full?`, ${full} skipped at limit`:''}`);
+    pronunciationManager(book,'','book');
+  };
+}
+async function pronunciationManager(book,prefill='',scope='book'){
+  if(!state.sharedPronunciations)await loadSharedPronunciations();
+  const isShared=scope==='shared',list=isShared?(state.sharedPronunciations||[]):(book.pronunciations||[]);
+  const rowHtml=(p,{shared=false,editable=true}={})=>`<div class="pronunciation-row" data-pronunciation="${p.id}">
+    <div><strong>${escapeHtml(p.match)}</strong><span> → “${escapeHtml(p.replacement)}”</span>${shared?'<span class="pill">shared</span>':''}</div>
+    <div class="row"><button type="button" class="ghost tiny" data-pron-hear="${p.id}" data-pron-shared="${shared?'1':'0'}">🔊</button>${editable?`<button type="button" class="ghost tiny" data-pron-edit="${p.id}">Edit</button><button type="button" class="ghost tiny danger-ghost" data-pron-delete="${p.id}">Delete</button>`:''}</div>
+  </div>`;
+  const rows=list.map(p=>rowHtml(p,{shared:isShared,editable:true})).join('');
+  const sharedPreview=!isShared&&(state.sharedPronunciations||[]).length
+    ?`<div class="pronunciation-shared-preview"><div class="row between"><strong>Shared pronunciations also active</strong><span class="meta">${state.sharedPronunciations.length}</span></div>${state.sharedPronunciations.map(p=>rowHtml(p,{shared:true,editable:false})).join('')}</div>`:'';
+  modalForm.innerHTML=`<h3>Pronunciations</h3><p class="sub">Storyline changes only what the voice says. Your manuscript text stays untouched.</p>
+    <div class="pronunciation-tabs"><button type="button" id="pronBookTab" class="${isShared?'ghost':'button'}">This book</button><button type="button" id="pronSharedTab" class="${isShared?'button':'ghost'}">Shared</button></div>
+    <div class="pronunciation-add"><input id="pronMatch" class="select" maxlength="100" placeholder="Word or phrase" value="${escapeHtml(prefill)}" /><input id="pronReplacement" class="select" maxlength="160" placeholder="Say it as…" /></div>
+    <div class="row between"><span class="meta">${list.length}/200 ${isShared?'shared':'book'} entries</span><div class="row">${!isShared?'<button type="button" id="pronCopyFrom" class="ghost tiny">Copy from…</button>':''}<button type="button" id="pronSave" class="button">Add pronunciation</button></div></div>
+    <div class="pronunciation-list">${rows||`<div class="empty">No ${isShared?'shared':'book'} pronunciations yet.</div>`}</div>
+    ${sharedPreview}
+    <div class="row between"><span class="meta">${isShared?'Shared entries apply to every manuscript.':'Book entries override shared entries with the same spelling.'}</span><button value="default" class="ghost">Close</button></div>`;
+  if(!modal.open)modal.showModal();
+
+  $('#pronBookTab').onclick=()=>pronunciationManager(book,'','book');
+  $('#pronSharedTab').onclick=()=>pronunciationManager(book,'','shared');
+  const copyBtn=$('#pronCopyFrom');if(copyBtn)copyBtn.onclick=()=>openPronunciationCopy(book);
+
+  const currentList=()=>isShared?[...(state.sharedPronunciations||[])]:[...(book.pronunciations||[])];
+  const persist=async next=>{
+    if(isShared)await saveSharedPronunciations(next);
+    else{book.pronunciations=next;book.updatedAt=new Date().toISOString();await idbPut('books',book);if(state.bookId===book.id)state.readerBook=book}
+  };
   const saveEntry=async(existingId=null)=>{
     const match=$('#pronMatch').value.trim(),replacement=$('#pronReplacement').value.trim();
     if(!match||!replacement){showToast('Add both the written form and how it should sound.');return}
-    const list=[...(book.pronunciations||[])];
-    if(!existingId&&list.length>=200){showToast('This book already has 200 pronunciations.');return}
-    const duplicate=list.find(x=>x.id!==existingId&&x.match.toLowerCase()===match.toLowerCase());
-    if(duplicate){showToast('That pronunciation already exists.');return}
-    const found=list.find(x=>x.id===existingId);
+    const next=currentList();
+    if(!existingId&&next.length>=200){showToast(`This ${isShared?'shared list':'book'} already has 200 pronunciations.`);return}
+    const duplicate=next.find(x=>x.id!==existingId&&String(x.match||'').toLowerCase()===match.toLowerCase());
+    if(duplicate){showToast('That pronunciation already exists in this list.');return}
+    const found=next.find(x=>x.id===existingId);
     if(found){found.match=match;found.replacement=replacement;found.updatedAt=new Date().toISOString()}
-    else list.push({id:uid(),match,replacement,createdAt:new Date().toISOString()});
-    book.pronunciations=list;book.updatedAt=new Date().toISOString();await idbPut('books',book);
-    if(state.bookId===book.id)state.readerBook=book;
-    pronunciationManager(book);
+    else next.push({id:uid(),match,replacement,createdAt:new Date().toISOString()});
+    await persist(next);await pronunciationManager(book,'',scope);
     if(state.isSpeaking)restartNarrationForSettingChange('Pronunciation updated');
   };
   $('#pronSave').onclick=()=>saveEntry();
   $$('[data-pron-edit]').forEach(btn=>btn.onclick=()=>{
-    const p=(book.pronunciations||[]).find(x=>x.id===btn.dataset.pronEdit);if(!p)return;
+    const p=currentList().find(x=>x.id===btn.dataset.pronEdit);if(!p)return;
     $('#pronMatch').value=p.match;$('#pronReplacement').value=p.replacement;
     $('#pronSave').textContent='Save change';$('#pronSave').onclick=()=>saveEntry(p.id);
   });
   $$('[data-pron-delete]').forEach(btn=>btn.onclick=async()=>{
-    book.pronunciations=(book.pronunciations||[]).filter(x=>x.id!==btn.dataset.pronDelete);
-    book.updatedAt=new Date().toISOString();await idbPut('books',book);if(state.bookId===book.id)state.readerBook=book;pronunciationManager(book);
+    const next=currentList().filter(x=>x.id!==btn.dataset.pronDelete);await persist(next);
+    await pronunciationManager(book,'',scope);
     if(state.isSpeaking)restartNarrationForSettingChange('Pronunciation removed');
+  });
+  $$('[data-pron-hear]').forEach(btn=>btn.onclick=()=>{
+    const source=btn.dataset.pronShared==='1'?(state.sharedPronunciations||[]):currentList();
+    const p=source.find(x=>x.id===btn.dataset.pronHear);if(p)speakPronunciationPreview(p.replacement);
   });
   requestAnimationFrame(()=>$('#pronReplacement')?.focus());
 }
