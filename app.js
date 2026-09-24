@@ -3466,19 +3466,22 @@ function itemHtml(i,bookMap,queue=false,actioned=false){
     <div><strong>${escapeHtml(bookMap[i.bookId]?.title||i.bookTitle||'Manuscript')}</strong><div class="source-chip">${escapeHtml((i.chapterTitle==='Beginning'||i.chapterTitle==='Front matter')?(bookMap[i.bookId]?.title||i.bookTitle||'Manuscript'):(i.chapterTitle||'Chapter'))} · paragraph ${(i.paragraphIndex??0)+1}${i.anchor?' · anchored':''}${i.migrationUncertain?' · location not verified':''}</div></div>
     <div class="excerpt passage-reference-preview">${referenceExcerptHtml(i)}</div>
     ${i.note?`<div class="note-text">${escapeHtml(i.note)}</div>`:''}
+    ${i.type==='voice'&&i.transcript?`<div class="voice-transcript-saved"><div class="row between"><strong>Transcript</strong><span class="meta">${i.transcriptEdited?'edited':i.transcriptPartial?'partial':'live'}</span></div><div>${escapeHtml(i.transcript)}</div></div>`:''}
     ${hasAudio?`<audio class="saved-voice-note" controls data-audio-item="${i.id}"></audio>`:''}
     <div class="row">
       <button data-open-item="${i.id}" class="ghost tiny">Open passage</button>
+      ${i.type==='voice'?`<button data-edit-transcript="${i.id}" class="ghost tiny">${i.transcript?'Edit transcript':'Add transcript'}</button>${!i.transcript?`<button data-rerecord-transcript="${i.id}" class="ghost tiny">Re-record with transcript</button>`:''}`:''}
       ${queue?`<button data-copy="${i.id}" class="ghost tiny">Copy for ChatGPT</button><button data-done="${i.id}" class="ghost tiny">${actioned?'Reopen':'Mark done'}</button>`:''}
       <button data-delete-item="${i.id}" class="ghost tiny danger-ghost">Delete</button>
     </div>
   </article>`;
 }
 function chatPacket(i){
+  const transcript=i.type==='voice'&&i.transcript?`\nTranscript: ${i.transcript}`:'';
   const audioNote=i.type==='voice'?'\nAudio: Voice-note audio is stored in Storyline and is not included in clipboard text.':'';
   const a=i.anchor;
   const reference=a?`\nAnchor: ${a.chapterTitle||i.chapterTitle}, paragraph ${(a.paragraphIndex??i.paragraphIndex??0)+1}, ${a.precision||'passage'} reference\nSelected passage: ${a.selectedText||i.excerpt||''}\nContext before: ${a.prefixContext||''}\nContext after: ${a.suffixContext||''}`:`\nPassage: ${i.excerpt||''}`;
-  return `Storyline Studio revision item\n\nBook: ${i.bookTitle}\nLocation when captured: ${i.chapterTitle}, paragraph ${(i.paragraphIndex||0)+1}\nType: ${i.type}\nCreated: ${formatItemTime(i.createdAt)}${reference}\n\nMy note/question:\n${i.note||''}${audioNote}\n\nPlease answer using the manuscript context I provide, and do not revise the manuscript unless I explicitly ask.`;
+  return `Storyline Studio revision item\n\nBook: ${i.bookTitle}\nLocation when captured: ${i.chapterTitle}, paragraph ${(i.paragraphIndex||0)+1}\nType: ${i.type}\nCreated: ${formatItemTime(i.createdAt)}${reference}\n\nMy note/question:\n${i.note||''}${transcript}${audioNote}\n\nPlease answer using the manuscript context I provide, and do not revise the manuscript unless I explicitly ask.`;
 }
 function fallbackCopyText(text){
   const ta=document.createElement('textarea');
@@ -3573,6 +3576,14 @@ function wireItemButtons(visibleItems=[]){
     i.lastResolved={bookId:book.id,chapterIndex:resolved.chapterIndex,paragraphIndex:resolved.paragraphIndex,charStart:resolved.start||0,charEnd:resolved.end||0,score:resolved.score||0,moved:!!resolved.moved,unverified:!!resolved.unverified,resolvedAt:new Date().toISOString()};
     await idbPut('items',i);
     savePrefs({lastBookId:state.bookId});await saveProgress(book);navigate('reader');
+  });
+  $$('[data-edit-transcript]').forEach(b=>b.onclick=async()=>{
+    const item=await idbGet('items',b.dataset.editTranscript);if(item)editVoiceTranscript(item);
+  });
+  $$('[data-rerecord-transcript]').forEach(b=>b.onclick=async()=>{
+    const item=await idbGet('items',b.dataset.rerecordTranscript);if(!item)return;
+    const base={bookId:item.bookId,bookTitle:item.bookTitle,chapterIndex:item.chapterIndex,chapterTitle:item.chapterTitle,paragraphIndex:item.paragraphIndex,charOffset:item.charOffset||0,wordEnd:item.wordEnd||0,anchor:item.anchor,excerpt:item.excerpt,createdAt:item.createdAt,status:item.status||'open',completedAt:item.completedAt||null};
+    voiceNote(base,item);
   });
   $$('[data-delete-item]').forEach(b=>b.onclick=async()=>{
     const i=await idbGet('items',b.dataset.deleteItem); if(!i)return;
