@@ -1005,8 +1005,9 @@ function recapSentences(book,progress,limit=3){
     const parts=sentenceSegments(text,0).map(x=>x.text).filter(Boolean);
     for(let i=parts.length-1;i>=0&&snippets.length<limit;i--)snippets.unshift(parts[i]);
   };
-  const current=String(ch.paragraphs[pi]||'');
-  collect(current.slice(0,Math.max(0,progress?.charOffset||0)));
+  const current=String(ch.paragraphs[pi]||''),offset=Math.max(0,progress?.charOffset||0);
+  const completedCurrent=sentenceSegments(current,0).filter(s=>s.end<=offset).map(s=>s.text);
+  for(let i=completedCurrent.length-1;i>=0&&snippets.length<limit;i--)snippets.unshift(completedCurrent[i]);
   for(let p=pi-1;p>=0&&snippets.length<limit;p--)collect(ch.paragraphs[p]||'');
   if(snippets.length<limit&&ci>0){
     const prev=book.chapters[ci-1];
