@@ -1581,8 +1581,7 @@ function revisionChecklistMarkdown(book,items,{preview=false}={}){
   const date=new Date().toISOString().slice(0,10);
   const matched=[],unmatched=[];
   for(const item of items){
-    const resolved=resolvePassageAnchor(book,item);
-    const row={item,resolved};
+    const resolved=resolvePassageAnchor(book,item),row={item,resolved};
     if(resolved?.unverified)unmatched.push(row);else matched.push(row);
   }
   const sorter=(a,b)=>(a.resolved?.chapterIndex??a.item.chapterIndex??0)-(b.resolved?.chapterIndex??b.item.chapterIndex??0)||(a.resolved?.paragraphIndex??a.item.paragraphIndex??0)-(b.resolved?.paragraphIndex??b.item.paragraphIndex??0)||new Date(a.item.createdAt)-new Date(b.item.createdAt);
@@ -1590,6 +1589,12 @@ function revisionChecklistMarkdown(book,items,{preview=false}={}){
   const questions=[...matched.filter(r=>r.item.type==='question'),...unmatched.filter(r=>r.item.type==='question')];
   const fixes=matched.filter(r=>r.item.type!=='question'),unmatchedFixes=unmatched.filter(r=>r.item.type!=='question');
   const lines=[`# Revision checklist — ${book.title} (${date}, ${items.length} item${items.length===1?'':'s'})`,''];
+  const detailText=item=>{
+    let detail=item.type==='voice'?(item.transcript||item.note||''):(item.note||'');
+    detail=String(detail).trim();
+    if(preview&&detail.length>300)detail=detail.slice(0,299)+'…';
+    return detail;
+  };
   let lastChapter=-1;
   for(const row of fixes){
     const {item,resolved}=row,ch=book.chapters[resolved.chapterIndex];
@@ -1597,18 +1602,17 @@ function revisionChecklistMarkdown(book,items,{preview=false}={}){
       if(lastChapter!==-1)lines.push('');
       lines.push(`## ${chapterLabel(ch,book)}`);lastChapter=resolved.chapterIndex;
     }
-    const [icon,label]=revisionTypeMeta(item.type);
-    const passage=excerpt(item.anchor?.selectedText||item.excerpt||'',140).replace(/\s+/g,' ');
-    let note=String(item.note||'').trim();if(preview&&note.length>300)note=note.slice(0,299)+'…';
-    const audio=item.type==='voice'&&item.durationSec?` · ${formatDuration(item.durationSec)}`:'';
-    lines.push(`- [ ] ${icon} ${label} · ¶${resolved.paragraphIndex+1}${audio} · "${passage}"${note?` — ${note}`:''} (added ${revisionDate(item.createdAt)})`);
+    const [icon,label]=revisionTypeMeta(item.type),passage=excerpt(item.anchor?.selectedText||item.excerpt||'',140).replace(/\s+/g,' ');
+    const detail=detailText(item),audio=item.type==='voice'&&item.durationSec?` · ${formatDuration(item.durationSec)}`:'';
+    const transcriptLabel=item.type==='voice'&&item.transcript?' · transcript':'';
+    lines.push(`- [ ] ${icon} ${label} · ¶${resolved.paragraphIndex+1}${audio}${transcriptLabel} · "${passage}"${detail?` — ${detail}`:''} (added ${revisionDate(item.createdAt)})`);
   }
   if(unmatchedFixes.length){
     lines.push('','## Unmatched items');
     for(const {item} of unmatchedFixes){
-      const [icon,label]=revisionTypeMeta(item.type),passage=excerpt(item.anchor?.selectedText||item.excerpt||'',140).replace(/\s+/g,' ');
-      let note=String(item.note||'').trim();if(preview&&note.length>300)note=note.slice(0,299)+'…';
-      lines.push(`- [ ] ${icon} ${label} · "${passage}"${note?` — ${note}`:''} (added ${revisionDate(item.createdAt)})`);
+      const [icon,label]=revisionTypeMeta(item.type),passage=excerpt(item.anchor?.selectedText||item.excerpt||'',140).replace(/\s+/g,' '),detail=detailText(item);
+      const audio=item.type==='voice'&&item.durationSec?` · ${formatDuration(item.durationSec)}`:'';
+      lines.push(`- [ ] ${icon} ${label}${audio} · "${passage}"${detail?` — ${detail}`:''} (added ${revisionDate(item.createdAt)})`);
     }
   }
   if(questions.length){
