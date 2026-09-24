@@ -621,19 +621,23 @@ function replaceLibraryAtomically(books,items){
   });
 }
 
-function splitChapters(paragraphs){
-  const chapters=[]; let current={title:'Front matter', paragraphs:[],synthetic:true};
+function splitChapters(paragraphs,sources=null){
+  const chapters=[]; let current={title:'Front matter', paragraphs:[],synthetic:true,sourceRefs:[]};
   const heading=/^(chapter\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|[a-z-]+)|prologue|epilogue)\b/i;
-  for(const raw of paragraphs){ const p=raw.trim(); if(!p) continue;
-    if(heading.test(p) && current.paragraphs.length){ chapters.push(current); current={title:p,paragraphs:[],synthetic:false}; }
-    else if(heading.test(p) && !current.paragraphs.length){ current.title=p; current.synthetic=false; }
-    else current.paragraphs.push(p);
+  for(let index=0;index<paragraphs.length;index++){
+    const raw=paragraphs[index],p=raw.trim(),source=sources?.[index]||null;if(!p)continue;
+    if(heading.test(p)&&current.paragraphs.length){
+      chapters.push(current);current={title:p,paragraphs:[],synthetic:false,sourceRefs:[],titleSource:source};
+    }else if(heading.test(p)&&!current.paragraphs.length){
+      current.title=p;current.synthetic=false;current.titleSource=source;
+    }else{
+      current.paragraphs.push(p);current.sourceRefs.push(source);
+    }
   }
-  if(current.paragraphs.length) chapters.push(current);
-  if(!chapters.length) chapters.push({title:'Manuscript',paragraphs:paragraphs.filter(Boolean)});
+  if(current.paragraphs.length)chapters.push(current);
+  if(!chapters.length)chapters.push({title:'Manuscript',paragraphs:paragraphs.filter(Boolean),sourceRefs:sources?paragraphs.map((p,i)=>p?sources[i]||null:null).filter((_,i)=>paragraphs[i]):[]});
   return chapters;
 }
-
 async function parseDocx(file){
   const zip=await JSZip.loadAsync(await file.arrayBuffer());
   const doc=zip.file('word/document.xml');if(!doc)throw new Error('This DOCX does not contain a readable document body.');
@@ -700,6 +704,114 @@ async function parseEpub(file){
   }
   if(!all.length)throw new Error('No readable text was found in this EPUB.');
   return {paragraphs:all,chapters:chapters.length?chapters:null};
+}
+function ensureTesseractLibrary(){
+  if(window.Tesseract?.createWorker)return Promise.resolve(window.Tesseract);
+  if(ensureTesseractLibrary.promise)return ensureTesseractLibrary.promise;
+  ensureTesseractLibrary.promise=new Promise((resolve,reject)=>{
+    const s=document.createElement('script');
+    s.src='https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
+    s.async=true;s.crossOrigin='anonymous';
+    s.onload=()=>window.Tesseract?.createWorker?resolve(window.Tesseract):reject(new Error('OCR engine did not initialise.'));
+    s.onerror=()=>reject(new Error('OCR setup could not download. Connect to the internet once, then try again.'));
+    document.head.appendChild(s);
+  }).catch(e=>{ensureTesseractLibrary.promise=null;throw e});
+  return ensureTesseractLibrary.promise;
+}
+function confirmPdfOcr(count,total){
+  return new Promise(resolve=>{
+    modalForm.innerHTML=`<h3>Scanned pages found</h3>
+      <p>Storyline found <strong>${count}</strong> page${count===1?'':'s'} with little or no selectable text out of ${total}.</p>
+      <p class="sub">OCR runs on this device. The first OCR use may need an internet connection to download the free OCR engine and English language data; later uses can reuse cached data.</p>
+      <div class="row between"><button type="button" id="skipPdfOcr" class="ghost">Import text pages only</button><button type="button" id="runPdfOcr" class="button">Read scanned pages with OCR</button></div>`;
+    if(!modal.open)modal.showModal();
+    let settled=false;
+    const finish=v=>{if(settled)return;settled=true;modal.onclose=null;if(modal.open)modal.close();resolve(v)};
+    $('#skipPdfOcr').onclick=()=>finish(false);
+    $('#runPdfOcr').onclick=()=>finish(true);
+    modal.onclose=()=>finish(false);
+  });
+}
+function ocrTextToSyntheticLines(text,pageNo,confidence=0){
+  const rows=String(text||'').replace(/\r/g,'').split('\n');
+  const lines=[];let y=820;
+  for(const raw of rows){
+    if(!raw.trim()){y-=22;continue}
+    const leading=(raw.match(/^\s+/)?.[0].length||0),clean=raw.replace(/\s+/g,' ').trim();
+    if(!clean)continue;
+    const x=72+Math.min(24,leading*3);
+    lines.push({pageNo,y,xStart:x,xEnd:x+Math.max(40,clean.length*6),height:12,text:clean,ocr:true,confidence:Number(confidence)||0});
+    y-=14;
+  }
+  return lines;
+}
+async function renderPdfPageForOcr(page){
+  const base=page.getViewport({scale:1}),targetWidth=Math.min(2200,Math.max(1500,base.width*2));
+  const scale=targetWidth/base.width,viewport=page.getViewport({scale});
+  const canvas=document.createElement('canvas');canvas.width=Math.ceil(viewport.width);canvas.height=Math.ceil(viewport.height);
+  const ctx=canvas.getContext('2d',{alpha:false,willReadFrequently:true});
+  await page.render({canvasContext:ctx,viewport,background:'white'}).promise;
+  return canvas;
+}
+async function ocrPdfPages(pdf,pageNumbers){
+  const Tesseract=await ensureTesseractLibrary();
+  let cancelled=false,worker=null,currentPage=0,currentStatus='Preparing OCR…';
+  modalForm.innerHTML=`<h3>Reading scanned pages</h3><p id="ocrProgressText" class="sub">Preparing OCR…</p><progress id="ocrProgressBar" max="${pageNumbers.length}" value="0"></progress><div class="row between"><span class="meta">Keep Storyline open while OCR is running.</span><button type="button" id="cancelOcr" class="ghost">Cancel OCR</button></div>`;
+  if(!modal.open)modal.showModal();
+  $('#cancelOcr').onclick=()=>{cancelled=true;$('#ocrProgressText').textContent='Stopping after the current OCR step…'};
+  modal.onclose=()=>{cancelled=true};
+  const updateLogger=m=>{
+    const el=$('#ocrProgressText');if(!el)return;
+    if(m?.status==='recognizing text'&&Number.isFinite(m.progress)){
+      el.textContent=`OCR page ${currentPage} of ${pageNumbers.length} · ${Math.round(m.progress*100)}%`;
+    }else if(m?.status)el.textContent=`OCR page ${currentPage||1} of ${pageNumbers.length} · ${m.status}`;
+  };
+  const results=[];
+  try{
+    worker=await Tesseract.createWorker('eng',1,{logger:updateLogger});
+    for(let i=0;i<pageNumbers.length;i++){
+      if(cancelled)break;
+      currentPage=i+1;const pageNo=pageNumbers[i],page=await pdf.getPage(pageNo),canvas=await renderPdfPageForOcr(page);
+      const el=$('#ocrProgressText');if(el)el.textContent=`OCR page ${i+1} of ${pageNumbers.length}`;
+      const result=await worker.recognize(canvas);
+      if(cancelled)break;
+      const text=String(result?.data?.text||'').trim(),confidence=Number(result?.data?.confidence)||0;
+      results.push({pageNo,text,confidence,lines:ocrTextToSyntheticLines(text,pageNo,confidence)});
+      const bar=$('#ocrProgressBar');if(bar)bar.value=i+1;
+      await new Promise(requestAnimationFrame);
+    }
+  }finally{
+    try{await worker?.terminate?.()}catch{}
+    modal.onclose=null;if(modal.open)modal.close();
+  }
+  return {results,cancelled};
+}
+function pdfSourceLabel(source){
+  if(!source?.pages?.length)return '';
+  const pages=source.pages;
+  const pageText=pages.length===1?`PDF page ${pages[0]}`:`PDF pages ${pages[0]}–${pages[pages.length-1]}`;
+  return source.ocr?`${pageText} · OCR`:pageText;
+}
+function importDiagnosticsHtml(book){
+  const d=book?.importDiagnostics;if(!d)return '';
+  const parts=[];
+  if(d.format)parts.push(d.format.toUpperCase());
+  if(Number.isFinite(d.totalPages))parts.push(`${d.totalPages} page${d.totalPages===1?'':'s'}`);
+  if(d.ocrPages?.length)parts.push(`${d.ocrPages.length} OCR`);
+  if(d.skippedOcrPages?.length)parts.push(`${d.skippedOcrPages.length} scanned page${d.skippedOcrPages.length===1?'':'s'} skipped`);
+  if(d.lowConfidencePages?.length)parts.push(`${d.lowConfidencePages.length} low-confidence OCR`);
+  return parts.join(' · ');
+}
+function showImportReport(book){
+  const d=book?.importDiagnostics;if(!d)return;
+  const report=importDiagnosticsHtml(book);
+  modalForm.innerHTML=`<h3>Import complete</h3><p><strong>${escapeHtml(book.title)}</strong></p>
+    <p class="sub">${book.chapters.length} chapter${book.chapters.length===1?'':'s'} · ${book.chapters.reduce((n,ch)=>n+ch.paragraphs.length,0)} paragraphs${report?' · '+escapeHtml(report):''}</p>
+    ${d.ocrPages?.length?`<p>${d.ocrPages.length} page${d.ocrPages.length===1?' was':'s were'} reconstructed with OCR.</p>`:''}
+    ${d.lowConfidencePages?.length?`<p class="import-warning">Review OCR text from page${d.lowConfidencePages.length===1?'':'s'} ${d.lowConfidencePages.join(', ')}; recognition confidence was lower there.</p>`:''}
+    ${d.skippedOcrPages?.length?`<p class="import-warning">Scanned page${d.skippedOcrPages.length===1?'':'s'} ${d.skippedOcrPages.join(', ')} were not imported because OCR was skipped or cancelled.</p>`:''}
+    <div class="row between"><span class="meta">Source page references stay attached to reconstructed paragraphs.</span><button value="default" class="button">Open manuscript</button></div>`;
+  if(!modal.open)modal.showModal();
 }
 function pdfMedian(values){
   const nums=values.filter(Number.isFinite).sort((a,b)=>a-b);
