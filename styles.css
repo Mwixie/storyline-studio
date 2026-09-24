@@ -725,3 +725,97 @@ body{min-height:100dvh}.app-shell{min-height:100dvh;padding-bottom:86px}.topbar{
   .flag-review-decisions>*{flex:1 1 100%}
   .flag-review-options label{flex:1 1 100%}
 }
+
+
+/* Build 46: pacing + name index */
+.reader-chapter-tools{
+  display:flex;
+  align-items:center;
+  gap:8px;
+}
+.reader-chapter-tools .chapter-select{flex:1 1 auto;min-width:0}
+.pacing-strip{
+  min-height:230px;
+  display:flex;
+  align-items:flex-end;
+  gap:2px;
+  padding:14px 8px 8px;
+  border:1px solid var(--line);
+  border-radius:12px;
+  background:rgba(255,255,255,.02);
+  overflow-x:auto;
+}
+.pacing-bar{
+  flex:1 0 4px;
+  min-width:4px;
+  max-width:18px;
+  border:0;
+  border-radius:3px 3px 1px 1px;
+  background:rgba(255,255,255,.34);
+  padding:0;
+  cursor:pointer;
+}
+.pacing-bar.dialogue{background:rgba(214,179,106,.72)}
+.pacing-bar.current{
+  outline:2px solid var(--gold2);
+  outline-offset:1px;
+}
+.pacing-legend{
+  display:flex;
+  flex-wrap:wrap;
+  gap:12px;
+  font-size:.82rem;
+  color:var(--muted);
+}
+.pacing-legend span{display:flex;align-items:center;gap:5px}
+.pacing-key{
+  display:inline-block;
+  width:12px;
+  height:16px;
+  border-radius:2px;
+  background:rgba(255,255,255,.34);
+}
+.pacing-key.dialogue{background:rgba(214,179,106,.72)}
+.pacing-key.current{outline:2px solid var(--gold2)}
+.name-index-loading{
+  padding:18px;
+  border:1px solid var(--line);
+  border-radius:12px;
+}
+.name-index-list{
+  display:grid;
+  gap:7px;
+  max-height:58vh;
+  overflow:auto;
+  margin:10px 0;
+}
+.name-index-row{
+  display:grid;
+  grid-template-columns:minmax(0,1fr) auto auto;
+  align-items:center;
+  gap:8px;
+  border:1px solid var(--line);
+  border-radius:10px;
+  padding:8px;
+}
+.name-index-open{
+  appearance:none;
+  border:0;
+  background:none;
+  color:inherit;
+  text-align:left;
+  display:grid;
+  gap:3px;
+  cursor:pointer;
+  min-width:0;
+}
+.name-index-count{
+  min-width:2.2rem;
+  text-align:center;
+  font-variant-numeric:tabular-nums;
+}
+@media(max-width:600px){
+  .reader-chapter-tools{align-items:stretch}
+  .name-index-row{grid-template-columns:minmax(0,1fr) auto}
+  .name-index-row [data-name-hide]{grid-column:1/-1}
+}

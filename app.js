@@ -442,6 +442,8 @@ async function migrateRevisionAtomically(oldBook,newBook,items){
 async function updateManuscriptRevision(oldBook,newBook){
   const allItems=(await idbGetAll('items')).filter(i=>i.bookId===oldBook.id);
   mergeBookPronunciations(oldBook,newBook);
+  newBook.nameIndexHidden=[...new Set([...(oldBook.nameIndexHidden||[]),...(newBook.nameIndexHidden||[])])];
+  newBook.nameIndex=[];newBook.nameIndexStatus='pending';
   newBook.progress=revisionProgressForNewBook(oldBook,newBook);
   newBook.revisionRootId=oldBook.revisionRootId||oldBook.id;
   newBook.revisionIndex=Math.max(2,(oldBook.revisionIndex||1)+1);
@@ -454,7 +456,7 @@ async function updateManuscriptRevision(oldBook,newBook){
   state.selectedCharOffset=newBook.progress.charOffset||0;state.selectedWordEnd=newBook.progress.wordEnd||0;
   savePrefs({lastBookId:newBook.id});
   if(modal.open)modal.close();
-  await navigate('reader');
+  await navigate('reader');queueNameIndexBuild(newBook);
   showToast(uncertain.length?`Updated manuscript · ${uncertain.length} item${uncertain.length===1?' needs':'s need'} location review`:`Updated manuscript · ${migrated.length} revision item${migrated.length===1?'':'s'} carried forward`);
 }
 function compactHandoffAnchor(anchor){
@@ -1220,12 +1222,12 @@ async function importPastedText(text,title=''){
   }
   const chapters=splitChapters(paragraphs);
   const now=new Date().toISOString();
-  const book={id:uid(),title:bookTitle,fileName:'Pasted text',createdAt:now,updatedAt:now,chapters,progress:{chapterIndex:0,paragraphIndex:0,charOffset:0,wordEnd:0,completed:false},version:'Pasted manuscript'};
+  const book={id:uid(),title:bookTitle,fileName:'Pasted text',createdAt:now,updatedAt:now,chapters,progress:{chapterIndex:0,paragraphIndex:0,charOffset:0,wordEnd:0,completed:false},version:'Pasted manuscript',nameIndex:[],nameIndexHidden:[],nameIndexStatus:'pending'};
   await idbPut('books',book);
   state.bookId=book.id;state.chapterIndex=0;state.selectedParagraph=0;state.selectedCharOffset=0;state.selectedWordEnd=0;
   savePrefs({lastBookId:book.id});
   showToast(`Imported ${book.chapters.length} chapter${book.chapters.length===1?'':'s'} from pasted text`);
-  await navigate('reader');
+  await navigate('reader');queueNameIndexBuild(book);
 }
 function pastedFileFromTransfer(transfer){
   const files=[...(transfer?.files||[])];
@@ -1285,7 +1287,7 @@ async function importFile(file){
     const firstUseful=paragraphs.find(p=>p.length>3&&!/^chapter\b/i.test(p));
     if(/the plus[ -]one problem/i.test(title)||/^the plus[ -]one problem/i.test(firstUseful||''))title='The Plus-One Problem';
     const chapters=parsedChapters||splitChapters(paragraphs,sources),now=new Date().toISOString();
-    const book={id:uid(),title,fileName:file.name,createdAt:now,updatedAt:now,chapters,progress:{chapterIndex:0,paragraphIndex:0,charOffset:0,wordEnd:0,completed:false},version:'Imported manuscript',importDiagnostics};
+    const book={id:uid(),title,fileName:file.name,createdAt:now,updatedAt:now,chapters,progress:{chapterIndex:0,paragraphIndex:0,charOffset:0,wordEnd:0,completed:false},version:'Imported manuscript',importDiagnostics,nameIndex:[],nameIndexHidden:[],nameIndexStatus:'pending'};
 
     const existing=await idbGetAll('books'),revisionMatch=revisionCandidateForBook(book,existing);
     if(revisionMatch.book){
@@ -1299,7 +1301,7 @@ async function importFile(file){
     state.bookId=book.id;state.chapterIndex=0;state.selectedParagraph=0;state.selectedCharOffset=0;state.selectedWordEnd=0;
     savePrefs({lastBookId:book.id});
     showToast(revisionMatch.book?`Imported revision ${book.revisionIndex} · compare when ready`:`Imported ${book.chapters.length} chapter${book.chapters.length===1?'':'s'}`);
-    await navigate('reader');
+    await navigate('reader');queueNameIndexBuild(book);
     if(importDiagnostics)showImportReport(book);
   }catch(e){
     if(modal.open){modal.onclose=null;modal.close()}
@@ -1744,6 +1746,144 @@ function refreshChapterTimeOptions(book){
   const sel=$('#chapterSelect');if(!sel||!book?.chapters)return;
   [...sel.options].forEach((opt,i)=>{const ch=book.chapters[i];if(ch)opt.textContent=`${chapterLabel(ch,book)} · ${readingMinutesLabel(chapterWordCount(ch))}`});
 }
+const NAME_STOPLIST=new Set(["monday","tuesday","wednesday","thursday","friday","saturday","sunday","january","february","march","april","may","june","july","august","september","october","november","december","chapter","part","book","prologue","epilogue","then","after","before","when","while","but","and","the","this","that","these","those","meanwhile","however","later","finally","suddenly","although","because","if","as","at","by","from","in","on","with","without","for","to","of"]);
+function dialogueCharacterRatio(text=''){
+  const source=String(text||'');if(!source.length)return 0;
+  const dialogue=dialogueRanges(source,0,source.length).filter(x=>x.kind==='dialogue').reduce((n,x)=>n+Math.max(0,x.end-x.start),0);
+  return dialogue/source.length;
+}
+function pacingDataForChapter(ch){
+  const paras=ch?.paragraphs||[],groupSize=paras.length>800?Math.ceil(paras.length/800):1,groups=[];
+  for(let start=0;start<paras.length;start+=groupSize){
+    const end=Math.min(paras.length,start+groupSize),slice=paras.slice(start,end);
+    const counts=slice.map(wordCount),avgWords=counts.length?counts.reduce((a,b)=>a+b,0)/counts.length:0;
+    let dialogueChars=0,totalChars=0;
+    for(const text of slice){
+      const s=String(text||'');totalChars+=s.length;dialogueChars+=dialogueCharacterRatio(s)*s.length;
+    }
+    groups.push({startParagraph:start,endParagraph:end-1,avgWords,dialogueRatio:totalChars?dialogueChars/totalChars:0});
+  }
+  const maxWords=Math.max(1,...groups.map(g=>g.avgWords));
+  for(const g of groups)g.height=Math.max(8,Math.round(g.avgWords/maxWords*100));
+  return {groups,groupSize,aggregated:groupSize>1,paragraphCount:paras.length};
+}
+async function jumpToPacingParagraph(book,chapterIndex,paragraphIndex){
+  state.bookId=book.id;state.chapterIndex=chapterIndex;state.selectedParagraph=paragraphIndex;state.selectedCharOffset=0;state.selectedWordEnd=0;state.recapBookId=null;
+  savePrefs({lastBookId:book.id});await saveProgress(book);
+  if(modal.open)modal.close();await navigate('reader');
+}
+function openPacingView(book,chapterIndex=state.chapterIndex){
+  const ci=Math.max(0,Math.min(Number(chapterIndex)||0,book.chapters.length-1)),ch=book.chapters[ci],data=pacingDataForChapter(ch);
+  const bars=data.groups.map(g=>{
+    const current=book.id===state.bookId&&ci===state.chapterIndex&&state.selectedParagraph>=g.startParagraph&&state.selectedParagraph<=g.endParagraph;
+    const label=g.startParagraph===g.endParagraph?`Paragraph ${g.startParagraph+1}`:`Paragraphs ${g.startParagraph+1}–${g.endParagraph+1}`;
+    return `<button type="button" class="pacing-bar ${g.dialogueRatio>.4?'dialogue':''} ${current?'current':''}" style="height:${g.height}%" data-pacing-paragraph="${g.startParagraph}" title="${escapeHtml(label)} · ~${Math.round(g.avgWords)} words · ${Math.round(g.dialogueRatio*100)}% dialogue" aria-label="${escapeHtml(label)}, about ${Math.round(g.avgWords)} words, ${Math.round(g.dialogueRatio*100)} percent dialogue"></button>`;
+  }).join('');
+  modalForm.innerHTML=`<h3>Pacing</h3>
+    <div class="row between"><select id="pacingChapterSelect" class="select">${book.chapters.map((x,i)=>`<option value="${i}" ${i===ci?'selected':''}>${escapeHtml(chapterLabel(x,book))}</option>`).join('')}</select><span class="meta">${data.paragraphCount} paragraph${data.paragraphCount===1?'':'s'}</span></div>
+    <div class="pacing-strip" aria-label="Chapter pacing strip">${bars||'<div class="empty">No paragraphs in this chapter.</div>'}</div>
+    <div class="pacing-legend"><span><i class="pacing-key"></i>Taller = longer</span><span><i class="pacing-key dialogue"></i>More than 40% dialogue</span><span><i class="pacing-key current"></i>Current position</span></div>
+    ${data.aggregated?`<p class="meta">Long chapter: each bar represents up to ${data.groupSize} paragraphs. Tapping a grouped bar jumps to the first paragraph in that group.</p>`:''}
+    <div class="row between"><span class="meta">Computed from this manuscript only.</span><button value="default" class="button">Close</button></div>`;
+  if(!modal.open)modal.showModal();
+  $('#pacingChapterSelect').onchange=e=>openPacingView(book,+e.target.value);
+  $$('[data-pacing-paragraph]').forEach(btn=>btn.onclick=()=>jumpToPacingParagraph(book,ci,+btn.dataset.pacingParagraph));
+}
+function nameCandidateRegex(){
+  try{return new RegExp("(?<![\\p{L}\\p{M}])\\p{Lu}[\\p{L}\\p{M}’'\\-]+(?:\\s+\\p{Lu}[\\p{L}\\p{M}’'\\-]+){0,2}(?![\\p{L}\\p{M}])",'gu')}
+  catch{return /\b[A-Z][A-Za-z’'-]+(?:\s+[A-Z][A-Za-z’'-]+){0,2}\b/g}
+}
+function normalizeNameCandidate(value=''){
+  const s=String(value).replace(/\s+/g,' ').trim();if(!s)return '';
+  let allCaps=false;
+  try{const letters=s.replace(/[^\p{L}]/gu,'');allCaps=!!letters&&letters===letters.toLocaleUpperCase()}catch{const letters=s.replace(/[^A-Za-z]/g,'');allCaps=!!letters&&letters===letters.toUpperCase()}
+  if(!allCaps)return s;
+  return s.split(/\s+/).map(token=>token.split(/([’'-])/).map(part=>/[’'-]/.test(part)?part:(part?part[0].toLocaleUpperCase()+part.slice(1).toLocaleLowerCase():'')).join('')).join(' ');
+}
+function trimCandidateStopwords(value=''){
+  const parts=String(value||'').trim().split(/\s+/).filter(Boolean);
+  while(parts.length>1&&NAME_STOPLIST.has(anchorNormalize(parts[0])))parts.shift();
+  if(!parts.length||NAME_STOPLIST.has(anchorNormalize(parts[0])))return '';
+  return parts.join(' ');
+}
+function nameOccurrenceIsSentenceInitial(text,index){
+  let before=String(text||'').slice(0,index).trimEnd();
+  before=before.replace(/["'”’)\]]+$/,'').trimEnd();
+  return !before||/[.!?]$/.test(before);
+}
+function yieldNameIndex(){
+  return new Promise(resolve=>{
+    if(window.requestIdleCallback)requestIdleCallback(()=>resolve(),{timeout:60});
+    else setTimeout(resolve,0);
+  });
+}
+async function buildNameIndex(book,{save=true}={}){
+  const hidden=new Set((book.nameIndexHidden||[]).map(anchorNormalize)),map=new Map();let seenParagraphs=0;
+  book.nameIndexStatus='building';
+  for(let ci=0;ci<book.chapters.length;ci++){
+    const ch=book.chapters[ci];
+    for(let pi=0;pi<ch.paragraphs.length;pi++){
+      const text=String(ch.paragraphs[pi]||''),re=nameCandidateRegex();
+      for(const match of text.matchAll(re)){
+        const name=trimCandidateStopwords(normalizeNameCandidate(match[0])),key=anchorNormalize(name);
+        if(!name||hidden.has(key))continue;
+        const existing=map.get(key)||{name,count:0,midSentenceCount:0,firstChapter:ci,firstParagraph:pi,lastChapter:ci,lastParagraph:pi};
+        existing.count++;if(!nameOccurrenceIsSentenceInitial(text,match.index||0))existing.midSentenceCount++;
+        existing.lastChapter=ci;existing.lastParagraph=pi;map.set(key,existing);
+      }
+      seenParagraphs++;
+      if(seenParagraphs%120===0)await yieldNameIndex();
+    }
+  }
+  const index=[...map.values()].filter(x=>x.count>=3||(x.count>=2&&x.midSentenceCount>=1)).sort((a,b)=>b.count-a.count||a.name.localeCompare(b.name));
+  if(save){
+    const latest=await idbGet('books',book.id);
+    if(latest){
+      const latestHidden=new Set((latest.nameIndexHidden||[]).map(anchorNormalize));
+      latest.nameIndex=index.filter(x=>!latestHidden.has(anchorNormalize(x.name)));
+      latest.nameIndexHidden=latest.nameIndexHidden||[];
+      latest.nameIndexStatus='ready';latest.nameIndexBuiltAt=new Date().toISOString();
+      await idbPut('books',latest);
+      if(state.readerBook?.id===latest.id)state.readerBook=latest;
+      return latest;
+    }
+  }
+  book.nameIndex=index;book.nameIndexStatus='ready';book.nameIndexBuiltAt=new Date().toISOString();return book;
+}
+function queueNameIndexBuild(book){
+  setTimeout(()=>buildNameIndex(book,{save:true}).catch(()=>{}),120);
+}
+async function openNameIndex(book,{rebuild=false}={}){
+  let current=await idbGet('books',book.id)||book;
+  if(rebuild||!Array.isArray(current.nameIndex)||current.nameIndexStatus!=='ready'){
+    modalForm.innerHTML='<h3>Name index</h3><p class="sub">Building candidate-name index…</p><div class="name-index-loading">Scanning the manuscript without sending it anywhere.</div>';
+    if(!modal.open)modal.showModal();
+    current=await buildNameIndex(current,{save:true})||current;
+  }
+  const rows=(current.nameIndex||[]).map((row,i)=>`<article class="name-index-row">
+    <button type="button" class="name-index-open" data-name-open="${i}"><strong>${escapeHtml(row.name)}</strong><span class="meta">${escapeHtml(chapterLabel(current.chapters[row.firstChapter],current))} · ¶${row.firstParagraph+1} → ${escapeHtml(chapterLabel(current.chapters[row.lastChapter],current))} · ¶${row.lastParagraph+1}</span></button>
+    <span class="name-index-count">${row.count}</span><button type="button" class="ghost tiny" data-name-hide="${i}">Not a name</button>
+  </article>`).join('');
+  modalForm.innerHTML=`<h3>Name index</h3><p class="sub">Candidate names found on this device. Counts are a continuity aid, not a claim that every result is a character.</p>
+    <div class="row between"><span class="meta">${(current.nameIndex||[]).length} candidate${(current.nameIndex||[]).length===1?'':'s'}</span><button type="button" id="rebuildNameIndex" class="ghost tiny">Rebuild index</button></div>
+    <div class="name-index-list">${rows||'<div class="empty">No recurring candidate names found yet.</div>'}</div>
+    <div class="row between"><span class="meta">Tap a name to jump to its first appearance.</span><button value="default" class="button">Close</button></div>`;
+  if(!modal.open)modal.showModal();
+  $('#rebuildNameIndex').onclick=()=>openNameIndex(current,{rebuild:true});
+  $$('[data-name-open]').forEach(btn=>btn.onclick=async()=>{
+    const row=current.nameIndex?.[+btn.dataset.nameOpen];if(!row)return;
+    const ch=current.chapters[row.firstChapter],text=String(ch?.paragraphs?.[row.firstParagraph]||''),offset=Math.max(0,text.toLocaleLowerCase().indexOf(row.name.toLocaleLowerCase()));
+    state.bookId=current.id;state.chapterIndex=row.firstChapter;state.selectedParagraph=row.firstParagraph;state.selectedCharOffset=offset;state.selectedWordEnd=Math.min(text.length,offset+row.name.length);
+    state.pendingPassageReference={chapterIndex:row.firstChapter,paragraphIndex:row.firstParagraph,start:offset,end:Math.min(text.length,offset+row.name.length),moved:false,unverified:false};
+    savePrefs({lastBookId:current.id});await saveProgress(current);if(modal.open)modal.close();await navigate('reader');
+  });
+  $$('[data-name-hide]').forEach(btn=>btn.onclick=async()=>{
+    const row=current.nameIndex?.[+btn.dataset.nameHide];if(!row)return;
+    current.nameIndexHidden=[...new Set([...(current.nameIndexHidden||[]),row.name])];
+    current.nameIndex=(current.nameIndex||[]).filter(x=>anchorNormalize(x.name)!==anchorNormalize(row.name));
+    await idbPut('books',current);showToast(`${row.name} hidden from this index`);await openNameIndex(current);
+  });
+}
 function relativeDateText(iso){
   const t=Date.parse(iso||'');if(!Number.isFinite(t))return '';
   const diff=Date.now()-t,day=86400000;
@@ -1900,7 +2040,7 @@ async function renderReader(){
   const p=prefs();
   view.innerHTML=`
     <section class="reader-header"><div class="row between"><div><div class="eyebrow">${escapeHtml(book.title)}</div>${readerChapterTitle(ch)?`<h2 class="reader-title">${escapeHtml(readerChapterTitle(ch))}</h2>`:''}</div><button id="backLibrary" class="ghost tiny">Library</button></div>
-    <select id="chapterSelect" class="chapter-select">${book.chapters.map((c,i)=>`<option value="${i}" ${i===state.chapterIndex?'selected':''}>${escapeHtml(chapterLabel(c,book))} · ${readingMinutesLabel(chapterWordCount(c))}</option>`).join('')}</select>
+    <div class="reader-chapter-tools"><select id="chapterSelect" class="chapter-select">${book.chapters.map((c,i)=>`<option value="${i}" ${i===state.chapterIndex?'selected':''}>${escapeHtml(chapterLabel(c,book))} · ${readingMinutesLabel(chapterWordCount(c))}</option>`).join('')}</select><button id="pacingBtn" class="ghost tiny" type="button">Pacing</button></div>
     ${recapCardHtml(book)}
     ${handoffLandingCardHtml(book)}
     ${revisionPromptCardHtml(book)}
@@ -1984,6 +2124,7 @@ function wireReader(book,ch){
   readingPage?.addEventListener('wheel',suspendFollow,{passive:true});
   if(resumeFollow)resumeFollow.onclick=()=>resumeNarrationFollow();
   updateFollowControl();
+  const pacingBtn=$('#pacingBtn');if(pacingBtn)pacingBtn.onclick=()=>openPacingView(book,state.chapterIndex);
   const searchInput=$('#readerSearchInput'),searchBtn=$('#readerSearchBtn'),searchClear=$('#readerSearchClear');
   const runSearch=()=>{renderReaderSearchResults(book,searchInput?.value||'');searchClear?.classList.toggle('hidden',!String(searchInput?.value||'').trim());wireReaderSearchResults(book)};
   if(searchBtn)searchBtn.onclick=runSearch;
@@ -2913,6 +3054,7 @@ async function handleAction(act,book,ch){
   };
   if(act==='start'){ startSpeechFromSelection(); return} if(act==='queue'){navigate('queue');return}
   if(act==='handoff'){openHandoffSender(book);return}
+  if(act==='names'){openNameIndex(book);return}
   if(act==='pronunciations'){pronunciationManager(book,selectedReaderText());return}
   if(act==='bookmark'){await idbPut('items',{...base,id:uid(),type:'bookmark',note:''});showToast('Bookmarked');updateQueueBadge();return}
   if(act==='note') return promptItem('note','Add note','What did you notice?',base);
