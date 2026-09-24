@@ -12,7 +12,7 @@ const state = {
   pendingPassageReference:null, activeEngine:'device', readerSearchQuery:'',
   followNarrationSuspended:false, readerBook:null, recapBookId:null, selectedReaderPhrase:'',
   liveCharOffset:null, pendingHandoffContext:null, handoffScanStop:null,
-  sharedPronunciations:[], gentleStopPending:false
+  sharedPronunciations:[], gentleStopPending:false, pendingRevisionPrompt:null, revisionDiff:null
 };
 
 const PREF='storyline.prefs.v1';
@@ -305,6 +305,156 @@ function storylineEditionFingerprint(book){
     }
   }
   return portableFingerprint('storyline-edition|'+chapters.length+'|'+sample.join('|'));
+}
+
+function revisionParagraphHash(text=''){
+  return anchorHash(String(text).replace(/\s+/g,' ').trim());
+}
+function revisionChapterKey(ch,book){
+  return anchorNormalize(chapterLabel(ch,book));
+}
+function revisionCandidateForBook(book,books=[]){
+  const others=books.filter(b=>b?.id!==book.id);
+  const exact=others.filter(b=>storylineEditionFingerprint(b)===storylineEditionFingerprint(book));
+  const sameTitle=others.filter(b=>anchorNormalize(b.title)===anchorNormalize(book.title));
+  const candidates=exact.length?exact:sameTitle;
+  candidates.sort((a,b)=>bookLastTouched(b)-bookLastTouched(a));
+  return {book:candidates[0]||null,exactEdition:!!exact.length,matchKind:exact.length?'edition':sameTitle.length?'title':'none'};
+}
+function revisionChapterPairs(oldBook,newBook){
+  const used=new Set(),pairs=[];
+  for(let ni=0;ni<newBook.chapters.length;ni++){
+    const nch=newBook.chapters[ni],key=revisionChapterKey(nch,newBook);
+    let oi=oldBook.chapters.findIndex((ch,i)=>!used.has(i)&&revisionChapterKey(ch,oldBook)===key);
+    if(oi<0&&ni<oldBook.chapters.length&&!used.has(ni))oi=ni;
+    if(oi>=0)used.add(oi);
+    pairs.push({oldIndex:oi,newIndex:ni});
+  }
+  for(let oi=0;oi<oldBook.chapters.length;oi++)if(!used.has(oi))pairs.push({oldIndex:oi,newIndex:-1});
+  return pairs;
+}
+function lcsParagraphPairs(oldHashes,newHashes){
+  const n=oldHashes.length,m=newHashes.length,width=m+1,dp=new Uint32Array((n+1)*(m+1));
+  for(let i=n-1;i>=0;i--){
+    for(let j=m-1;j>=0;j--){
+      const idx=i*width+j;
+      dp[idx]=oldHashes[i]===newHashes[j]?1+dp[(i+1)*width+j+1]:Math.max(dp[(i+1)*width+j],dp[i*width+j+1]);
+    }
+  }
+  const pairs=[];let i=0,j=0;
+  while(i<n&&j<m){
+    if(oldHashes[i]===newHashes[j]){pairs.push([i,j]);i++;j++;continue}
+    if(dp[(i+1)*width+j]>=dp[i*width+j+1])i++;else j++;
+  }
+  return pairs;
+}
+function diffChapterParagraphs(oldCh,newCh){
+  const oldP=oldCh?.paragraphs||[],newP=newCh?.paragraphs||[];
+  const oh=oldP.map(revisionParagraphHash),nh=newP.map(revisionParagraphHash),matches=lcsParagraphPairs(oh,nh);
+  const changes=[];let oi=0,ni=0;
+  for(const pair of [...matches,[oldP.length,newP.length]]){
+    const mo=pair[0],mn=pair[1],oldGap=[],newGap=[];
+    while(oi<mo)oldGap.push(oi++);
+    while(ni<mn)newGap.push(ni++);
+    const paired=Math.min(oldGap.length,newGap.length);
+    for(let k=0;k<paired;k++)changes.push({kind:'changed',oldParagraphIndex:oldGap[k],newParagraphIndex:newGap[k],oldText:oldP[oldGap[k]],newText:newP[newGap[k]]});
+    for(let k=paired;k<oldGap.length;k++)changes.push({kind:'removed',oldParagraphIndex:oldGap[k],newParagraphIndex:null,oldText:oldP[oldGap[k]],newText:''});
+    for(let k=paired;k<newGap.length;k++)changes.push({kind:'added',oldParagraphIndex:null,newParagraphIndex:newGap[k],oldText:'',newText:newP[newGap[k]]});
+    if(mo<oldP.length&&mn<newP.length){oi=mo+1;ni=mn+1}
+  }
+  const max=Math.max(oldP.length,newP.length,1),matchRate=matches.length/max;
+  return {changes,matchRate,restructured:max>3&&matchRate<.5,unchanged:matches.length,oldCount:oldP.length,newCount:newP.length};
+}
+function diffManuscripts(oldBook,newBook){
+  const chapters=[],pairs=revisionChapterPairs(oldBook,newBook);
+  for(const pair of pairs){
+    const oldCh=pair.oldIndex>=0?oldBook.chapters[pair.oldIndex]:null,newCh=pair.newIndex>=0?newBook.chapters[pair.newIndex]:null;
+    let diff;
+    if(oldCh&&newCh)diff=diffChapterParagraphs(oldCh,newCh);
+    else if(newCh)diff={changes:newCh.paragraphs.map((t,i)=>({kind:'added',oldParagraphIndex:null,newParagraphIndex:i,oldText:'',newText:t})),matchRate:0,restructured:true,unchanged:0,oldCount:0,newCount:newCh.paragraphs.length};
+    else diff={changes:oldCh.paragraphs.map((t,i)=>({kind:'removed',oldParagraphIndex:i,newParagraphIndex:null,oldText:t,newText:''})),matchRate:0,restructured:true,unchanged:0,oldCount:oldCh.paragraphs.length,newCount:0};
+    if(diff.changes.length)chapters.push({...pair,title:newCh?chapterLabel(newCh,newBook):chapterLabel(oldCh,oldBook),...diff});
+  }
+  return {oldBookId:oldBook.id,newBookId:newBook.id,chapters,totalChanges:chapters.reduce((n,ch)=>n+ch.changes.length,0)};
+}
+function anchorForBookPosition(book,chapterIndex,paragraphIndex,start=0,end=start){
+  const ci=Math.max(0,Math.min(chapterIndex,book.chapters.length-1)),ch=book.chapters[ci];
+  const pi=Math.max(0,Math.min(paragraphIndex,Math.max(0,ch.paragraphs.length-1))),text=String(ch.paragraphs[pi]||'');
+  const a=Math.max(0,Math.min(start,text.length)),b=Math.max(a,Math.min(end||a,text.length)),ctx=passageContext(text,a,b);
+  return {
+    version:1,precision:'word',chapterKey:chapterAnchorKey(ch,book),chapterTitle:chapterLabel(ch,book),chapterIndex:ci,
+    paragraphIndex:pi,paragraphFingerprint:anchorHash(text),charStart:a,charEnd:b,selectedText:ctx.selected,
+    selectionFingerprint:ctx.selected?anchorHash(ctx.selected):'',prefixContext:ctx.prefix,suffixContext:ctx.suffix,
+    previousParagraphFingerprint:pi>0?anchorHash(ch.paragraphs[pi-1]||''):'',
+    nextParagraphFingerprint:pi<ch.paragraphs.length-1?anchorHash(ch.paragraphs[pi+1]||''):'',
+    capturedAt:new Date().toISOString()
+  };
+}
+function mergeBookPronunciations(oldBook,newBook){
+  const next=[...(newBook.pronunciations||[])],seen=new Set(next.map(x=>String(x.match||'').toLowerCase()));
+  for(const p of oldBook.pronunciations||[]){
+    const key=String(p.match||'').toLowerCase();if(!key||seen.has(key)||next.length>=200)continue;
+    next.push({...p,id:p.id||uid()});seen.add(key);
+  }
+  newBook.pronunciations=next;return next;
+}
+function revisionProgressForNewBook(oldBook,newBook){
+  const p=oldBook.progress||{},ci=Math.max(0,Math.min(p.chapterIndex||0,oldBook.chapters.length-1));
+  const ch=oldBook.chapters[ci],pi=Math.max(0,Math.min(p.paragraphIndex||0,Math.max(0,(ch?.paragraphs.length||1)-1)));
+  const anchor=anchorForBookPosition(oldBook,ci,pi,p.charOffset||0,p.wordEnd||p.charOffset||0);
+  const resolved=resolvePassageAnchor(newBook,{chapterIndex:ci,paragraphIndex:pi,charOffset:p.charOffset||0,wordEnd:p.wordEnd||0,anchor});
+  return {
+    chapterIndex:resolved.chapterIndex,paragraphIndex:resolved.paragraphIndex,charOffset:resolved.start||0,wordEnd:resolved.end||resolved.start||0,
+    completed:!!p.completed,updatedAt:new Date().toISOString(),migrationUncertain:!!resolved.unverified
+  };
+}
+function migrateRevisionItemToBook(item,newBook,oldBook){
+  const resolved=resolvePassageAnchor(newBook,item),ch=newBook.chapters[resolved.chapterIndex],text=String(ch?.paragraphs?.[resolved.paragraphIndex]||'');
+  const start=Math.max(0,Math.min(resolved.start||0,text.length)),end=Math.max(start,Math.min(resolved.end||start,text.length));
+  const next={...item};
+  next.migratedFromBookId=oldBook.id;next.migratedFromBookTitle=oldBook.title;next.migratedAt=new Date().toISOString();
+  next.previousAnchor=item.anchor||null;
+  next.bookId=newBook.id;next.bookTitle=newBook.title;next.chapterIndex=resolved.chapterIndex;next.chapterTitle=chapterLabel(ch,newBook);
+  next.paragraphIndex=resolved.paragraphIndex;next.charOffset=start;next.wordEnd=end;
+  next.migrationUncertain=!!resolved.unverified;next.migrationScore=resolved.score||0;
+  next.anchor=resolved.unverified?(item.anchor||anchorForBookPosition(oldBook,item.chapterIndex||0,item.paragraphIndex||0,item.charOffset||0,item.wordEnd||item.charOffset||0)):anchorForBookPosition(newBook,resolved.chapterIndex,resolved.paragraphIndex,start,end);
+  next.migrationFallback={chapterIndex:resolved.chapterIndex,paragraphIndex:resolved.paragraphIndex,charStart:start,charEnd:end};
+  next.lastResolved={bookId:newBook.id,chapterIndex:resolved.chapterIndex,paragraphIndex:resolved.paragraphIndex,charStart:start,charEnd:end,score:resolved.score||0,moved:!!resolved.moved,unverified:!!resolved.unverified,resolvedAt:new Date().toISOString()};
+  return next;
+}
+async function migrateRevisionAtomically(oldBook,newBook,items){
+  return new Promise((res,rej)=>{
+    let tx;
+    try{
+      tx=db.transaction(['books','items'],'readwrite');
+      const bs=tx.objectStore('books'),is=tx.objectStore('items');let settled=false;
+      tx.oncomplete=()=>{if(!settled){settled=true;res()}};
+      tx.onabort=()=>{if(!settled){settled=true;rej(tx.error||new Error('Revision update was rolled back.'))}};
+      tx.onerror=()=>{};
+      try{
+        bs.put(newBook);bs.delete(oldBook.id);
+        for(const item of items)is.put(item);
+      }catch(e){try{tx.abort()}catch{};if(!settled){settled=true;rej(e)}}
+    }catch(e){try{tx?.abort()}catch{};rej(e)}
+  });
+}
+async function updateManuscriptRevision(oldBook,newBook){
+  const allItems=(await idbGetAll('items')).filter(i=>i.bookId===oldBook.id);
+  mergeBookPronunciations(oldBook,newBook);
+  newBook.progress=revisionProgressForNewBook(oldBook,newBook);
+  newBook.revisionRootId=oldBook.revisionRootId||oldBook.id;
+  newBook.revisionIndex=Math.max(2,(oldBook.revisionIndex||1)+1);
+  newBook.previousRevision={id:oldBook.id,title:oldBook.title,editionFingerprint:storylineEditionFingerprint(oldBook),updatedAt:oldBook.updatedAt||oldBook.createdAt||null};
+  newBook.revisionOf=oldBook.id;newBook.updatedAt=new Date().toISOString();
+  const migrated=allItems.map(item=>migrateRevisionItemToBook(item,newBook,oldBook));
+  const uncertain=migrated.filter(i=>i.migrationUncertain);
+  await migrateRevisionAtomically(oldBook,newBook,migrated);
+  state.pendingRevisionPrompt=null;state.bookId=newBook.id;state.chapterIndex=newBook.progress.chapterIndex||0;state.selectedParagraph=newBook.progress.paragraphIndex||0;
+  state.selectedCharOffset=newBook.progress.charOffset||0;state.selectedWordEnd=newBook.progress.wordEnd||0;
+  savePrefs({lastBookId:newBook.id});
+  if(modal.open)modal.close();
+  await navigate('reader');
+  showToast(uncertain.length?`Updated manuscript · ${uncertain.length} item${uncertain.length===1?' needs':'s need'} location review`:`Updated manuscript · ${migrated.length} revision item${migrated.length===1?'':'s'} carried forward`);
 }
 function compactHandoffAnchor(anchor){
   if(!anchor)return null;
@@ -1122,23 +1272,32 @@ async function importFile(file){
     const name=file.name.toLowerCase();
     if(name.endsWith('.docx'))paragraphs=await parseDocx(file);
     else if(name.endsWith('.epub')){const parsed=await parseEpub(file);paragraphs=parsed.paragraphs;parsedChapters=parsed.chapters}
-    else if(name.endsWith('.pdf')){
-      const parsed=await parsePdf(file);paragraphs=parsed.paragraphs;sources=parsed.sources;importDiagnostics=parsed.diagnostics;
-    }
+    else if(name.endsWith('.pdf')){const parsed=await parsePdf(file);paragraphs=parsed.paragraphs;sources=parsed.sources;importDiagnostics=parsed.diagnostics}
     else if(name.endsWith('.odt'))paragraphs=await parseOdt(file);
     else if(name.endsWith('.html')||name.endsWith('.htm'))paragraphs=await parseHtml(file);
     else if(name.endsWith('.md')||name.endsWith('.markdown'))paragraphs=await parseMarkdown(file);
     else if(name.endsWith('.txt'))paragraphs=(await file.text()).replace(/\r/g,'').split(/\n\s*\n|\n/).map(x=>x.trim()).filter(Boolean);
     else throw new Error('That file type is not supported yet.');
     if(!paragraphs?.length)throw new Error('No manuscript text was found.');
+
     let title=file.name.replace(/\.(docx|epub|pdf|odt|html?|md|markdown|txt)$/i,'').replace(/[_-]+/g,' ').trim();
     const firstUseful=paragraphs.find(p=>p.length>3&&!/^chapter\b/i.test(p));
     if(/the plus[ -]one problem/i.test(title)||/^the plus[ -]one problem/i.test(firstUseful||''))title='The Plus-One Problem';
-    const chapters=parsedChapters||splitChapters(paragraphs,sources);
-    const now=new Date().toISOString();
+    const chapters=parsedChapters||splitChapters(paragraphs,sources),now=new Date().toISOString();
     const book={id:uid(),title,fileName:file.name,createdAt:now,updatedAt:now,chapters,progress:{chapterIndex:0,paragraphIndex:0,charOffset:0,wordEnd:0,completed:false},version:'Imported manuscript',importDiagnostics};
-    await idbPut('books',book);state.bookId=book.id;state.chapterIndex=0;state.selectedParagraph=0;state.selectedCharOffset=0;state.selectedWordEnd=0;
-    savePrefs({lastBookId:book.id});showToast(`Imported ${book.chapters.length} chapter${book.chapters.length===1?'':'s'}`);
+
+    const existing=await idbGetAll('books'),revisionMatch=revisionCandidateForBook(book,existing);
+    if(revisionMatch.book){
+      const old=revisionMatch.book;
+      book.revisionOf=old.id;book.revisionRootId=old.revisionRootId||old.id;book.revisionIndex=Math.max(2,(old.revisionIndex||1)+1);
+      book.revisionPending=true;book.revisionMatchKind=revisionMatch.matchKind;
+      state.pendingRevisionPrompt={oldBookId:old.id,newBookId:book.id,matchKind:revisionMatch.matchKind};
+    }else state.pendingRevisionPrompt=null;
+
+    await idbPut('books',book);
+    state.bookId=book.id;state.chapterIndex=0;state.selectedParagraph=0;state.selectedCharOffset=0;state.selectedWordEnd=0;
+    savePrefs({lastBookId:book.id});
+    showToast(revisionMatch.book?`Imported revision ${book.revisionIndex} · compare when ready`:`Imported ${book.chapters.length} chapter${book.chapters.length===1?'':'s'}`);
     await navigate('reader');
     if(importDiagnostics)showImportReport(book);
   }catch(e){
@@ -1628,6 +1787,93 @@ function recapCardHtml(book){
     <div class="row recap-actions"><button id="recapResume" class="button">Resume</button><button id="recapChapterStart" class="ghost">Chapter start</button><button id="recapDismiss" class="ghost">Dismiss</button></div>
   </section>`;
 }
+function revisionPromptCardHtml(book){
+  if(!book?.revisionPending||!book.revisionOf)return '';
+  return `<section id="revisionPromptCard" class="revision-prompt card">
+    <div><div class="eyebrow">New draft detected</div><h3>This looks like another revision of this manuscript.</h3>
+    <p class="sub">Compare the drafts, hear only what changed, or update this manuscript while carrying your reading position and revision items forward.</p></div>
+    <div class="row revision-prompt-actions"><button id="compareRevisionBtn" class="button">Compare revisions</button><button id="updateRevisionBtn" class="ghost">Update manuscript</button><button id="keepBothRevisionsBtn" class="ghost">Keep both</button></div>
+  </section>`;
+}
+function revisionPlayableEntries(diff,newBook){
+  const out=[];
+  for(const ch of diff.chapters){
+    if(ch.newIndex<0)continue;
+    const newCh=newBook.chapters[ch.newIndex];
+    if(ch.restructured){
+      for(let pi=0;pi<newCh.paragraphs.length;pi++)out.push({chapterIndex:ch.newIndex,paragraphIndex:pi,text:newCh.paragraphs[pi],label:`${ch.title} · paragraph ${pi+1}`});
+      continue;
+    }
+    for(const change of ch.changes){
+      if(change.newParagraphIndex===null||!change.newText)continue;
+      out.push({chapterIndex:ch.newIndex,paragraphIndex:change.newParagraphIndex,text:change.newText,label:`${ch.title} · paragraph ${change.newParagraphIndex+1}`});
+    }
+  }
+  return out;
+}
+function revisionDiffRows(diff,oldBook,newBook){
+  return diff.chapters.map((ch,ci)=>{
+    if(ch.restructured){
+      return `<section class="revision-diff-chapter"><div class="row between"><h4>${escapeHtml(ch.title)}</h4><span class="pill gold">Restructured</span></div>
+        <p class="sub">${ch.changes.length} paragraph difference${ch.changes.length===1?'':'s'} · only ${Math.round(ch.matchRate*100)}% aligned. Storyline will not claim paragraph-for-paragraph precision here.</p>
+        ${ch.newIndex>=0?`<button type="button" class="ghost tiny" data-play-restructured="${ci}">▶ Play new chapter</button>`:''}
+      </section>`;
+    }
+    const rows=ch.changes.map((change,ri)=>{
+      const label=change.kind==='changed'?'Changed':change.kind==='added'?'Added':'Removed';
+      return `<article class="revision-change">
+        <div class="row between"><span class="pill">${label}</span><span class="meta">${change.newParagraphIndex!==null?`new ¶${change.newParagraphIndex+1}`:`old ¶${(change.oldParagraphIndex??0)+1}`}</span></div>
+        ${change.oldText?`<div class="revision-old"><del>${escapeHtml(excerpt(change.oldText,500))}</del></div>`:''}
+        ${change.newText?`<div class="revision-new">${escapeHtml(excerpt(change.newText,500))}</div>`:''}
+        <div class="row">${change.newParagraphIndex!==null?`<button type="button" class="ghost tiny" data-play-diff="${ci}:${ri}">▶ Play new</button>`:''}${change.oldParagraphIndex!==null?`<button type="button" class="ghost tiny" data-play-old-diff="${ci}:${ri}">Hear old</button>`:''}</div>
+      </article>`;
+    }).join('');
+    return `<section class="revision-diff-chapter"><h4>${escapeHtml(ch.title)}</h4>${rows}</section>`;
+  }).join('');
+}
+async function openRevisionDiff(oldBook,newBook){
+  modalForm.innerHTML='<h3>Comparing revisions…</h3><p class="sub">Storyline is aligning chapters and paragraphs.</p>';
+  if(!modal.open)modal.showModal();
+  await new Promise(requestAnimationFrame);
+  const diff=diffManuscripts(oldBook,newBook);state.revisionDiff=diff;
+  const playable=revisionPlayableEntries(diff,newBook);
+  modalForm.innerHTML=`<h3>What changed</h3>
+    <div class="source-chip">${escapeHtml(oldBook.title)} → revision ${newBook.revisionIndex||2}</div>
+    ${diff.totalChanges?`<div class="row between"><strong>${diff.totalChanges} paragraph difference${diff.totalChanges===1?'':'s'}</strong><button type="button" id="playAllRevisionChanges" class="button" ${playable.length?'':'disabled'}>▶ Play all changes</button></div>
+      <div class="revision-diff-list">${revisionDiffRows(diff,oldBook,newBook)}</div>`:'<div class="empty">No changes found. These manuscript texts appear to be the same.</div>'}
+    <div class="row between revision-diff-footer"><button type="button" id="keepBothRevisionModal" class="ghost">Keep both</button><button type="button" id="applyRevisionUpdate" class="button">Update manuscript</button></div>`;
+  if(!modal.open)modal.showModal();
+
+  const playEntry=(entry,onDone=null)=>speakBoundedRange(newBook,entry.chapterIndex,entry.paragraphIndex,0,null,{onDone,movePosition:false});
+  const playAll=$('#playAllRevisionChanges');if(playAll)playAll.onclick=()=>{
+    let index=0;playAll.disabled=true;playAll.textContent='Playing changes…';
+    const next=()=>{
+      if(index>=playable.length){playAll.disabled=false;playAll.textContent='▶ Play all changes';showToast('Finished changed passages');return}
+      playEntry(playable[index++],next);
+    };next();
+  };
+  $$('[data-play-diff]').forEach(btn=>btn.onclick=()=>{
+    const [ci,ri]=btn.dataset.playDiff.split(':').map(Number),ch=diff.chapters[ci],change=ch?.changes?.[ri];
+    if(change?.newParagraphIndex!==null)speakBoundedRange(newBook,ch.newIndex,change.newParagraphIndex,0,null,{movePosition:false});
+  });
+  $$('[data-play-old-diff]').forEach(btn=>btn.onclick=()=>{
+    const [ci,ri]=btn.dataset.playOldDiff.split(':').map(Number),ch=diff.chapters[ci],change=ch?.changes?.[ri];
+    if(change?.oldParagraphIndex!==null&&ch.oldIndex>=0)speakBoundedRange(oldBook,ch.oldIndex,change.oldParagraphIndex,0,null,{movePosition:false});
+  });
+  $$('[data-play-restructured]').forEach(btn=>btn.onclick=()=>{
+    const ch=diff.chapters[Number(btn.dataset.playRestructured)];if(!ch||ch.newIndex<0)return;
+    const entries=(newBook.chapters[ch.newIndex]?.paragraphs||[]).map((text,pi)=>({chapterIndex:ch.newIndex,paragraphIndex:pi,text}));
+    let index=0;const next=()=>{if(index>=entries.length)return;speakBoundedRange(newBook,entries[index].chapterIndex,entries[index++].paragraphIndex,0,null,{onDone:next,movePosition:false})};next();
+  });
+  $('#keepBothRevisionModal').onclick=()=>keepBothRevisions(newBook);
+  $('#applyRevisionUpdate').onclick=()=>{if(confirm('Update to this revision and carry your reading position, pronunciations and revision items forward?'))updateManuscriptRevision(oldBook,newBook)};
+}
+async function keepBothRevisions(newBook){
+  stopAllSpeech();newBook.revisionPending=false;newBook.revisionStatus='kept-both';newBook.updatedAt=new Date().toISOString();
+  await idbPut('books',newBook);state.pendingRevisionPrompt=null;if(modal.open)modal.close();
+  if(state.bookId===newBook.id)await renderReader();else await renderLibrary();
+  showToast('Both revisions kept');
+}
 function sourceRefFor(book,chapterIndex,paragraphIndex){
   return book?.chapters?.[chapterIndex]?.sourceRefs?.[paragraphIndex]||null;
 }
@@ -1635,9 +1881,15 @@ function readerPositionLabel(book,chapterIndex,paragraphIndex,total,extra=''){
   const source=sourceRefFor(book,chapterIndex,paragraphIndex),sourceText=pdfSourceLabel(source);
   return [`Paragraph ${paragraphIndex+1} of ${total}`,sourceText,extra].filter(Boolean).join(' · ');
 }
-function bookCard(b,items){ const total=b.chapters.reduce((n,c)=>n+c.paragraphs.length,0); let before=0; for(let i=0;i<(b.progress?.chapterIndex||0);i++) before+=b.chapters[i]?.paragraphs.length||0; before+=b.progress?.paragraphIndex||0; const pct=b.progress?.completed===true?100:Math.max(0,Math.min(100,Math.round((before/Math.max(total,1))*100))); const count=items.filter(i=>i.bookId===b.id&&['note','question','continuity','bookmark','voice'].includes(i.type)).length;
+function bookCard(b,items){
+  const total=b.chapters.reduce((n,ch)=>n+ch.paragraphs.length,0);let before=0;
+  for(let i=0;i<(b.progress?.chapterIndex||0);i++)before+=b.chapters[i]?.paragraphs.length||0;
+  before+=b.progress?.paragraphIndex||0;
+  const pct=b.progress?.completed===true?100:Math.max(0,Math.min(100,Math.round((before/Math.max(total,1))*100)));
+  const count=items.filter(i=>i.bookId===b.id&&['note','question','continuity','bookmark','voice'].includes(i.type)).length;
   const totalWords=b.chapters.reduce((n,ch)=>n+chapterWordCount(ch),0);
-  return `<article class="card book-card" data-id="${b.id}"><div><div class="eyebrow">${escapeHtml(b.version||'Manuscript')}</div><div class="book-title">${escapeHtml(b.title)}</div><p class="meta">${b.chapters.length} chapter${b.chapters.length===1?'':'s'} · ${readingMinutesLabel(totalWords)} · ${count} revision item${count===1?'':'s'}</p></div><div class="stack"><div class="row between"><span class="meta">${pct}% listened</span><button data-delete="${b.id}" class="ghost tiny">Remove</button></div><div class="progress"><i style="width:${pct}%"></i></div><div class="row book-actions"><button class="button">Continue reading</button><button data-export-revisions="${b.id}" class="ghost tiny">Revision checklist</button></div></div></article>`;
+  const versionLabel=b.revisionIndex?`Revision ${b.revisionIndex}`:(b.version||'Manuscript');
+  return `<article class="card book-card" data-id="${b.id}"><div><div class="eyebrow">${escapeHtml(versionLabel)}</div><div class="book-title">${escapeHtml(b.title)}</div><p class="meta">${b.chapters.length} chapter${b.chapters.length===1?'':'s'} · ${readingMinutesLabel(totalWords)} · ${count} revision item${count===1?'':'s'}</p>${b.revisionPending?'<p class="meta revision-pending-label">New revision · comparison pending</p>':''}</div><div class="stack"><div class="row between"><span class="meta">${pct}% listened</span><button data-delete="${b.id}" class="ghost tiny">Remove</button></div><div class="progress"><i style="width:${pct}%"></i></div><div class="row book-actions"><button class="button">Continue reading</button><button data-export-revisions="${b.id}" class="ghost tiny">Revision checklist</button></div></div></article>`;
 }
 
 async function renderReader(){
@@ -1650,6 +1902,7 @@ async function renderReader(){
     <select id="chapterSelect" class="chapter-select">${book.chapters.map((c,i)=>`<option value="${i}" ${i===state.chapterIndex?'selected':''}>${escapeHtml(chapterLabel(c,book))} · ${readingMinutesLabel(chapterWordCount(c))}</option>`).join('')}</select>
     ${recapCardHtml(book)}
     ${handoffLandingCardHtml(book)}
+    ${revisionPromptCardHtml(book)}
     <div class="reader-search">
       <div class="reader-search-row"><input id="readerSearchInput" class="select reader-search-input" type="search" value="${escapeHtml(state.readerSearchQuery)}" placeholder="Search this manuscript…" aria-label="Search this manuscript" /><button id="readerSearchBtn" class="ghost">Search</button><button id="readerSearchClear" class="ghost tiny ${state.readerSearchQuery?'':'hidden'}" aria-label="Clear search">Clear</button></div>
       <div class="row between"><span id="readerSearchStatus" class="meta"></span><span class="meta">Word or phrase · all chapters</span></div>
@@ -1774,6 +2027,9 @@ function wireReader(book,ch){
   const recapResume=$('#recapResume');if(recapResume)recapResume.onclick=()=>{state.recapBookId=null;$('#recapCard')?.remove();scrollSelected(false)};
   const recapDismiss=$('#recapDismiss');if(recapDismiss)recapDismiss.onclick=()=>{state.recapBookId=null;$('#recapCard')?.remove()};
   const handoffDismiss=$('#dismissHandoffLanding');if(handoffDismiss)handoffDismiss.onclick=()=>{state.pendingHandoffContext=null;$('#handoffLandingCard')?.remove()};
+  const compareRevision=$('#compareRevisionBtn');if(compareRevision)compareRevision.onclick=async()=>{const old=await idbGet('books',book.revisionOf);if(!old){showToast('The earlier revision is no longer available.');return}openRevisionDiff(old,book)};
+  const updateRevision=$('#updateRevisionBtn');if(updateRevision)updateRevision.onclick=async()=>{const old=await idbGet('books',book.revisionOf);if(!old){showToast('The earlier revision is no longer available.');return}if(confirm('Update to this revision and carry your reading position, pronunciations and revision items forward?'))updateManuscriptRevision(old,book)};
+  const keepRevisions=$('#keepBothRevisionsBtn');if(keepRevisions)keepRevisions.onclick=()=>keepBothRevisions(book);
   const recapStart=$('#recapChapterStart');if(recapStart)recapStart.onclick=async()=>{
     state.recapBookId=null;state.selectedParagraph=0;state.selectedCharOffset=0;state.selectedWordEnd=0;
     await saveProgress(book);await renderReader();
@@ -2071,6 +2327,76 @@ function setupMediaSession(){
   safe('previoustrack',()=>{mediaMoveParagraph(-1)});
   safe('nexttrack',()=>{mediaMoveParagraph(1)});
   safe('stop',()=>stopAllSpeech());
+}
+function mainSamanthaVoice(){
+  const p=prefs(),voices=samanthaVoices(),key=p.voiceKey||'';
+  return voices.find(v=>voiceKey(v)===key)||voices.find(v=>v.name===p.voiceName)||voices.find(v=>v.localService)||voices[0]||null;
+}
+function dialogueSamanthaVoice(){
+  const p=prefs(),voices=samanthaVoices(),key=p.dialogueVoiceKey||'';
+  return voices.find(v=>voiceKey(v)===key)||mainSamanthaVoice();
+}
+async function speakBoundedRange(book,chapterIndex,paragraphIndex,start=0,end=null,{onDone=null,movePosition=false}={}){
+  const ch=book?.chapters?.[chapterIndex],text=String(ch?.paragraphs?.[paragraphIndex]||'');
+  if(!text){showToast('There is no passage to play.');return false}
+  const a=Math.max(0,Math.min(Number(start)||0,text.length)),b=Math.max(a,Math.min(end===null?text.length:Number(end)||a,text.length));
+  if(b<=a){showToast('There is no passage to play.');return false}
+  stopAllSpeech();
+  const token=++state.playbackToken,p=prefs(),pieces=speechPiecesForRange(text,a,b,book,{dialogueEnabled:!!p.dialogueEnabled});
+  if(!pieces.length)return false;
+  if(movePosition){
+    state.bookId=book.id;state.chapterIndex=chapterIndex;state.selectedParagraph=paragraphIndex;state.selectedCharOffset=a;state.selectedWordEnd=b;
+    await saveProgress(book);
+  }
+  state.isSpeaking=true;state.isPaused=false;state.speakingPIndex=paragraphIndex;state.speakingParagraph=paragraphIndex;state.liveCharOffset=a;
+  setMediaPlaybackState('playing');requestWakeLock();
+  const play=$('#playBtn');if(play){play.textContent='Ⅱ';play.setAttribute('aria-label','Pause')}
+  if(state.route==='reader'&&state.bookId===book.id&&state.chapterIndex===chapterIndex)highlightRange(paragraphIndex,a,b);
+
+  const finish=()=>{
+    if(token!==state.playbackToken)return;
+    finishSpeech(token);
+    try{onDone?.()}catch{}
+  };
+
+  if(currentEngine()==='local'){
+    try{await ensureLocalTTS()}catch(e){showToast(e.message||'Local voice could not start.');finishSpeech(token);return false}
+    if(token!==state.playbackToken||!state.isSpeaking)return false;
+    let i=0;
+    const next=()=>{
+      if(token!==state.playbackToken||!state.isSpeaking)return;
+      if(i>=pieces.length){finish();return}
+      const piece=pieces[i++],isDialogue=piece.kind==='dialogue'&&p.dialogueEnabled;
+      const rate=Math.max(.5,Math.min(2,Number(p.rate||1.05)+(isDialogue?Number(p.dialogueRateOffset||0):0)));
+      const speed=Math.max(90,Math.min(310,Math.round(170*rate)));
+      const pitch=isDialogue?Math.max(20,Math.min(80,Math.round(50*Number(p.dialoguePitch??1.15)))):50;
+      const id=meSpeak.speak(piece.text,{amplitude:100,speed,volume:1,pitch,voice:'en-us',variant:localVoiceVariant()},success=>{
+        if(token!==state.playbackToken)return;state.localSpeakingId=null;
+        if(!success){finishSpeech(token);return}
+        next();
+      });
+      if(!id){showToast('The local voice could not play this passage.');finishSpeech(token);return}
+      state.localSpeakingId=id;
+    };
+    next();return true;
+  }
+
+  let i=0;
+  const next=()=>{
+    if(token!==state.playbackToken||!state.isSpeaking)return;
+    if(i>=pieces.length){finish();return}
+    const piece=pieces[i++],isDialogue=piece.kind==='dialogue'&&p.dialogueEnabled,u=new SpeechSynthesisUtterance(piece.text);
+    state.activeUtterance=u;
+    const v=isDialogue?dialogueSamanthaVoice():mainSamanthaVoice(),baseRate=Number(p.rate||1.05);
+    u.rate=Math.max(.5,Math.min(2,isDialogue?baseRate+Number(p.dialogueRateOffset||0):baseRate));
+    u.pitch=isDialogue?Number(p.dialoguePitch??1.15):1;u.volume=1;
+    if(v){u.voice=v;u.lang=v.lang||'en-US'}else u.lang='en-US';
+    u.onboundary=e=>{if(token!==state.playbackToken||state.activeUtterance!==u)return;const rel=Number(e.charIndex);if(Number.isFinite(rel))state.liveCharOffset=piece.mapIndex(rel)};
+    u.onend=()=>{if(token!==state.playbackToken||state.activeUtterance!==u)return;state.activeUtterance=null;next()};
+    u.onerror=e=>{if(token!==state.playbackToken||state.activeUtterance!==u)return;state.activeUtterance=null;if(e.error==='canceled'||e.error==='interrupted')return;showToast('Samantha could not play this passage.');finishSpeech(token)};
+    speechSynthesis.resume();speechSynthesis.speak(u);
+  };
+  next();return true;
 }
 function startSpeechFromSelection(){
   if(currentEngine()==='local'){startLocalSpeech(true);return}
@@ -2730,10 +3056,10 @@ function itemHtml(i,bookMap,queue=false,actioned=false){
   const timeText=actioned?`Actioned ${formatItemTime(i.completedAt||i.createdAt)}`:formatItemTime(i.createdAt);
   return `<article class="list-item ${actioned?'item-done':''}" data-item="${i.id}">
     <div class="row between">
-      <div class="row">${queue&&!actioned?`<input class="queue-item-check" type="checkbox" data-select-item="${i.id}" aria-label="Select item" />`:''}<span class="pill ${pill}">${label}</span></div>
+      <div class="row">${queue&&!actioned?`<input class="queue-item-check" type="checkbox" data-select-item="${i.id}" aria-label="Select item" />`:''}<span class="pill ${pill}">${label}</span>${i.migrationUncertain?'<span class="pill gold">Needs location review</span>':''}</div>
       <span class="meta item-time">${timeText}${i.durationSec?` · ${formatDuration(i.durationSec)}`:''}</span>
     </div>
-    <div><strong>${escapeHtml(bookMap[i.bookId]?.title||i.bookTitle||'Manuscript')}</strong><div class="source-chip">${escapeHtml((i.chapterTitle==='Beginning'||i.chapterTitle==='Front matter')?(bookMap[i.bookId]?.title||i.bookTitle||'Manuscript'):(i.chapterTitle||'Chapter'))} · paragraph ${(i.paragraphIndex??0)+1}${i.anchor?' · anchored':''}</div></div>
+    <div><strong>${escapeHtml(bookMap[i.bookId]?.title||i.bookTitle||'Manuscript')}</strong><div class="source-chip">${escapeHtml((i.chapterTitle==='Beginning'||i.chapterTitle==='Front matter')?(bookMap[i.bookId]?.title||i.bookTitle||'Manuscript'):(i.chapterTitle||'Chapter'))} · paragraph ${(i.paragraphIndex??0)+1}${i.anchor?' · anchored':''}${i.migrationUncertain?' · location not verified':''}</div></div>
     <div class="excerpt passage-reference-preview">${referenceExcerptHtml(i)}</div>
     ${i.note?`<div class="note-text">${escapeHtml(i.note)}</div>`:''}
     ${hasAudio?`<audio class="saved-voice-note" controls data-audio-item="${i.id}"></audio>`:''}
@@ -2830,7 +3156,13 @@ function wireItemButtons(visibleItems=[]){
       if(candidates.length===1)book=candidates[0];
     }
     if(!book){showToast('That manuscript is no longer in this browser.');return}
-    const resolved=resolvePassageAnchor(book,i);
+    let resolved=resolvePassageAnchor(book,i);
+    if(resolved.unverified&&i.migrationUncertain&&i.migrationFallback){
+      const f=i.migrationFallback,ch=book.chapters[Math.max(0,Math.min(f.chapterIndex||0,book.chapters.length-1))];
+      const pi=Math.max(0,Math.min(f.paragraphIndex||0,Math.max(0,(ch?.paragraphs?.length||1)-1))),text=String(ch?.paragraphs?.[pi]||'');
+      const start=Math.max(0,Math.min(f.charStart||0,text.length)),end=Math.max(start,Math.min(f.charEnd||start,text.length));
+      resolved={chapterIndex:Math.max(0,Math.min(f.chapterIndex||0,book.chapters.length-1)),paragraphIndex:pi,start,end,score:i.migrationScore||0,moved:true,unverified:true,migrationFallback:true};
+    }
     state.bookId=book.id;state.chapterIndex=resolved.chapterIndex;state.selectedParagraph=resolved.paragraphIndex;
     state.selectedCharOffset=resolved.start||0;state.selectedWordEnd=resolved.end||resolved.start||0;
     state.pendingPassageReference=resolved;
