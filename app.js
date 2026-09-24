@@ -982,6 +982,188 @@ async function restoreBackup(file){
     await navigate('library');
   }catch(e){showToast(e.message||'Backup could not be restored')}
 }
+function handoffLandingCardHtml(book){
+  const h=state.pendingHandoffContext;
+  if(!h||h.bookId!==book?.id)return '';
+  return `<section id="handoffLandingCard" class="handoff-landing card">
+    <div><div class="eyebrow">Handoff received</div><h3>${escapeHtml(h.adjusted?'Passage relocated':'You are in the right place')}</h3>
+    <p class="meta">${escapeHtml(h.location||'')}</p>
+    ${h.excerpt?`<blockquote>${escapeHtml(h.excerpt)}</blockquote>`:''}
+    ${h.adjusted?'<p class="meta">This device has a different revision, so Storyline matched the passage using its surrounding text.</p>':''}</div>
+    <button id="dismissHandoffLanding" class="ghost tiny" type="button">Dismiss</button>
+  </section>`;
+}
+function openHandoffSender(book){
+  stopHandoffScanner();
+  const packet=makeHandoffPacket(book),code=encodeHandoffPacket(packet),webUrl=handoffWebUrl(code);
+  const pos=handoffPosition(book),locationText=handoffDisplayLocation(book,{chapterIndex:pos.chapterIndex,paragraphIndex:pos.paragraphIndex});
+  modalForm.innerHTML=`<h3>Handoff to another device</h3>
+    <p class="sub">Scan this with the other device. The code contains only this book's identity, reading position and a short passage excerpt.</p>
+    <div id="handoffQr" class="handoff-qr" aria-label="Storyline handoff QR code"></div>
+    <div class="handoff-location"><strong>${escapeHtml(locationText)}</strong><span class="meta">Word position ${pos.charOffset+1}</span></div>
+    <div class="excerpt">${escapeHtml(packet.excerpt||'')}</div>
+    <div class="row handoff-actions"><button type="button" id="copyHandoffLink" class="ghost">Copy handoff link</button><button type="button" id="shareHandoffLink" class="ghost ${navigator.share?'':'hidden'}">Share</button><button value="default" class="button">Done</button></div>
+    <p class="meta">The QR opens Storyline directly when scanned by a normal camera app. You can also scan it from inside Storyline.</p>`;
+  if(!modal.open)modal.showModal();
+  requestAnimationFrame(()=>{
+    const qr=$('#handoffQr');
+    if(qr&&window.QRCode){
+      try{new QRCode(qr,{text:webUrl,width:288,height:288,colorDark:'#111111',colorLight:'#ffffff',correctLevel:QRCode.CorrectLevel.L})}
+      catch{qr.innerHTML='<div class="empty">QR generation failed. Use Copy handoff link instead.</div>'}
+    }else if(qr)qr.innerHTML='<div class="empty">QR generator is unavailable. Use Copy handoff link instead.</div>';
+  });
+  $('#copyHandoffLink').onclick=()=>copyTextReliable(webUrl,'Handoff link copied');
+  const share=$('#shareHandoffLink');if(share)share.onclick=async()=>{
+    try{await navigator.share({title:`Storyline handoff — ${book.title}`,text:'Open this Storyline reading position:',url:webUrl})}
+    catch(e){if(e?.name!=='AbortError')copyTextReliable(webUrl,'Handoff link copied')}
+  };
+}
+async function showHandoffConfirmation(packet){
+  stopHandoffScanner();
+  const match=await matchHandoffBook(packet);
+  if(!match.book){
+    modalForm.innerHTML=`<h3>Manuscript not on this device</h3>
+      <p class="sub"><strong>${escapeHtml(packet.title||'This manuscript')}</strong> is not in this Storyline library yet.</p>
+      <div class="excerpt">${escapeHtml(packet.excerpt||'')}</div>
+      <p>Import the same manuscript (or another revision of it), then scan or paste the handoff again.</p>
+      <div class="row between"><button type="button" id="handoffTryAgain" class="ghost">Try another code</button><button type="button" id="handoffImportBook" class="button">Import manuscript</button></div>`;
+    if(!modal.open)modal.showModal();
+    $('#handoffTryAgain').onclick=()=>openHandoffReceiver();
+    $('#handoffImportBook').onclick=()=>{modal.close();fileInput.click()};
+    return;
+  }
+  const pos=resolveHandoffPosition(match.book,packet,match.exactEdition);
+  const locationText=handoffDisplayLocation(match.book,pos);
+  const matchText=match.exactEdition?'Exact manuscript match':match.matchKind==='book'?'Same book · different revision':'Matched by manuscript title';
+  modalForm.innerHTML=`<h3>Receive handoff?</h3>
+    <div class="source-chip">${escapeHtml(match.book.title)} · ${escapeHtml(matchText)}</div>
+    <h4>${escapeHtml(locationText)}</h4>
+    <div class="excerpt">${escapeHtml(packet.excerpt||'')}</div>
+    ${pos.adjusted?'<p class="sub">The manuscript appears to have changed. Storyline matched the surrounding passage and will use the best verified location.</p>':''}
+    ${match.multiple?'<p class="meta">More than one copy matched. Storyline selected the most recently read copy.</p>':''}
+    <div class="row between"><button type="button" id="handoffCancel" class="ghost">Cancel</button><button type="button" id="handoffJump" class="button">Jump there</button></div>`;
+  if(!modal.open)modal.showModal();
+  $('#handoffCancel').onclick=()=>modal.close();
+  $('#handoffJump').onclick=()=>applyHandoffJump(match.book,packet,pos,match);
+}
+async function applyHandoffJump(book,packet,pos,match){
+  stopHandoffScanner();stopAllSpeech();
+  state.bookId=book.id;state.chapterIndex=pos.chapterIndex;state.selectedParagraph=pos.paragraphIndex;
+  state.selectedCharOffset=Math.max(0,pos.start||0);state.selectedWordEnd=Math.max(state.selectedCharOffset,pos.end||state.selectedCharOffset);
+  state.recapBookId=null;state.liveCharOffset=null;
+  state.pendingPassageReference={chapterIndex:pos.chapterIndex,paragraphIndex:pos.paragraphIndex,start:state.selectedCharOffset,end:state.selectedWordEnd,moved:false,unverified:false};
+  state.pendingHandoffContext={bookId:book.id,excerpt:String(packet.excerpt||'').slice(0,180),adjusted:!!pos.adjusted,location:handoffDisplayLocation(book,pos),matchKind:match.matchKind};
+  savePrefs({lastBookId:book.id});
+  await saveProgress(book);
+  if(modal.open)modal.close();
+  await navigate('reader');
+  showToast(pos.adjusted?'Handoff received · passage relocated':'Handoff received');
+}
+async function processHandoffValue(value,{quietInvalid=false}={}){
+  const packet=decodeHandoffPacket(value);
+  if(!packet){if(!quietInvalid)showToast("This code isn't a Storyline handoff.");return false}
+  await showHandoffConfirmation(packet);return true;
+}
+async function decodeHandoffImage(file){
+  if(!file)return;
+  try{
+    let source=null,revoke='';
+    if(window.createImageBitmap)source=await createImageBitmap(file);
+    else{
+      const url=URL.createObjectURL(file);revoke=url;
+      source=await new Promise((resolve,reject)=>{const img=new Image();img.onload=()=>resolve(img);img.onerror=reject;img.src=url});
+    }
+    const w=source.width||source.naturalWidth,h=source.height||source.naturalHeight;
+    const scale=Math.min(1,1200/Math.max(w,h)),canvas=document.createElement('canvas');
+    canvas.width=Math.max(1,Math.round(w*scale));canvas.height=Math.max(1,Math.round(h*scale));
+    const ctx=canvas.getContext('2d',{willReadFrequently:true});ctx.drawImage(source,0,0,canvas.width,canvas.height);
+    let raw='';
+    if('BarcodeDetector' in window){
+      try{
+        const detector=new BarcodeDetector({formats:['qr_code']});
+        const hits=await detector.detect(canvas);raw=hits?.[0]?.rawValue||'';
+      }catch{}
+    }
+    if(!raw&&window.jsQR){
+      const image=ctx.getImageData(0,0,canvas.width,canvas.height),hit=jsQR(image.data,image.width,image.height,{inversionAttempts:'attemptBoth'});
+      raw=hit?.data||'';
+    }
+    try{source.close?.()}catch{};if(revoke)URL.revokeObjectURL(revoke);
+    if(!raw){showToast('No QR code was found in that image.');return}
+    await processHandoffValue(raw);
+  }catch{showToast('Storyline could not read that QR image.')}
+}
+async function startHandoffCameraScan(){
+  stopHandoffScanner();
+  const video=$('#handoffVideo'),status=$('#handoffScanStatus');
+  if(!video||!navigator.mediaDevices?.getUserMedia){if(status)status.textContent='Camera scanning is not available here. Use a QR image or paste the handoff link.';return}
+  let stream;
+  try{
+    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}},audio:false});
+  }catch{
+    if(status)status.textContent='Camera access was not available. You can still choose a QR image or paste the handoff link.';
+    return;
+  }
+  video.srcObject=stream;video.classList.remove('hidden');video.setAttribute('playsinline','');
+  try{await video.play()}catch{}
+  if(status)status.textContent='Point the camera at a Storyline handoff QR code.';
+  const canvas=document.createElement('canvas'),ctx=canvas.getContext('2d',{willReadFrequently:true});
+  let stopped=false,raf=0,lastBad=0,nativeDetector=null;
+  if('BarcodeDetector' in window){try{nativeDetector=new BarcodeDetector({formats:['qr_code']})}catch{}}
+  const stop=()=>{
+    if(stopped)return;stopped=true;if(raf)cancelAnimationFrame(raf);
+    try{stream?.getTracks().forEach(t=>t.stop())}catch{}
+    if(video)video.srcObject=null;
+  };
+  state.handoffScanStop=stop;
+  const scan=async()=>{
+    if(stopped)return;
+    if(video.readyState>=2&&video.videoWidth&&video.videoHeight){
+      const scale=Math.min(1,720/video.videoWidth);
+      canvas.width=Math.max(1,Math.round(video.videoWidth*scale));canvas.height=Math.max(1,Math.round(video.videoHeight*scale));
+      ctx.drawImage(video,0,0,canvas.width,canvas.height);
+      let raw='';
+      if(nativeDetector){
+        try{const hits=await nativeDetector.detect(canvas);raw=hits?.[0]?.rawValue||''}catch{nativeDetector=null}
+      }
+      if(!raw&&window.jsQR){
+        try{const image=ctx.getImageData(0,0,canvas.width,canvas.height),hit=jsQR(image.data,image.width,image.height,{inversionAttempts:'attemptBoth'});raw=hit?.data||''}catch{}
+      }
+      if(raw){
+        const packet=decodeHandoffPacket(raw);
+        if(packet){stop();await showHandoffConfirmation(packet);return}
+        if(Date.now()-lastBad>1800){lastBad=Date.now();showToast("That QR isn't a Storyline handoff.")}
+      }
+    }
+    if(!stopped)raf=requestAnimationFrame(scan);
+  };
+  raf=requestAnimationFrame(scan);
+}
+function openHandoffReceiver(initialValue=''){
+  stopHandoffScanner();
+  modalForm.innerHTML=`<h3>Receive a handoff</h3>
+    <p class="sub">Scan from the camera, choose a QR screenshot/photo, or paste a Storyline handoff link. Decoding stays on this device.</p>
+    <video id="handoffVideo" class="handoff-video hidden" muted playsinline></video>
+    <div id="handoffScanStatus" class="meta">Choose how you want to receive the position.</div>
+    <div class="handoff-receive-actions"><button type="button" id="handoffCameraBtn" class="button">Scan with camera</button><button type="button" id="handoffImageBtn" class="ghost">Choose QR image</button><input id="handoffImageInput" type="file" accept="image/*" hidden /></div>
+    <label class="handoff-paste"><span class="meta">Or paste the handoff link/code</span><textarea id="handoffPaste" placeholder="Paste Storyline handoff here…">${escapeHtml(initialValue)}</textarea></label>
+    <div class="row between"><button value="cancel" class="ghost">Close</button><button type="button" id="handoffPasteBtn" class="button">Open handoff</button></div>`;
+  if(!modal.open)modal.showModal();
+  modal.addEventListener('close',stopHandoffScanner,{once:true});
+  $('#handoffCameraBtn').onclick=startHandoffCameraScan;
+  $('#handoffImageBtn').onclick=()=>$('#handoffImageInput').click();
+  $('#handoffImageInput').onchange=e=>{const file=e.target.files?.[0];e.target.value='';decodeHandoffImage(file)};
+  $('#handoffPasteBtn').onclick=()=>processHandoffValue($('#handoffPaste').value);
+  if(initialValue)requestAnimationFrame(()=>processHandoffValue(initialValue));
+}
+async function processHandoffFromLocation(){
+  const code=extractHandoffCode(location.href);if(!code)return false;
+  try{
+    const clean=location.pathname+location.search;
+    history.replaceState(null,'',clean);
+  }catch{}
+  return processHandoffValue(code);
+}
 function revisionTypeMeta(type){
   return type==='voice'?['🎙','VOICE NOTE']:type==='continuity'?['⚑','CONTINUITY']:type==='bookmark'?['⌑','BOOKMARK']:type==='question'?['?','ASK CHATGPT']:['📝','NOTE'];
 }
