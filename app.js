@@ -3100,20 +3100,20 @@ async function speakReviewText(text,book,onDone=null){
   stopReviewAudio();stopAllSpeech({preserveSleep:true});
   const spoken=transformSpeechText(value,effectivePronunciations(book),0).text,p=prefs(),token=++state.playbackToken;
   state.isSpeaking=true;state.isPaused=false;requestWakeLock();setMediaPlaybackState('playing');
-  const finish=()=>{if(token!==state.playbackToken)return;finishSpeech(token);try{onDone?.()}catch{}};
+  const finish=()=>{if(token!==state.playbackToken)return;finishSpeech(token,{preserveSleep:true});try{onDone?.()}catch{}};
   if(currentEngine()==='local'){
     try{await ensureLocalTTS()}catch(e){showToast(e.message||'Local voice could not read this note.');finishSpeech(token,{preserveSleep:true});return false}
     if(token!==state.playbackToken)return false;
     const id=meSpeak.speak(spoken,{amplitude:100,speed:localSpeed(),volume:1,pitch:50,voice:'en-us',variant:localVoiceVariant()},success=>{
       if(token!==state.playbackToken)return;state.localSpeakingId=null;if(success)finish();else finishSpeech(token,{preserveSleep:true});
     });
-    if(!id){finishSpeech(token);showToast('The local voice could not read this note.');return false}
+    if(!id){finishSpeech(token,{preserveSleep:true});showToast('The local voice could not read this note.');return false}
     state.localSpeakingId=id;return true;
   }
   const u=new SpeechSynthesisUtterance(spoken),v=mainSamanthaVoice();state.activeUtterance=u;
   u.rate=Number(p.rate||1.05);u.pitch=1;u.volume=1;if(v){u.voice=v;u.lang=v.lang||'en-US'}else u.lang='en-US';
   u.onend=()=>{if(token!==state.playbackToken||state.activeUtterance!==u)return;state.activeUtterance=null;finish()};
-  u.onerror=e=>{if(token!==state.playbackToken||state.activeUtterance!==u)return;state.activeUtterance=null;if(e.error==='canceled'||e.error==='interrupted')return;finishSpeech(token);showToast('Samantha could not read this note.')};
+  u.onerror=e=>{if(token!==state.playbackToken||state.activeUtterance!==u)return;state.activeUtterance=null;if(e.error==='canceled'||e.error==='interrupted')return;finishSpeech(token,{preserveSleep:true});showToast('Samantha could not read this note.')};
   speechSynthesis.resume();speechSynthesis.speak(u);return true;
 }
 async function playReviewVoiceNote(item,onDone=null){
