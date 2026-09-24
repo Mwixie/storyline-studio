@@ -217,10 +217,14 @@ function base64UrlDecodeUtf8(value=''){
 function meaningfulChapterTitles(book){
   return (book?.chapters||[]).map(ch=>chapterLabel(ch,book)).filter(Boolean).map(anchorNormalize);
 }
+function portableFingerprint(text=''){
+  const value=String(text);
+  return anchorHash('a|'+value)+anchorHash('b|'+value);
+}
 function storylineBookFingerprint(book){
   const titles=meaningfulChapterTitles(book);
   const first=titles[0]||'',last=titles[titles.length-1]||'';
-  return anchorHash('storyline-book|'+anchorNormalize(book?.title||'')+'|'+first+'|'+last);
+  return portableFingerprint('storyline-book|'+anchorNormalize(book?.title||'')+'|'+first+'|'+last);
 }
 function storylineEditionFingerprint(book){
   const chapters=book?.chapters||[];
@@ -236,7 +240,7 @@ function storylineEditionFingerprint(book){
       }
     }
   }
-  return anchorHash('storyline-edition|'+anchorNormalize(book?.title||'')+'|'+chapters.length+'|'+sample.join('|'));
+  return portableFingerprint('storyline-edition|'+chapters.length+'|'+sample.join('|'));
 }
 function compactHandoffAnchor(anchor){
   if(!anchor)return null;
@@ -317,6 +321,12 @@ function decodeHandoffPacket(value=''){
     if(packet?.app!=='storyline-handoff'||Number(packet.v)!==1)return null;
     for(const key of ['chapter','paragraph','charOffset','wordEnd'])if(!Number.isFinite(Number(packet[key])))return null;
     if(typeof packet.title!=='string'||typeof packet.bookFingerprint!=='string'||typeof packet.editionFingerprint!=='string')return null;
+    if(packet.title.length>180||packet.bookFingerprint.length>80||packet.editionFingerprint.length>80||String(packet.excerpt||'').length>400)return null;
+    if(packet.anchor&&typeof packet.anchor!=='object')return null;
+    if(packet.anchor){
+      for(const key of ['ck','pf','s','p','x','pp','np'])if(String(packet.anchor[key]||'').length>240)return null;
+      for(const key of ['cs','ce'])if(packet.anchor[key]!==undefined&&!Number.isFinite(Number(packet.anchor[key])))return null;
+    }
     packet.chapter=Math.max(0,Math.floor(Number(packet.chapter)));
     packet.paragraph=Math.max(0,Math.floor(Number(packet.paragraph)));
     packet.charOffset=Math.max(0,Math.floor(Number(packet.charOffset)));
@@ -2599,7 +2609,7 @@ fileInput.addEventListener('change',e=>{importFile(e.target.files[0]);e.target.v
 window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();state.deferredPrompt=e;$('#installBtn').classList.remove('hidden')});
 $('#installBtn').onclick=async()=>{if(state.deferredPrompt){state.deferredPrompt.prompt();await state.deferredPrompt.userChoice;state.deferredPrompt=null;$('#installBtn').classList.add('hidden')}};
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&state.isSpeaking)requestWakeLock()});
-window.addEventListener('hashchange',()=>{if(extractHandoffCode(location.href))processHandoffFromLocation()});
+window.addEventListener('hashchange',()=>{if(db&&extractHandoffCode(location.href))processHandoffFromLocation()});
 // Do not cancel speech merely because iOS backgrounds the installed app.
 if('serviceWorker' in navigator) window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
 
