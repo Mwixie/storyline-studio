@@ -621,19 +621,23 @@ function replaceLibraryAtomically(books,items){
   });
 }
 
-function splitChapters(paragraphs){
-  const chapters=[]; let current={title:'Front matter', paragraphs:[],synthetic:true};
+function splitChapters(paragraphs,sources=null){
+  const chapters=[]; let current={title:'Front matter', paragraphs:[],synthetic:true,sourceRefs:[]};
   const heading=/^(chapter\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|[a-z-]+)|prologue|epilogue)\b/i;
-  for(const raw of paragraphs){ const p=raw.trim(); if(!p) continue;
-    if(heading.test(p) && current.paragraphs.length){ chapters.push(current); current={title:p,paragraphs:[],synthetic:false}; }
-    else if(heading.test(p) && !current.paragraphs.length){ current.title=p; current.synthetic=false; }
-    else current.paragraphs.push(p);
+  for(let index=0;index<paragraphs.length;index++){
+    const raw=paragraphs[index],p=raw.trim(),source=sources?.[index]||null;if(!p)continue;
+    if(heading.test(p)&&current.paragraphs.length){
+      chapters.push(current);current={title:p,paragraphs:[],synthetic:false,sourceRefs:[],titleSource:source};
+    }else if(heading.test(p)&&!current.paragraphs.length){
+      current.title=p;current.synthetic=false;current.titleSource=source;
+    }else{
+      current.paragraphs.push(p);current.sourceRefs.push(source);
+    }
   }
-  if(current.paragraphs.length) chapters.push(current);
-  if(!chapters.length) chapters.push({title:'Manuscript',paragraphs:paragraphs.filter(Boolean)});
+  if(current.paragraphs.length)chapters.push(current);
+  if(!chapters.length)chapters.push({title:'Manuscript',paragraphs:paragraphs.filter(Boolean),sourceRefs:sources?paragraphs.map((p,i)=>p?sources[i]||null:null).filter((_,i)=>paragraphs[i]):[]});
   return chapters;
 }
-
 async function parseDocx(file){
   const zip=await JSZip.loadAsync(await file.arrayBuffer());
   const doc=zip.file('word/document.xml');if(!doc)throw new Error('This DOCX does not contain a readable document body.');
@@ -700,6 +704,114 @@ async function parseEpub(file){
   }
   if(!all.length)throw new Error('No readable text was found in this EPUB.');
   return {paragraphs:all,chapters:chapters.length?chapters:null};
+}
+function ensureTesseractLibrary(){
+  if(window.Tesseract?.createWorker)return Promise.resolve(window.Tesseract);
+  if(ensureTesseractLibrary.promise)return ensureTesseractLibrary.promise;
+  ensureTesseractLibrary.promise=new Promise((resolve,reject)=>{
+    const s=document.createElement('script');
+    s.src='https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js';
+    s.async=true;s.crossOrigin='anonymous';
+    s.onload=()=>window.Tesseract?.createWorker?resolve(window.Tesseract):reject(new Error('OCR engine did not initialise.'));
+    s.onerror=()=>reject(new Error('OCR setup could not download. Connect to the internet once, then try again.'));
+    document.head.appendChild(s);
+  }).catch(e=>{ensureTesseractLibrary.promise=null;throw e});
+  return ensureTesseractLibrary.promise;
+}
+function confirmPdfOcr(count,total){
+  return new Promise(resolve=>{
+    modalForm.innerHTML=`<h3>Scanned pages found</h3>
+      <p>Storyline found <strong>${count}</strong> page${count===1?'':'s'} with little or no selectable text out of ${total}.</p>
+      <p class="sub">OCR runs on this device. The first OCR use may need an internet connection to download the free OCR engine and English language data; later uses can reuse cached data.</p>
+      <div class="row between"><button type="button" id="skipPdfOcr" class="ghost">Import text pages only</button><button type="button" id="runPdfOcr" class="button">Read scanned pages with OCR</button></div>`;
+    if(!modal.open)modal.showModal();
+    let settled=false;
+    const finish=v=>{if(settled)return;settled=true;modal.onclose=null;if(modal.open)modal.close();resolve(v)};
+    $('#skipPdfOcr').onclick=()=>finish(false);
+    $('#runPdfOcr').onclick=()=>finish(true);
+    modal.onclose=()=>finish(false);
+  });
+}
+function ocrTextToSyntheticLines(text,pageNo,confidence=0){
+  const rows=String(text||'').replace(/\r/g,'').split('\n');
+  const lines=[];let y=820;
+  for(const raw of rows){
+    if(!raw.trim()){y-=22;continue}
+    const leading=(raw.match(/^\s+/)?.[0].length||0),clean=raw.replace(/\s+/g,' ').trim();
+    if(!clean)continue;
+    const x=72+Math.min(24,leading*3);
+    lines.push({pageNo,y,xStart:x,xEnd:x+Math.max(40,clean.length*6),height:12,text:clean,ocr:true,confidence:Number(confidence)||0});
+    y-=14;
+  }
+  return lines;
+}
+async function renderPdfPageForOcr(page){
+  const base=page.getViewport({scale:1}),targetWidth=Math.min(2200,Math.max(1500,base.width*2));
+  const scale=targetWidth/base.width,viewport=page.getViewport({scale});
+  const canvas=document.createElement('canvas');canvas.width=Math.ceil(viewport.width);canvas.height=Math.ceil(viewport.height);
+  const ctx=canvas.getContext('2d',{alpha:false,willReadFrequently:true});
+  await page.render({canvasContext:ctx,viewport,background:'white'}).promise;
+  return canvas;
+}
+async function ocrPdfPages(pdf,pageNumbers){
+  const Tesseract=await ensureTesseractLibrary();
+  let cancelled=false,worker=null,currentPage=0,currentStatus='Preparing OCR…';
+  modalForm.innerHTML=`<h3>Reading scanned pages</h3><p id="ocrProgressText" class="sub">Preparing OCR…</p><progress id="ocrProgressBar" max="${pageNumbers.length}" value="0"></progress><div class="row between"><span class="meta">Keep Storyline open while OCR is running.</span><button type="button" id="cancelOcr" class="ghost">Cancel OCR</button></div>`;
+  if(!modal.open)modal.showModal();
+  $('#cancelOcr').onclick=()=>{cancelled=true;$('#ocrProgressText').textContent='Stopping after the current OCR step…'};
+  modal.onclose=()=>{cancelled=true};
+  const updateLogger=m=>{
+    const el=$('#ocrProgressText');if(!el)return;
+    if(m?.status==='recognizing text'&&Number.isFinite(m.progress)){
+      el.textContent=`OCR page ${currentPage} of ${pageNumbers.length} · ${Math.round(m.progress*100)}%`;
+    }else if(m?.status)el.textContent=`OCR page ${currentPage||1} of ${pageNumbers.length} · ${m.status}`;
+  };
+  const results=[];
+  try{
+    worker=await Tesseract.createWorker('eng',1,{logger:updateLogger});
+    for(let i=0;i<pageNumbers.length;i++){
+      if(cancelled)break;
+      currentPage=i+1;const pageNo=pageNumbers[i],page=await pdf.getPage(pageNo),canvas=await renderPdfPageForOcr(page);
+      const el=$('#ocrProgressText');if(el)el.textContent=`OCR page ${i+1} of ${pageNumbers.length}`;
+      const result=await worker.recognize(canvas);
+      if(cancelled)break;
+      const text=String(result?.data?.text||'').trim(),confidence=Number(result?.data?.confidence)||0;
+      results.push({pageNo,text,confidence,lines:ocrTextToSyntheticLines(text,pageNo,confidence)});
+      const bar=$('#ocrProgressBar');if(bar)bar.value=i+1;
+      await new Promise(requestAnimationFrame);
+    }
+  }finally{
+    try{await worker?.terminate?.()}catch{}
+    modal.onclose=null;if(modal.open)modal.close();
+  }
+  return {results,cancelled};
+}
+function pdfSourceLabel(source){
+  if(!source?.pages?.length)return '';
+  const pages=source.pages;
+  const pageText=pages.length===1?`PDF page ${pages[0]}`:`PDF pages ${pages[0]}–${pages[pages.length-1]}`;
+  return source.ocr?`${pageText} · OCR`:pageText;
+}
+function importDiagnosticsHtml(book){
+  const d=book?.importDiagnostics;if(!d)return '';
+  const parts=[];
+  if(d.format)parts.push(d.format.toUpperCase());
+  if(Number.isFinite(d.totalPages))parts.push(`${d.totalPages} page${d.totalPages===1?'':'s'}`);
+  if(d.ocrPages?.length)parts.push(`${d.ocrPages.length} OCR`);
+  if(d.skippedOcrPages?.length)parts.push(`${d.skippedOcrPages.length} scanned page${d.skippedOcrPages.length===1?'':'s'} skipped`);
+  if(d.lowConfidencePages?.length)parts.push(`${d.lowConfidencePages.length} low-confidence OCR`);
+  return parts.join(' · ');
+}
+function showImportReport(book){
+  const d=book?.importDiagnostics;if(!d)return;
+  const report=importDiagnosticsHtml(book);
+  modalForm.innerHTML=`<h3>Import complete</h3><p><strong>${escapeHtml(book.title)}</strong></p>
+    <p class="sub">${book.chapters.length} chapter${book.chapters.length===1?'':'s'} · ${book.chapters.reduce((n,ch)=>n+ch.paragraphs.length,0)} paragraphs${report?' · '+escapeHtml(report):''}</p>
+    ${d.ocrPages?.length?`<p>${d.ocrPages.length} page${d.ocrPages.length===1?' was':'s were'} reconstructed with OCR.</p>`:''}
+    ${d.lowConfidencePages?.length?`<p class="import-warning">Review OCR text from page${d.lowConfidencePages.length===1?'':'s'} ${d.lowConfidencePages.join(', ')}; recognition confidence was lower there.</p>`:''}
+    ${d.skippedOcrPages?.length?`<p class="import-warning">Scanned page${d.skippedOcrPages.length===1?'':'s'} ${d.skippedOcrPages.join(', ')} were not imported because OCR was skipped or cancelled.</p>`:''}
+    <div class="row between"><span class="meta">Source page references stay attached to reconstructed paragraphs.</span><button value="default" class="button">Open manuscript</button></div>`;
+  if(!modal.open)modal.showModal();
 }
 function pdfMedian(values){
   const nums=values.filter(Number.isFinite).sort((a,b)=>a-b);
@@ -769,7 +881,7 @@ function pdfRepeatedMarginSignatures(pages){
   const threshold=Math.max(2,Math.ceil(pages.length*.5));
   return new Set([...counts].filter(([,count])=>count>=threshold).map(([sig])=>sig));
 }
-function pdfJoinLinesToParagraphs(pages){
+function pdfJoinLinesToRecords(pages){
   const repeated=pdfRepeatedMarginSignatures(pages);
   const all=[];
   for(const lines of pages){
@@ -786,12 +898,23 @@ function pdfJoinLinesToParagraphs(pages){
     usable.forEach((line,index)=>all.push({...line,normalGap,leftEdge,pageBreak:index===0&&all.length>0}));
   }
 
-  const paras=[];let current='';
-  const flush=()=>{const text=current.replace(/\s+/g,' ').trim();if(text)paras.push(text);current=''};
+  const records=[];let current='',pagesUsed=new Set(),ocrUsed=false,confidences=[];
+  const addSource=line=>{
+    if(Number.isFinite(line.pageNo))pagesUsed.add(line.pageNo);
+    if(line.ocr){ocrUsed=true;if(Number.isFinite(line.confidence)&&line.confidence>0)confidences.push(line.confidence)}
+  };
+  const flush=()=>{
+    const text=current.replace(/\s+/g,' ').trim();
+    if(text){
+      const pages=[...pagesUsed].sort((a,b)=>a-b);
+      records.push({text,source:{type:'pdf',pages,ocr:ocrUsed,confidence:confidences.length?Math.round(confidences.reduce((a,b)=>a+b,0)/confidences.length):null}});
+    }
+    current='';pagesUsed=new Set();ocrUsed=false;confidences=[];
+  };
   for(let i=0;i<all.length;i++){
     const line=all[i],prev=all[i-1],text=line.text.trim();
     if(!text)continue;
-    if(pdfHeadingLike(text)){flush();paras.push(text);continue}
+    if(pdfHeadingLike(text)){flush();addSource(line);current=text;flush();continue}
 
     let newParagraph=!current;
     if(current&&prev){
@@ -801,34 +924,62 @@ function pdfJoinLinesToParagraphs(pages){
       const indented=line.xStart>=line.leftEdge+Math.max(7,line.height*.55);
       const prevWasHeading=pdfHeadingLike(prev.text);
       newParagraph=largeGap||indented||prevWasHeading;
-      if(line.pageBreak&&!indented&&!largeGap&&!prevWasHeading)newParagraph=false;
+      if(line.pageBreak&&!indented&&!largeGap&&!prevWasHeading)newParagraph=!!line.ocr;
     }
     if(newParagraph&&current)flush();
 
+    addSource(line);
     if(!current){current=text;continue}
     const hyphenated=/[A-Za-zÀ-ÖØ-öø-ÿ]-$/.test(current)&&/^[a-zà-öø-ÿ]/.test(text);
     if(hyphenated)current=current.slice(0,-1)+text;
     else current+=' '+text;
   }
   flush();
-  return paras.filter(Boolean);
+  return records.filter(r=>r.text);
+}
+function pdfJoinLinesToParagraphs(pages){
+  return pdfJoinLinesToRecords(pages).map(r=>r.text);
 }
 async function parsePdf(file){
   if(!window.pdfjsLib)throw new Error('PDF support has not finished loading. Check your connection and try again.');
   const pdf=await pdfjsLib.getDocument({data:new Uint8Array(await file.arrayBuffer())}).promise;
-  const pages=[];let characterCount=0;
+  const pages=[],ocrCandidates=[],embeddedPages=[];
   for(let pageNo=1;pageNo<=pdf.numPages;pageNo++){
     const page=await pdf.getPage(pageNo),content=await page.getTextContent();
-    const lines=pdfGroupPageLines(content,pageNo);
-    characterCount+=lines.reduce((n,line)=>n+line.text.length,0);
-    pages.push(lines);
+    const lines=pdfGroupPageLines(content,pageNo),chars=lines.reduce((n,line)=>n+line.text.length,0);
+    if(chars<14){ocrCandidates.push(pageNo);pages.push(lines)}
+    else{embeddedPages.push(pageNo);pages.push(lines)}
   }
-  if(characterCount<Math.max(20,pdf.numPages*8)){
-    throw new Error('This PDF appears to be scanned or image-based and does not contain enough selectable text. Storyline needs OCR before it can read this PDF.');
+
+  let ocrPages=[],lowConfidencePages=[],skippedOcrPages=[];
+  if(ocrCandidates.length){
+    const useOcr=await confirmPdfOcr(ocrCandidates.length,pdf.numPages);
+    if(useOcr){
+      const ocr=await ocrPdfPages(pdf,ocrCandidates);
+      const byPage=new Map(ocr.results.map(x=>[x.pageNo,x]));
+      for(const pageNo of ocrCandidates){
+        const result=byPage.get(pageNo);
+        if(result?.lines?.length){
+          pages[pageNo-1]=result.lines;ocrPages.push(pageNo);
+          if(result.confidence&&result.confidence<70)lowConfidencePages.push(pageNo);
+        }else skippedOcrPages.push(pageNo);
+      }
+      if(ocr.cancelled){
+        for(const pageNo of ocrCandidates)if(!ocrPages.includes(pageNo)&&!skippedOcrPages.includes(pageNo))skippedOcrPages.push(pageNo);
+      }
+    }else skippedOcrPages=[...ocrCandidates];
   }
-  const paras=pdfJoinLinesToParagraphs(pages);
-  if(!paras.length)throw new Error('No readable manuscript text was reconstructed from this PDF.');
-  return paras;
+
+  const records=pdfJoinLinesToRecords(pages);
+  if(!records.length){
+    if(ocrCandidates.length&&skippedOcrPages.length)throw new Error('This PDF is image-based. OCR was skipped, so there is no readable text to import.');
+    throw new Error('No readable manuscript text was reconstructed from this PDF.');
+  }
+  return {
+    paragraphs:records.map(r=>r.text),
+    sources:records.map(r=>r.source),
+    diagnostics:{format:'pdf',totalPages:pdf.numPages,embeddedPages,ocrPages,skippedOcrPages,lowConfidencePages}
+  };
 }
 async function importPastedText(text,title=''){
   const source=String(text||'').replace(/\r/g,'').trim();
@@ -890,12 +1041,14 @@ function openPasteImport(initialText=''){
 }
 async function importFile(file){
   if(!file)return;
-  let paragraphs,parsedChapters=null;
+  let paragraphs,parsedChapters=null,sources=null,importDiagnostics=null;
   try{
     const name=file.name.toLowerCase();
     if(name.endsWith('.docx'))paragraphs=await parseDocx(file);
     else if(name.endsWith('.epub')){const parsed=await parseEpub(file);paragraphs=parsed.paragraphs;parsedChapters=parsed.chapters}
-    else if(name.endsWith('.pdf'))paragraphs=await parsePdf(file);
+    else if(name.endsWith('.pdf')){
+      const parsed=await parsePdf(file);paragraphs=parsed.paragraphs;sources=parsed.sources;importDiagnostics=parsed.diagnostics;
+    }
     else if(name.endsWith('.odt'))paragraphs=await parseOdt(file);
     else if(name.endsWith('.html')||name.endsWith('.htm'))paragraphs=await parseHtml(file);
     else if(name.endsWith('.md')||name.endsWith('.markdown'))paragraphs=await parseMarkdown(file);
@@ -905,11 +1058,17 @@ async function importFile(file){
     let title=file.name.replace(/\.(docx|epub|pdf|odt|html?|md|markdown|txt)$/i,'').replace(/[_-]+/g,' ').trim();
     const firstUseful=paragraphs.find(p=>p.length>3&&!/^chapter\b/i.test(p));
     if(/the plus[ -]one problem/i.test(title)||/^the plus[ -]one problem/i.test(firstUseful||''))title='The Plus-One Problem';
-    const chapters=parsedChapters||splitChapters(paragraphs);
-    const book={id:uid(),title,fileName:file.name,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),chapters,progress:{chapterIndex:0,paragraphIndex:0,charOffset:0,wordEnd:0,completed:false},version:'Imported manuscript'};
+    const chapters=parsedChapters||splitChapters(paragraphs,sources);
+    const now=new Date().toISOString();
+    const book={id:uid(),title,fileName:file.name,createdAt:now,updatedAt:now,chapters,progress:{chapterIndex:0,paragraphIndex:0,charOffset:0,wordEnd:0,completed:false},version:'Imported manuscript',importDiagnostics};
     await idbPut('books',book);state.bookId=book.id;state.chapterIndex=0;state.selectedParagraph=0;state.selectedCharOffset=0;state.selectedWordEnd=0;
-    savePrefs({lastBookId:book.id});showToast(`Imported ${book.chapters.length} chapter${book.chapters.length===1?'':'s'}`);navigate('reader');
-  }catch(e){showToast(e.message||'Could not import manuscript')}
+    savePrefs({lastBookId:book.id});showToast(`Imported ${book.chapters.length} chapter${book.chapters.length===1?'':'s'}`);
+    await navigate('reader');
+    if(importDiagnostics)showImportReport(book);
+  }catch(e){
+    if(modal.open){modal.onclose=null;modal.close()}
+    showToast(e.message||'Could not import manuscript');
+  }
 }
 
 async function updateQueueBadge(){ const items=await idbGetAll('items'); const open=items.filter(i=>['question','continuity','note','bookmark','voice'].includes(i.type)&&i.status!=='done').length; const b=$('#queueBadge'); b.textContent=open; b.classList.toggle('hidden',!open); }
@@ -1385,6 +1544,13 @@ function recapCardHtml(book){
     <div class="row recap-actions"><button id="recapResume" class="button">Resume</button><button id="recapChapterStart" class="ghost">Chapter start</button><button id="recapDismiss" class="ghost">Dismiss</button></div>
   </section>`;
 }
+function sourceRefFor(book,chapterIndex,paragraphIndex){
+  return book?.chapters?.[chapterIndex]?.sourceRefs?.[paragraphIndex]||null;
+}
+function readerPositionLabel(book,chapterIndex,paragraphIndex,total,extra=''){
+  const source=sourceRefFor(book,chapterIndex,paragraphIndex),sourceText=pdfSourceLabel(source);
+  return [`Paragraph ${paragraphIndex+1} of ${total}`,sourceText,extra].filter(Boolean).join(' · ');
+}
 function bookCard(b,items){ const total=b.chapters.reduce((n,c)=>n+c.paragraphs.length,0); let before=0; for(let i=0;i<(b.progress?.chapterIndex||0);i++) before+=b.chapters[i]?.paragraphs.length||0; before+=b.progress?.paragraphIndex||0; const pct=b.progress?.completed===true?100:Math.max(0,Math.min(100,Math.round((before/Math.max(total,1))*100))); const count=items.filter(i=>i.bookId===b.id&&['note','question','continuity','bookmark','voice'].includes(i.type)).length;
   const totalWords=b.chapters.reduce((n,ch)=>n+chapterWordCount(ch),0);
   return `<article class="card book-card" data-id="${b.id}"><div><div class="eyebrow">${escapeHtml(b.version||'Manuscript')}</div><div class="book-title">${escapeHtml(b.title)}</div><p class="meta">${b.chapters.length} chapter${b.chapters.length===1?'':'s'} · ${readingMinutesLabel(totalWords)} · ${count} revision item${count===1?'':'s'}</p></div><div class="stack"><div class="row between"><span class="meta">${pct}% listened</span><button data-delete="${b.id}" class="ghost tiny">Remove</button></div><div class="progress"><i style="width:${pct}%"></i></div><div class="row book-actions"><button class="button">Continue reading</button><button data-export-revisions="${b.id}" class="ghost tiny">Revision checklist</button></div></div></article>`;
@@ -1416,7 +1582,7 @@ async function renderReader(){
           <button id="replayBtn" class="ghost transport-replay" aria-label="Replay current sentence" disabled>↺</button>
           <button id="repeatBtn" class="ghost transport-replay ${p.repeatParagraph?'active':''}" aria-label="Repeat paragraph" aria-pressed="${p.repeatParagraph?'true':'false'}">⟳</button>
         </div>
-        <div class="transport-progress"><div class="row between"><span id="positionLabel" class="meta">Paragraph ${state.selectedParagraph+1} of ${ch.paragraphs.length}</span><span id="timeLeftLabel" class="meta">${readingMinutesLabel(remainingChapterWords(ch,state.selectedParagraph,state.selectedCharOffset||0))} left in chapter</span><span id="speedLabel" class="meta">${Number(p.rate||1.05).toFixed(2)}×</span></div><input id="positionRange" class="range" type="range" min="0" max="${Math.max(ch.paragraphs.length-1,0)}" value="${state.selectedParagraph}" /></div>
+        <div class="transport-progress"><div class="row between"><span id="positionLabel" class="meta">${escapeHtml(readerPositionLabel(book,state.chapterIndex,state.selectedParagraph,ch.paragraphs.length))}</span><span id="timeLeftLabel" class="meta">${readingMinutesLabel(remainingChapterWords(ch,state.selectedParagraph,state.selectedCharOffset||0))} left in chapter</span><span id="speedLabel" class="meta">${Number(p.rate||1.05).toFixed(2)}×</span></div><input id="positionRange" class="range" type="range" min="0" max="${Math.max(ch.paragraphs.length-1,0)}" value="${state.selectedParagraph}" /></div>
       </div>
       <div class="compact-status"><span id="voiceStatus" class="reading-status">Loading device voices…</span><button id="resumeFollowBtn" class="ghost tiny hidden">↧ Resume follow</button></div>
       <details id="voiceOptions" class="voice-options">
@@ -1508,7 +1674,7 @@ function wireReader(book,ch){
     await saveProgress(book);
     $$('#readingPage p').forEach(el=>el.classList.toggle('selected',+el.dataset.p===paragraphIndex));
     const range=$('#positionRange');if(range)range.value=paragraphIndex;
-    const label=$('#positionLabel');if(label)label.textContent=`Paragraph ${paragraphIndex+1} · sentence starts “${excerpt(seg.text,54)}”`;
+    const label=$('#positionLabel');if(label)label.textContent=readerPositionLabel(book,state.chapterIndex,paragraphIndex,ch.paragraphs.length,`sentence starts “${excerpt(seg.text,54)}”`);
     highlightRange(paragraphIndex,seg.start,seg.end);
     startSpeechFromSelection();
   });
@@ -1589,7 +1755,7 @@ function wireReaderSearchResults(book){
     }
   });
 }
-async function selectParagraph(i,noScroll=false,preserveWord=false){ state.selectedParagraph=i; if(!preserveWord){state.selectedCharOffset=0;state.selectedWordEnd=0;} $$('#readingPage p').forEach(p=>p.classList.toggle('selected',+p.dataset.p===i)); $('#positionRange').value=i; $('#positionLabel').textContent=`Paragraph ${i+1} of ${$('#readingPage').children.length}`; const book=await idbGet('books',state.bookId); await saveProgress(book); updateReadingTimeMeta(book); if(!noScroll) scrollSelected(); }
+async function selectParagraph(i,noScroll=false,preserveWord=false){ state.selectedParagraph=i; if(!preserveWord){state.selectedCharOffset=0;state.selectedWordEnd=0;} $$('#readingPage p').forEach(p=>p.classList.toggle('selected',+p.dataset.p===i)); $('#positionRange').value=i; $('#positionLabel').textContent=readerPositionLabel(book,state.chapterIndex,i,$('#readingPage').children.length); const book=await idbGet('books',state.bookId); await saveProgress(book); updateReadingTimeMeta(book); if(!noScroll) scrollSelected(); }
 function scrollSelected(smooth=true){ const el=$(`#readingPage p[data-p="${state.selectedParagraph}"]`); if(el) el.scrollIntoView({block:'center',behavior:smooth?'smooth':'auto'}); }
 function updateFollowControl(){
   const btn=$('#resumeFollowBtn');if(btn)btn.classList.toggle('hidden',!state.followNarrationSuspended);
@@ -1916,7 +2082,7 @@ function startSpeech(fromSelected=true,{preserveFollow=false}={}){
     state.speakingPIndex=pIndex;state.speakingSIndex=0;state.speakingSegments=segments;
     markSpeaking(pIndex);
     const range=$('#positionRange');if(range)range.value=pIndex;
-    const label=$('#positionLabel');if(label)label.textContent=`Paragraph ${pIndex+1} of ${paras.length}`;
+    const label=$('#positionLabel');if(label)label.textContent=readerPositionLabel(book,state.chapterIndex,pIndex,paras.length);
 
     const p=prefs();
     const naturalMode=(p.readingStyle||'natural')==='natural';
@@ -2139,7 +2305,7 @@ async function startLocalSpeech(fromSelected=true,{preserveFollow=false}={}){
     }
     state.speakingParagraph=pIndex;state.selectedParagraph=pIndex;markSpeaking(pIndex);
     const range=$('#positionRange');if(range)range.value=pIndex;
-    const label=$('#positionLabel');if(label)label.textContent=`Paragraph ${pIndex+1} of ${paras.length}`;
+    const label=$('#positionLabel');if(label)label.textContent=readerPositionLabel(book,state.chapterIndex,pIndex,paras.length);
 
     const speakSentence=()=>{
       if(token!==state.playbackToken||!state.isSpeaking)return;

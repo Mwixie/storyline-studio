@@ -577,3 +577,16 @@ body{min-height:100dvh}.app-shell{min-height:100dvh;padding-bottom:86px}.topbar{
   .handoff-qr{width:292px;min-height:292px;padding:12px}
   .handoff-location{align-items:flex-start}
 }
+
+
+/* Build 42: source-aware OCR */
+#ocrProgressBar{
+  width:100%;
+  min-height:14px;
+}
+.import-warning{
+  border-left:3px solid var(--gold);
+  padding:9px 11px;
+  background:rgba(214,179,106,.07);
+  border-radius:8px;
+}
