@@ -660,3 +660,68 @@ body{min-height:100dvh}.app-shell{min-height:100dvh;padding-bottom:86px}.topbar{
   .revision-prompt-actions>*,
   .revision-diff-footer>*{flex:1 1 100%}
 }
+
+
+/* Build 45: Review My Flags */
+.flag-review-shell{
+  max-width:780px;
+  margin:0 auto;
+  display:grid;
+  gap:14px;
+}
+.flag-review-top h1{margin:.15rem 0}
+.flag-review-progress{
+  height:6px;
+  overflow:hidden;
+  border-radius:999px;
+  background:rgba(255,255,255,.08);
+}
+.flag-review-progress i{
+  display:block;
+  height:100%;
+  background:var(--gold);
+}
+.flag-review-card{
+  display:grid;
+  gap:14px;
+  padding:18px;
+}
+.review-warning{
+  padding:10px 12px;
+  border-radius:10px;
+  border-left:3px solid var(--gold);
+  background:rgba(214,179,106,.08);
+  line-height:1.45;
+}
+.flag-review-controls,
+.flag-review-decisions,
+.flag-review-options{
+  display:flex;
+  gap:9px;
+  flex-wrap:wrap;
+}
+.flag-review-controls>*{flex:1 1 160px}
+.flag-review-decisions>*{flex:1 1 180px;min-height:48px}
+.flag-review-options{
+  align-items:end;
+  padding:12px;
+  border:1px solid var(--line);
+  border-radius:12px;
+}
+.flag-review-options label{
+  display:grid;
+  gap:5px;
+  min-width:150px;
+}
+.flag-review-complete{
+  max-width:680px;
+  margin:8vh auto 0;
+  display:grid;
+  gap:12px;
+}
+@media(max-width:600px){
+  .flag-review-card{padding:14px}
+  .flag-review-controls>*,
+  .flag-review-decisions>*{flex:1 1 100%}
+  .flag-review-options label{flex:1 1 100%}
+}

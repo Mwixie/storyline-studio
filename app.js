@@ -12,7 +12,8 @@ const state = {
   pendingPassageReference:null, activeEngine:'device', readerSearchQuery:'',
   followNarrationSuspended:false, readerBook:null, recapBookId:null, selectedReaderPhrase:'',
   liveCharOffset:null, pendingHandoffContext:null, handoffScanStop:null,
-  sharedPronunciations:[], gentleStopPending:false, pendingRevisionPrompt:null, revisionDiff:null
+  sharedPronunciations:[], gentleStopPending:false, pendingRevisionPrompt:null, revisionDiff:null,
+  reviewSession:null, reviewAudio:null, reviewAudioUrl:null, reviewAutoTimer:null
 };
 
 const PREF='storyline.prefs.v1';
@@ -1315,9 +1316,9 @@ function setNav(route){
 }
 async function navigate(route){
   if(route==='reader'&&!state.bookId){ const books=await idbGetAll('books'); if(books[0]) state.bookId=books[0].id; else route='library'; }
-  revokeSavedAudioObjectUrls();
+  stopReviewAudio();revokeSavedAudioObjectUrls();
   state.route=route; setNav(route); stopAllSpeech();
-  if(route==='library') await renderLibrary(); if(route==='reader') await renderReader(); if(route==='notes') await renderNotes(); if(route==='queue') await renderQueue(); if(route==='actioned') await renderActioned(); updateQueueBadge();
+  if(route==='library') await renderLibrary(); if(route==='reader') await renderReader(); if(route==='notes') await renderNotes(); if(route==='queue') await renderQueue(); if(route==='actioned') await renderActioned(); if(route==='review') await renderFlagReview(); updateQueueBadge();
 }
 
 function arrayBufferToBase64(buffer){
@@ -2217,19 +2218,29 @@ function completeGentleSleepStop(token=null){
   finishSpeech(token);
   return true;
 }
+function completeGentleSleepStop(token=null){
+  if(!state.gentleStopPending)return false;
+  const review=state.route==='review';
+  state.gentleStopPending=false;
+  showToast('Sleep timer ended — stopped at a sentence break.');
+  finishSpeech(token);
+  if(review){state.reviewSession=null;Promise.resolve().then(()=>navigate('queue'))}
+  return true;
+}
 function clearSleepTimer(){
   if(state.sleepTimerId){clearTimeout(state.sleepTimerId);state.sleepTimerId=null}
   if(state.sleepIntervalId){clearInterval(state.sleepIntervalId);state.sleepIntervalId=null}
   state.sleepDeadline=null;state.sleepMinutes=0;state.gentleStopPending=false;
-  const status=$('#sleepTimerStatus'); if(status)status.textContent='Sleep timer off';
-  const select=$('#sleepTimerSelect'); if(select)select.value='0';
+  const status=$('#sleepTimerStatus');if(status)status.textContent='Sleep timer off';
+  const reviewStatus=$('#reviewSleepStatus');if(reviewStatus)reviewStatus.textContent='Sleep timer off';
+  const select=$('#sleepTimerSelect');if(select)select.value='0';
+  const reviewSelect=$('#reviewSleepTimer');if(reviewSelect)reviewSelect.value='0';
 }
 function updateSleepTimerStatus(){
-  const status=$('#sleepTimerStatus'); if(!status)return;
-  if(!state.sleepDeadline){status.textContent='Sleep timer off';return}
-  const left=Math.max(0,state.sleepDeadline-Date.now());
-  const total=Math.ceil(left/1000),m=Math.floor(total/60),sec=total%60;
-  status.textContent=`Sleep timer · ${m}:${String(sec).padStart(2,'0')}`;
+  const status=$('#sleepTimerStatus'),reviewStatus=$('#reviewSleepStatus');
+  if(!state.sleepDeadline){if(status)status.textContent='Sleep timer off';if(reviewStatus)reviewStatus.textContent='Sleep timer off';return}
+  const left=Math.max(0,state.sleepDeadline-Date.now()),total=Math.ceil(left/1000),m=Math.floor(total/60),sec=total%60,text=`Sleep timer · ${m}:${String(sec).padStart(2,'0')}`;
+  if(status)status.textContent=text;if(reviewStatus)reviewStatus.textContent=text;
 }
 function setSleepTimer(minutes){
   if(state.sleepTimerId)clearTimeout(state.sleepTimerId);
@@ -2238,21 +2249,21 @@ function setSleepTimer(minutes){
   const n=Number(minutes)||0;
   if(!n){updateSleepTimerStatus();return}
   state.sleepMinutes=n;state.sleepDeadline=Date.now()+n*60000;
-  updateSleepTimerStatus();
-  state.sleepIntervalId=setInterval(updateSleepTimerStatus,1000);
+  updateSleepTimerStatus();state.sleepIntervalId=setInterval(updateSleepTimerStatus,1000);
   state.sleepTimerId=setTimeout(()=>{
-    state.sleepTimerId=null;
-    if(state.sleepIntervalId){clearInterval(state.sleepIntervalId);state.sleepIntervalId=null}
+    state.sleepTimerId=null;if(state.sleepIntervalId){clearInterval(state.sleepIntervalId);state.sleepIntervalId=null}
     state.sleepDeadline=null;state.sleepMinutes=0;
-    const status=$('#sleepTimerStatus');
-    if(state.isSpeaking&&!state.isPaused){
-      state.gentleStopPending=true;
-      if(status)status.textContent='Sleep timer ended · finishing this sentence…';
-      showToast('Sleep timer ended — finishing at a sentence break.');
-    }else{
-      stopAllSpeech();
-      showToast('Sleep timer ended');
+    const review=state.route==='review';
+    if(review&&state.reviewAudio){
+      stopReviewAudio();state.reviewSession=null;showToast('Sleep timer ended — review stopped.');navigate('queue');return;
     }
+    if(state.isSpeaking&&!state.isPaused){
+      state.gentleStopPending=true;updateSleepTimerStatus();
+      showToast('Sleep timer ended — finishing at a sentence break.');return;
+    }
+    stopAllSpeech();
+    showToast('Sleep timer ended');
+    if(review){state.reviewSession=null;navigate('queue')}
   },n*60000);
 }
 async function requestWakeLock(){
@@ -2336,12 +2347,12 @@ function dialogueSamanthaVoice(){
   const p=prefs(),voices=samanthaVoices(),key=p.dialogueVoiceKey||'';
   return voices.find(v=>voiceKey(v)===key)||mainSamanthaVoice();
 }
-async function speakBoundedRange(book,chapterIndex,paragraphIndex,start=0,end=null,{onDone=null,movePosition=false}={}){
+async function speakBoundedRange(book,chapterIndex,paragraphIndex,start=0,end=null,{onDone=null,movePosition=false,preserveSleep=false}={}){
   const ch=book?.chapters?.[chapterIndex],text=String(ch?.paragraphs?.[paragraphIndex]||'');
   if(!text){showToast('There is no passage to play.');return false}
   const a=Math.max(0,Math.min(Number(start)||0,text.length)),b=Math.max(a,Math.min(end===null?text.length:Number(end)||a,text.length));
   if(b<=a){showToast('There is no passage to play.');return false}
-  stopAllSpeech();
+  stopAllSpeech({preserveSleep});
   const token=++state.playbackToken,p=prefs(),pieces=speechPiecesForRange(text,a,b,book,{dialogueEnabled:!!p.dialogueEnabled});
   if(!pieces.length)return false;
   if(movePosition){
@@ -2355,12 +2366,12 @@ async function speakBoundedRange(book,chapterIndex,paragraphIndex,start=0,end=nu
 
   const finish=()=>{
     if(token!==state.playbackToken)return;
-    finishSpeech(token);
+    finishSpeech(token,{preserveSleep});
     try{onDone?.()}catch{}
   };
 
   if(currentEngine()==='local'){
-    try{await ensureLocalTTS()}catch(e){showToast(e.message||'Local voice could not start.');finishSpeech(token);return false}
+    try{await ensureLocalTTS()}catch(e){showToast(e.message||'Local voice could not start.');finishSpeech(token,{preserveSleep});return false}
     if(token!==state.playbackToken||!state.isSpeaking)return false;
     let i=0;
     const next=()=>{
@@ -2372,10 +2383,10 @@ async function speakBoundedRange(book,chapterIndex,paragraphIndex,start=0,end=nu
       const pitch=isDialogue?Math.max(20,Math.min(80,Math.round(50*Number(p.dialoguePitch??1.15)))):50;
       const id=meSpeak.speak(piece.text,{amplitude:100,speed,volume:1,pitch,voice:'en-us',variant:localVoiceVariant()},success=>{
         if(token!==state.playbackToken)return;state.localSpeakingId=null;
-        if(!success){finishSpeech(token);return}
+        if(!success){finishSpeech(token,{preserveSleep});return}
         next();
       });
-      if(!id){showToast('The local voice could not play this passage.');finishSpeech(token);return}
+      if(!id){showToast('The local voice could not play this passage.');finishSpeech(token,{preserveSleep});return}
       state.localSpeakingId=id;
     };
     next();return true;
@@ -2393,7 +2404,7 @@ async function speakBoundedRange(book,chapterIndex,paragraphIndex,start=0,end=nu
     if(v){u.voice=v;u.lang=v.lang||'en-US'}else u.lang='en-US';
     u.onboundary=e=>{if(token!==state.playbackToken||state.activeUtterance!==u)return;const rel=Number(e.charIndex);if(Number.isFinite(rel))state.liveCharOffset=piece.mapIndex(rel)};
     u.onend=()=>{if(token!==state.playbackToken||state.activeUtterance!==u)return;state.activeUtterance=null;next()};
-    u.onerror=e=>{if(token!==state.playbackToken||state.activeUtterance!==u)return;state.activeUtterance=null;if(e.error==='canceled'||e.error==='interrupted')return;showToast('Samantha could not play this passage.');finishSpeech(token)};
+    u.onerror=e=>{if(token!==state.playbackToken||state.activeUtterance!==u)return;state.activeUtterance=null;if(e.error==='canceled'||e.error==='interrupted')return;showToast('Samantha could not play this passage.');finishSpeech(token,{preserveSleep})};
     speechSynthesis.resume();speechSynthesis.speak(u);
   };
   next();return true;
@@ -2630,14 +2641,14 @@ function replayCurrentSentence(){
   if(!state.isSpeaking||!state.replayCurrent){showToast('Start reading first.');return}
   state.replayCurrent();
 }
-function stopAllSpeech(){
+function stopAllSpeech({preserveSleep=false}={}){
   state.playbackToken++;
   try{speechSynthesis.cancel()}catch{}
   try{if(window.meSpeak)meSpeak.stop()}catch{}
   state.isSpeaking=false;state.isPaused=false;state.activeUtterance=null;state.localSpeakingId=null;state.speakingParagraph=null;
   setMediaPlaybackState('none');
   state.speakingPIndex=null;state.speakingSIndex=null;state.speakingSegments=null;state.replayCurrent=null;state.liveCharOffset=null;
-  clearSleepTimer();releaseWakeLock();
+  if(!preserveSleep)clearSleepTimer();releaseWakeLock();
   const b=$('#playBtn');if(b){b.textContent='▶';b.setAttribute('aria-label','Play')}
   const replay=$('#replayBtn');if(replay)replay.disabled=true;
   const st=$('#voiceStatus');if(st)st.textContent='Device voice ready';
@@ -2851,12 +2862,12 @@ function markSpeaking(i){
   const st=$('#voiceStatus');
   if(st) st.textContent=`Reading paragraph ${i+1}`;
 }
-function finishSpeech(token=null){
+function finishSpeech(token=null,{preserveSleep=false}={}){
   if(token!==null&&token!==state.playbackToken)return;
   state.isSpeaking=false;state.isPaused=false;state.speakingParagraph=null;state.activeUtterance=null;state.localSpeakingId=null;
   setMediaPlaybackState('none');
   state.speakingPIndex=null;state.speakingSIndex=null;state.speakingSegments=null;state.replayCurrent=null;
-  clearSleepTimer();releaseWakeLock();
+  if(!preserveSleep)clearSleepTimer();releaseWakeLock();
   const b=$('#playBtn');if(b){b.textContent='▶';b.setAttribute('aria-label','Play')}
   const replay=$('#replayBtn');if(replay)replay.disabled=true;
   $$('#readingPage p').forEach(p=>p.classList.remove('speaking'));clearSentenceHighlights();
@@ -3014,13 +3025,195 @@ async function voiceNote(base){
 
 async function renderNotes(){ const books=await idbGetAll('books'); const bookMap=Object.fromEntries(books.map(b=>[b.id,b])); const items=(await idbGetAll('items')).filter(i=>['note','bookmark','voice'].includes(i.type)).sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt));
   view.innerHTML=`<section class="hero"><div class="eyebrow">Listening memory</div><h1>Notes & bookmarks</h1><p class="sub">Everything you caught while listening, still attached to where you heard it.</p></section>${items.length?`<div class="list">${items.map(i=>itemHtml(i,bookMap)).join('')}</div>`:`<div class="empty card">No notes yet. This is suspiciously peaceful.</div>`}`; wireItemButtons(items); }
+function stopReviewAudio(){
+  if(state.reviewAutoTimer){clearTimeout(state.reviewAutoTimer);state.reviewAutoTimer=null}
+  try{state.reviewAudio?.pause?.()}catch{}
+  if(state.reviewAudio){try{state.reviewAudio.src=''}catch{}}
+  state.reviewAudio=null;
+  if(state.reviewAudioUrl){try{URL.revokeObjectURL(state.reviewAudioUrl)}catch{};savedAudioObjectUrls.delete(state.reviewAudioUrl);state.reviewAudioUrl=null}
+}
+function resolveReviewLocation(book,item){
+  let resolved=resolvePassageAnchor(book,item);
+  if(resolved.unverified&&item.migrationUncertain&&item.migrationFallback){
+    const f=item.migrationFallback,ci=Math.max(0,Math.min(f.chapterIndex||0,book.chapters.length-1)),ch=book.chapters[ci];
+    const pi=Math.max(0,Math.min(f.paragraphIndex||0,Math.max(0,(ch?.paragraphs?.length||1)-1))),text=String(ch?.paragraphs?.[pi]||'');
+    const start=Math.max(0,Math.min(f.charStart||0,text.length)),end=Math.max(start,Math.min(f.charEnd||start,text.length));
+    resolved={chapterIndex:ci,paragraphIndex:pi,start,end,score:item.migrationScore||0,moved:true,unverified:true,migrationFallback:true};
+  }
+  return resolved;
+}
+async function buildFlagReviewSession(order=prefs().flagReviewOrder||'reading'){
+  const books=await idbGetAll('books'),bookMap=new Map(books.map(b=>[b.id,b]));
+  const pending=(await idbGetAll('items')).filter(i=>['question','continuity','note','bookmark','voice'].includes(i.type)&&i.status!=='done');
+  const entries=[];
+  for(const item of pending){
+    let book=bookMap.get(item.bookId)||null;
+    if(!book){
+      const matches=books.filter(b=>anchorNormalize(b.title)===anchorNormalize(item.bookTitle||''));
+      if(matches.length===1)book=matches[0];
+    }
+    const resolved=book?resolveReviewLocation(book,item):null;
+    entries.push({itemId:item.id,bookId:book?.id||item.bookId,bookTitle:book?.title||item.bookTitle||'Manuscript',resolved,missingBook:!book,autoplayed:false});
+  }
+  if(order==='newest'){
+    const byId=new Map(pending.map(i=>[i.id,i]));
+    entries.sort((a,b)=>new Date(byId.get(b.itemId)?.createdAt||0)-new Date(byId.get(a.itemId)?.createdAt||0));
+  }else{
+    entries.sort((a,b)=>String(a.bookTitle).localeCompare(String(b.bookTitle))||
+      ((a.resolved?.chapterIndex??999999)-(b.resolved?.chapterIndex??999999))||
+      ((a.resolved?.paragraphIndex??999999)-(b.resolved?.paragraphIndex??999999))||
+      String(a.itemId).localeCompare(String(b.itemId)));
+  }
+  return {entries,index:0,order,startedAt:new Date().toISOString()};
+}
+async function startFlagReview(){
+  const session=await buildFlagReviewSession();
+  if(!session.entries.length){showToast('Nothing pending.');return}
+  state.reviewSession=session;await navigate('review');
+}
+function reviewItemLabel(item){
+  return item.type==='question'?'Ask ChatGPT':item.type==='continuity'?'Continuity':item.type==='bookmark'?'Bookmark':item.type==='voice'?'Voice note':'Note';
+}
+async function prepareReviewEntry(){
+  const session=state.reviewSession;if(!session)return null;
+  while(session.index<session.entries.length){
+    const entry=session.entries[session.index],item=await idbGet('items',entry.itemId);
+    if(!item||item.status==='done'){session.index++;continue}
+    let book=await idbGet('books',entry.bookId);
+    if(!book){
+      const matches=(await idbGetAll('books')).filter(b=>anchorNormalize(b.title)===anchorNormalize(item.bookTitle||''));
+      if(matches.length===1)book=matches[0];
+    }
+    if(!book){showToast('A manuscript for this item is no longer available. Skipping it.');session.index++;continue}
+    const resolved=resolveReviewLocation(book,item);
+    entry.bookId=book.id;entry.bookTitle=book.title;entry.resolved=resolved;
+    state.bookId=book.id;state.chapterIndex=resolved.chapterIndex;state.selectedParagraph=resolved.paragraphIndex;
+    state.selectedCharOffset=resolved.start||0;state.selectedWordEnd=resolved.end||resolved.start||0;
+    savePrefs({lastBookId:book.id});
+    await saveProgress(book);
+    return {entry,item,book,resolved};
+  }
+  return null;
+}
+async function speakReviewText(text,book,onDone=null){
+  const value=String(text||'').trim();if(!value){try{onDone?.()}catch{};return false}
+  stopReviewAudio();stopAllSpeech({preserveSleep:true});
+  const spoken=transformSpeechText(value,effectivePronunciations(book),0).text,p=prefs(),token=++state.playbackToken;
+  state.isSpeaking=true;state.isPaused=false;requestWakeLock();setMediaPlaybackState('playing');
+  const finish=()=>{if(token!==state.playbackToken)return;finishSpeech(token,{preserveSleep:true});try{onDone?.()}catch{}};
+  if(currentEngine()==='local'){
+    try{await ensureLocalTTS()}catch(e){showToast(e.message||'Local voice could not read this note.');finishSpeech(token,{preserveSleep:true});return false}
+    if(token!==state.playbackToken)return false;
+    const id=meSpeak.speak(spoken,{amplitude:100,speed:localSpeed(),volume:1,pitch:50,voice:'en-us',variant:localVoiceVariant()},success=>{
+      if(token!==state.playbackToken)return;state.localSpeakingId=null;if(success)finish();else finishSpeech(token,{preserveSleep:true});
+    });
+    if(!id){finishSpeech(token,{preserveSleep:true});showToast('The local voice could not read this note.');return false}
+    state.localSpeakingId=id;return true;
+  }
+  const u=new SpeechSynthesisUtterance(spoken),v=mainSamanthaVoice();state.activeUtterance=u;
+  u.rate=Number(p.rate||1.05);u.pitch=1;u.volume=1;if(v){u.voice=v;u.lang=v.lang||'en-US'}else u.lang='en-US';
+  u.onend=()=>{if(token!==state.playbackToken||state.activeUtterance!==u)return;state.activeUtterance=null;finish()};
+  u.onerror=e=>{if(token!==state.playbackToken||state.activeUtterance!==u)return;state.activeUtterance=null;if(e.error==='canceled'||e.error==='interrupted')return;finishSpeech(token,{preserveSleep:true});showToast('Samantha could not read this note.')};
+  speechSynthesis.resume();speechSynthesis.speak(u);return true;
+}
+async function playReviewVoiceNote(item,onDone=null){
+  stopReviewAudio();stopAllSpeech({preserveSleep:true});
+  let blob=null;
+  if(item?.audioData)blob=new Blob([item.audioData],{type:item.audioType||'audio/mp4'});
+  else if(item?.audioBlob instanceof Blob)blob=item.audioBlob;
+  if(!blob){
+    const fallback=item?.transcript||item?.note||'';
+    if(fallback)return speakReviewText(fallback,await idbGet('books',item.bookId),onDone);
+    showToast('This voice note has no playable recording.');try{onDone?.()}catch{};return false;
+  }
+  const url=URL.createObjectURL(blob),audio=new Audio(url);state.reviewAudioUrl=url;state.reviewAudio=audio;savedAudioObjectUrls.add(url);
+  audio.onended=()=>{stopReviewAudio();try{onDone?.()}catch{}};
+  audio.onerror=()=>{stopReviewAudio();const fallback=item?.transcript||item?.note||'';if(fallback){idbGet('books',item.bookId).then(book=>speakReviewText(fallback,book,onDone));return}showToast('The voice-note recording could not play.');try{onDone?.()}catch{}};
+  try{await audio.play();return true}catch{showToast('Tap Read my note to play the voice recording.');return false}
+}
+async function playReviewNote(current,onDone=null){
+  if(!current)return false;
+  const {item,book}=current;
+  if(item.type==='voice'&&(item.audioData||item.audioBlob))return playReviewVoiceNote(item,onDone);
+  const text=item.transcript||item.note||'';
+  if(!text){showToast('This item has no note text to read.');try{onDone?.()}catch{};return false}
+  return speakReviewText(text,book,onDone);
+}
+async function playReviewPassage(current,{thenNote=false}={}){
+  if(!current)return false;
+  stopReviewAudio();
+  const {book,resolved}=current;
+  return speakBoundedRange(book,resolved.chapterIndex,resolved.paragraphIndex,resolved.start||0,resolved.end||resolved.start||0,{
+    movePosition:false,preserveSleep:true,
+    onDone:thenNote?()=>{state.reviewAutoTimer=setTimeout(()=>{state.reviewAutoTimer=null;playReviewNote(current)},320)}:null
+  });
+}
+async function advanceFlagReview(markDone=false){
+  const session=state.reviewSession;if(!session)return;
+  stopReviewAudio();stopAllSpeech({preserveSleep:true});
+  const entry=session.entries[session.index],item=entry?await idbGet('items',entry.itemId):null;
+  if(markDone&&item){
+    item.status='done';item.completedAt=new Date().toISOString();await idbPut('items',item);await updateQueueBadge();
+  }
+  session.index++;await renderFlagReview();
+}
+async function exitFlagReview(){
+  stopReviewAudio();stopAllSpeech();state.reviewSession=null;
+  if(state.bookId)await navigate('reader');else await navigate('queue');
+}
+async function renderFlagReview(){
+  const current=await prepareReviewEntry();
+  const session=state.reviewSession;
+  if(!session){await navigate('queue');return}
+  if(!current){
+    view.innerHTML=`<section class="flag-review-complete card"><div class="eyebrow">Revision pass</div><h1>Review complete</h1><p class="sub">You reached the end of this pass.</p><div class="row"><button id="reviewBackQueue" class="button">Back to Queue</button><button id="reviewExitReader" class="ghost">Open reader</button></div></section>`;
+    $('#reviewBackQueue').onclick=()=>{state.reviewSession=null;navigate('queue')};
+    $('#reviewExitReader').onclick=exitFlagReview;
+    return;
+  }
+  const {entry,item,book,resolved}=current,ch=book.chapters[resolved.chapterIndex],total=session.entries.length,index=session.index;
+  view.innerHTML=`<section class="flag-review-shell">
+    <div class="row between flag-review-top"><div><div class="eyebrow">Review my flags</div><h1>${index+1} of ${total}</h1></div><button id="reviewExit" class="ghost">Exit</button></div>
+    <div class="flag-review-progress"><i style="width:${Math.round(((index+1)/Math.max(total,1))*100)}%"></i></div>
+    <article class="card flag-review-card">
+      <div class="row between"><span class="pill ${item.type==='question'||item.type==='continuity'?'gold':''}">${reviewItemLabel(item)}</span><span class="meta">${escapeHtml(book.title)}</span></div>
+      <div class="source-chip">${escapeHtml(chapterLabel(ch,book))} · paragraph ${resolved.paragraphIndex+1}${resolved.unverified?' · passage moved / location not verified':''}</div>
+      ${resolved.unverified?'<div class="review-warning">Storyline could not fully verify this anchor. Playback uses the best available location while the original saved excerpt remains below.</div>':''}
+      <div class="excerpt passage-reference-preview">${referenceExcerptHtml(item)}</div>
+      ${item.note?`<div class="note-text">${escapeHtml(item.note)}</div>`:''}
+      <div class="flag-review-controls">
+        <button id="reviewPlayPassage" class="button">▶ Play passage</button>
+        <button id="reviewReadNote" class="ghost">${item.type==='voice'?'▶ Play my voice note':'🗣 Read my note'}</button>
+        <button id="reviewReplay" class="ghost">⟳ Replay passage</button>
+      </div>
+      <div class="flag-review-decisions"><button id="reviewDone" class="button">✓ Done</button><button id="reviewSkip" class="ghost">Skip →</button></div>
+    </article>
+    <div class="flag-review-options">
+      <label class="flag-review-order"><span class="meta">Order</span><select id="reviewOrderSelect" class="select"><option value="reading" ${session.order==='reading'?'selected':''}>Reading order</option><option value="newest" ${session.order==='newest'?'selected':''}>Newest first</option></select></label>
+      <label><span class="meta">Sleep timer</span><select id="reviewSleepTimer" class="select"><option value="0">Off</option><option value="5">5 min</option><option value="10">10 min</option><option value="15">15 min</option><option value="30">30 min</option><option value="45">45 min</option><option value="60">60 min</option></select></label>
+      <span id="reviewSleepStatus" class="meta">${state.sleepDeadline?'Sleep timer running':'Sleep timer off'}</span>
+    </div>
+  </section>`;
+  $('#reviewExit').onclick=exitFlagReview;
+  $('#reviewPlayPassage').onclick=()=>playReviewPassage(current);
+  $('#reviewReplay').onclick=()=>playReviewPassage(current);
+  $('#reviewReadNote').onclick=()=>playReviewNote(current);
+  $('#reviewDone').onclick=()=>advanceFlagReview(true);
+  $('#reviewSkip').onclick=()=>advanceFlagReview(false);
+  $('#reviewOrderSelect').onchange=async e=>{savePrefs({flagReviewOrder:e.target.value});state.reviewSession=await buildFlagReviewSession(e.target.value);await renderFlagReview()};
+  const reviewSleep=$('#reviewSleepTimer');if(reviewSleep){if(state.sleepMinutes)reviewSleep.value=String(state.sleepMinutes);reviewSleep.onchange=e=>setSleepTimer(+e.target.value)}
+  if(!entry.autoplayed){
+    entry.autoplayed=true;
+    requestAnimationFrame(()=>playReviewPassage(current,{thenNote:true}));
+  }
+}
 async function renderQueue(){
   const books=await idbGetAll('books'); const bookMap=Object.fromEntries(books.map(b=>[b.id,b]));
   const all=(await idbGetAll('items')).filter(i=>['question','continuity','note','bookmark','voice'].includes(i.type));
   const pending=all.filter(i=>i.status!=='done').sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt));
   const actionedCount=all.filter(i=>i.status==='done').length;
 
-  view.innerHTML=`<section class="hero"><div class="eyebrow">Revision desk</div><h1>Revision Queue</h1><p class="sub">Pending items stay here until you action them.</p></section>
+  view.innerHTML=`<section class="hero"><div class="eyebrow">Revision desk</div><h1>Revision Queue</h1><p class="sub">Pending items stay here until you action them.</p>${pending.length?`<div class="row hero-actions"><button id="reviewFlagsBtn" class="button">▶ Review my flags (${pending.length})</button></div>`:''}</section>
     <div class="stat-grid"><div class="stat"><b>${pending.length}</b><small>Pending</small></div><div class="stat"><b>${pending.filter(i=>i.type==='continuity').length}</b><small>Continuity</small></div><button class="stat stat-button" data-nav-inline="actioned"><b>${actionedCount}</b><small>Actioned</small></button></div>
     <section class="queue-section">
       ${pending.length?`<div class="queue-toolbar">
@@ -3037,6 +3230,7 @@ async function renderQueue(){
 
   wireItemButtons(pending);
   wireQueueBulk(pending);
+  const reviewFlags=$('#reviewFlagsBtn');if(reviewFlags)reviewFlags.onclick=startFlagReview;
   const copyAll=$('#copyAllPending');if(copyAll)copyAll.onclick=()=>copyItemsForChat(pending);
   const actionedLink=$('[data-nav-inline="actioned"]'); if(actionedLink)actionedLink.onclick=()=>navigate('actioned');
 }
