@@ -3156,7 +3156,13 @@ function wireItemButtons(visibleItems=[]){
       if(candidates.length===1)book=candidates[0];
     }
     if(!book){showToast('That manuscript is no longer in this browser.');return}
-    const resolved=resolvePassageAnchor(book,i);
+    let resolved=resolvePassageAnchor(book,i);
+    if(resolved.unverified&&i.migrationUncertain&&i.migrationFallback){
+      const f=i.migrationFallback,ch=book.chapters[Math.max(0,Math.min(f.chapterIndex||0,book.chapters.length-1))];
+      const pi=Math.max(0,Math.min(f.paragraphIndex||0,Math.max(0,(ch?.paragraphs?.length||1)-1))),text=String(ch?.paragraphs?.[pi]||'');
+      const start=Math.max(0,Math.min(f.charStart||0,text.length)),end=Math.max(start,Math.min(f.charEnd||start,text.length));
+      resolved={chapterIndex:Math.max(0,Math.min(f.chapterIndex||0,book.chapters.length-1)),paragraphIndex:pi,start,end,score:i.migrationScore||0,moved:true,unverified:true,migrationFallback:true};
+    }
     state.bookId=book.id;state.chapterIndex=resolved.chapterIndex;state.selectedParagraph=resolved.paragraphIndex;
     state.selectedCharOffset=resolved.start||0;state.selectedWordEnd=resolved.end||resolved.start||0;
     state.pendingPassageReference=resolved;
