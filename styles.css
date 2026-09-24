@@ -590,3 +590,22 @@ body{min-height:100dvh}.app-shell{min-height:100dvh;padding-bottom:86px}.topbar{
   background:rgba(214,179,106,.07);
   border-radius:8px;
 }
+
+
+/* Build 43: shared pronunciations */
+.pronunciation-tabs{
+  display:flex;
+  gap:8px;
+  margin-bottom:8px;
+}
+.pronunciation-shared-preview{
+  display:grid;
+  gap:7px;
+  margin-top:12px;
+  padding-top:12px;
+  border-top:1px solid var(--line);
+}
+.pronunciation-row .pill{
+  margin-left:7px;
+  vertical-align:middle;
+}
