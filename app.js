@@ -1184,9 +1184,9 @@ async function backupItem(item){
 }
 async function exportBackup(){
   try{
-    const books=await idbGetAll('books'),rawItems=await idbGetAll('items');
+    const books=await idbGetAll('books'),rawItems=await idbGetAll('items'),meta=await idbGetAll('meta');
     const items=[];for(const item of rawItems)items.push(await backupItem(item));
-    const payload={app:'Storyline Studio',schemaVersion:1,exportedAt:new Date().toISOString(),books,items,preferences:prefs()};
+    const payload={app:'Storyline Studio',schemaVersion:2,exportedAt:new Date().toISOString(),books,items,meta,preferences:prefs()};
     const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
     const url=URL.createObjectURL(blob),a=document.createElement('a');
     const date=new Date().toISOString().slice(0,10);
@@ -1200,7 +1200,7 @@ async function restoreBackup(file){
   try{
     const data=JSON.parse(await file.text());
     if(data?.app!=='Storyline Studio'||!Array.isArray(data.books)||!Array.isArray(data.items))throw new Error('This is not a valid Storyline backup.');
-    if(Number(data.schemaVersion||0)>1)throw new Error('This backup was created by a newer Storyline version.');
+    if(Number(data.schemaVersion||0)>2)throw new Error('This backup was created by a newer Storyline version.');
     if(data.books.some(book=>!book||!book.id)||data.items.some(item=>!item||!item.id))throw new Error('This backup contains records without valid IDs.');
     const bookIds=new Set(data.books.map(book=>book.id)),itemIds=new Set(data.items.map(item=>item.id));
     if(bookIds.size!==data.books.length||itemIds.size!==data.items.length)throw new Error('This backup contains duplicate record IDs.');
@@ -1213,13 +1213,12 @@ async function restoreBackup(file){
       delete copy.audioBackup;
       return copy;
     });
-    if(!confirm(`Restore this backup? It will replace the ${(await idbGetAll('books')).length} manuscript(s) and all notes currently stored in this browser.`))return;
-
-    // Replace both stores in one IndexedDB transaction. If any clear/put fails,
-    // IndexedDB rolls the entire restore back instead of leaving a half-restored library.
-    await replaceLibraryAtomically(data.books,items);
+    const meta=Array.isArray(data.meta)?data.meta.filter(x=>x&&typeof x.key==='string'):[];
+    if(!confirm(`Restore this backup? It will replace the ${(await idbGetAll('books')).length} manuscript(s), shared pronunciations and all notes currently stored in this browser.`))return;
+    await replaceLibraryAtomically(data.books,items,meta);
 
     if(data.preferences&&typeof data.preferences==='object')localStorage.setItem(PREF,JSON.stringify(data.preferences));
+    await loadSharedPronunciations();
     const p=prefs();
     state.bookId=(p.lastBookId&&bookIds.has(p.lastBookId))?p.lastBookId:(data.books[0]?.id||null);
     if(state.bookId){const book=await idbGet('books',state.bookId);state.chapterIndex=book?.progress?.chapterIndex||0;state.selectedParagraph=book?.progress?.paragraphIndex||0;state.selectedCharOffset=book?.progress?.charOffset||0;state.selectedWordEnd=book?.progress?.wordEnd||0}
@@ -2855,5 +2854,5 @@ window.addEventListener('hashchange',()=>{if(db&&extractHandoffCode(location.hre
 // Do not cancel speech merely because iOS backgrounds the installed app.
 if('serviceWorker' in navigator) window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
 
-openDB().then(async()=>{ await migrateLegacyPassageAnchors(); const p=prefs(); state.bookId=p.lastBookId||null; if(state.bookId){ const b=await idbGet('books',state.bookId); if(b){ state.chapterIndex=b.progress?.chapterIndex ?? p.lastChapterIndex ?? 0; state.selectedParagraph=b.progress?.paragraphIndex ?? p.lastParagraphIndex ?? 0; state.selectedCharOffset=b.progress?.charOffset ?? p.lastCharOffset ?? 0; state.selectedWordEnd=b.progress?.wordEnd ?? p.lastWordEnd ?? 0; } } await navigate('library'); await processHandoffFromLocation(); }).catch(e=>{view.innerHTML=`<div class="empty">Storyline could not start: ${escapeHtml(e.message)}</div>`});
+openDB().then(async()=>{ await loadSharedPronunciations(); await migrateLegacyPassageAnchors(); const p=prefs(); state.bookId=p.lastBookId||null; if(state.bookId){ const b=await idbGet('books',state.bookId); if(b){ state.chapterIndex=b.progress?.chapterIndex ?? p.lastChapterIndex ?? 0; state.selectedParagraph=b.progress?.paragraphIndex ?? p.lastParagraphIndex ?? 0; state.selectedCharOffset=b.progress?.charOffset ?? p.lastCharOffset ?? 0; state.selectedWordEnd=b.progress?.wordEnd ?? p.lastWordEnd ?? 0; } } await navigate('library'); await processHandoffFromLocation(); }).catch(e=>{view.innerHTML=`<div class="empty">Storyline could not start: ${escapeHtml(e.message)}</div>`});
 })();
