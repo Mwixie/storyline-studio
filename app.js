@@ -383,6 +383,84 @@ function diffManuscripts(oldBook,newBook){
   }
   return {oldBookId:oldBook.id,newBookId:newBook.id,chapters,totalChanges:chapters.reduce((n,ch)=>n+ch.changes.length,0)};
 }
+function anchorForBookPosition(book,chapterIndex,paragraphIndex,start=0,end=start){
+  const ci=Math.max(0,Math.min(chapterIndex,book.chapters.length-1)),ch=book.chapters[ci];
+  const pi=Math.max(0,Math.min(paragraphIndex,Math.max(0,ch.paragraphs.length-1))),text=String(ch.paragraphs[pi]||'');
+  const a=Math.max(0,Math.min(start,text.length)),b=Math.max(a,Math.min(end||a,text.length)),ctx=passageContext(text,a,b);
+  return {
+    version:1,precision:'word',chapterKey:chapterAnchorKey(ch,book),chapterTitle:chapterLabel(ch,book),chapterIndex:ci,
+    paragraphIndex:pi,paragraphFingerprint:anchorHash(text),charStart:a,charEnd:b,selectedText:ctx.selected,
+    selectionFingerprint:ctx.selected?anchorHash(ctx.selected):'',prefixContext:ctx.prefix,suffixContext:ctx.suffix,
+    previousParagraphFingerprint:pi>0?anchorHash(ch.paragraphs[pi-1]||''):'',
+    nextParagraphFingerprint:pi<ch.paragraphs.length-1?anchorHash(ch.paragraphs[pi+1]||''):'',
+    capturedAt:new Date().toISOString()
+  };
+}
+function mergeBookPronunciations(oldBook,newBook){
+  const next=[...(newBook.pronunciations||[])],seen=new Set(next.map(x=>String(x.match||'').toLowerCase()));
+  for(const p of oldBook.pronunciations||[]){
+    const key=String(p.match||'').toLowerCase();if(!key||seen.has(key)||next.length>=200)continue;
+    next.push({...p,id:p.id||uid()});seen.add(key);
+  }
+  newBook.pronunciations=next;return next;
+}
+function revisionProgressForNewBook(oldBook,newBook){
+  const p=oldBook.progress||{},ci=Math.max(0,Math.min(p.chapterIndex||0,oldBook.chapters.length-1));
+  const ch=oldBook.chapters[ci],pi=Math.max(0,Math.min(p.paragraphIndex||0,Math.max(0,(ch?.paragraphs.length||1)-1)));
+  const anchor=anchorForBookPosition(oldBook,ci,pi,p.charOffset||0,p.wordEnd||p.charOffset||0);
+  const resolved=resolvePassageAnchor(newBook,{chapterIndex:ci,paragraphIndex:pi,charOffset:p.charOffset||0,wordEnd:p.wordEnd||0,anchor});
+  return {
+    chapterIndex:resolved.chapterIndex,paragraphIndex:resolved.paragraphIndex,charOffset:resolved.start||0,wordEnd:resolved.end||resolved.start||0,
+    completed:!!p.completed,updatedAt:new Date().toISOString(),migrationUncertain:!!resolved.unverified
+  };
+}
+function migrateRevisionItemToBook(item,newBook,oldBook){
+  const resolved=resolvePassageAnchor(newBook,item),ch=newBook.chapters[resolved.chapterIndex],text=String(ch?.paragraphs?.[resolved.paragraphIndex]||'');
+  const start=Math.max(0,Math.min(resolved.start||0,text.length)),end=Math.max(start,Math.min(resolved.end||start,text.length));
+  const next={...item};
+  next.migratedFromBookId=oldBook.id;next.migratedFromBookTitle=oldBook.title;next.migratedAt=new Date().toISOString();
+  next.previousAnchor=item.anchor||null;
+  next.bookId=newBook.id;next.bookTitle=newBook.title;next.chapterIndex=resolved.chapterIndex;next.chapterTitle=chapterLabel(ch,newBook);
+  next.paragraphIndex=resolved.paragraphIndex;next.charOffset=start;next.wordEnd=end;
+  next.migrationUncertain=!!resolved.unverified;next.migrationScore=resolved.score||0;
+  next.anchor=anchorForBookPosition(newBook,resolved.chapterIndex,resolved.paragraphIndex,start,end);
+  next.lastResolved={bookId:newBook.id,chapterIndex:resolved.chapterIndex,paragraphIndex:resolved.paragraphIndex,charStart:start,charEnd:end,score:resolved.score||0,moved:!!resolved.moved,unverified:!!resolved.unverified,resolvedAt:new Date().toISOString()};
+  return next;
+}
+async function migrateRevisionAtomically(oldBook,newBook,items){
+  return new Promise((res,rej)=>{
+    let tx;
+    try{
+      tx=db.transaction(['books','items'],'readwrite');
+      const bs=tx.objectStore('books'),is=tx.objectStore('items');let settled=false;
+      tx.oncomplete=()=>{if(!settled){settled=true;res()}};
+      tx.onabort=()=>{if(!settled){settled=true;rej(tx.error||new Error('Revision update was rolled back.'))}};
+      tx.onerror=()=>{};
+      try{
+        bs.put(newBook);bs.delete(oldBook.id);
+        for(const item of items)is.put(item);
+      }catch(e){try{tx.abort()}catch{};if(!settled){settled=true;rej(e)}}
+    }catch(e){try{tx?.abort()}catch{};rej(e)}
+  });
+}
+async function updateManuscriptRevision(oldBook,newBook){
+  const allItems=(await idbGetAll('items')).filter(i=>i.bookId===oldBook.id);
+  mergeBookPronunciations(oldBook,newBook);
+  newBook.progress=revisionProgressForNewBook(oldBook,newBook);
+  newBook.revisionRootId=oldBook.revisionRootId||oldBook.id;
+  newBook.revisionIndex=Math.max(2,(oldBook.revisionIndex||1)+1);
+  newBook.previousRevision={id:oldBook.id,title:oldBook.title,editionFingerprint:storylineEditionFingerprint(oldBook),updatedAt:oldBook.updatedAt||oldBook.createdAt||null};
+  newBook.revisionOf=oldBook.id;newBook.updatedAt=new Date().toISOString();
+  const migrated=allItems.map(item=>migrateRevisionItemToBook(item,newBook,oldBook));
+  const uncertain=migrated.filter(i=>i.migrationUncertain);
+  await migrateRevisionAtomically(oldBook,newBook,migrated);
+  state.pendingRevisionPrompt=null;state.bookId=newBook.id;state.chapterIndex=newBook.progress.chapterIndex||0;state.selectedParagraph=newBook.progress.paragraphIndex||0;
+  state.selectedCharOffset=newBook.progress.charOffset||0;state.selectedWordEnd=newBook.progress.wordEnd||0;
+  savePrefs({lastBookId:newBook.id});
+  if(modal.open)modal.close();
+  await navigate('reader');
+  showToast(uncertain.length?`Updated manuscript · ${uncertain.length} item${uncertain.length===1?' needs':'s need'} location review`:`Updated manuscript · ${migrated.length} revision item${migrated.length===1?'':'s'} carried forward`);
+}
 function compactHandoffAnchor(anchor){
   if(!anchor)return null;
   return {
