@@ -2218,19 +2218,29 @@ function completeGentleSleepStop(token=null){
   finishSpeech(token);
   return true;
 }
+function completeGentleSleepStop(token=null){
+  if(!state.gentleStopPending)return false;
+  const review=state.route==='review';
+  state.gentleStopPending=false;
+  showToast('Sleep timer ended — stopped at a sentence break.');
+  finishSpeech(token);
+  if(review){state.reviewSession=null;Promise.resolve().then(()=>navigate('queue'))}
+  return true;
+}
 function clearSleepTimer(){
   if(state.sleepTimerId){clearTimeout(state.sleepTimerId);state.sleepTimerId=null}
   if(state.sleepIntervalId){clearInterval(state.sleepIntervalId);state.sleepIntervalId=null}
   state.sleepDeadline=null;state.sleepMinutes=0;state.gentleStopPending=false;
-  const status=$('#sleepTimerStatus'); if(status)status.textContent='Sleep timer off';
-  const select=$('#sleepTimerSelect'); if(select)select.value='0';
+  const status=$('#sleepTimerStatus');if(status)status.textContent='Sleep timer off';
+  const reviewStatus=$('#reviewSleepStatus');if(reviewStatus)reviewStatus.textContent='Sleep timer off';
+  const select=$('#sleepTimerSelect');if(select)select.value='0';
+  const reviewSelect=$('#reviewSleepTimer');if(reviewSelect)reviewSelect.value='0';
 }
 function updateSleepTimerStatus(){
-  const status=$('#sleepTimerStatus'); if(!status)return;
-  if(!state.sleepDeadline){status.textContent='Sleep timer off';return}
-  const left=Math.max(0,state.sleepDeadline-Date.now());
-  const total=Math.ceil(left/1000),m=Math.floor(total/60),sec=total%60;
-  status.textContent=`Sleep timer · ${m}:${String(sec).padStart(2,'0')}`;
+  const status=$('#sleepTimerStatus'),reviewStatus=$('#reviewSleepStatus');
+  if(!state.sleepDeadline){if(status)status.textContent='Sleep timer off';if(reviewStatus)reviewStatus.textContent='Sleep timer off';return}
+  const left=Math.max(0,state.sleepDeadline-Date.now()),total=Math.ceil(left/1000),m=Math.floor(total/60),sec=total%60,text=`Sleep timer · ${m}:${String(sec).padStart(2,'0')}`;
+  if(status)status.textContent=text;if(reviewStatus)reviewStatus.textContent=text;
 }
 function setSleepTimer(minutes){
   if(state.sleepTimerId)clearTimeout(state.sleepTimerId);
@@ -2239,21 +2249,21 @@ function setSleepTimer(minutes){
   const n=Number(minutes)||0;
   if(!n){updateSleepTimerStatus();return}
   state.sleepMinutes=n;state.sleepDeadline=Date.now()+n*60000;
-  updateSleepTimerStatus();
-  state.sleepIntervalId=setInterval(updateSleepTimerStatus,1000);
+  updateSleepTimerStatus();state.sleepIntervalId=setInterval(updateSleepTimerStatus,1000);
   state.sleepTimerId=setTimeout(()=>{
-    state.sleepTimerId=null;
-    if(state.sleepIntervalId){clearInterval(state.sleepIntervalId);state.sleepIntervalId=null}
+    state.sleepTimerId=null;if(state.sleepIntervalId){clearInterval(state.sleepIntervalId);state.sleepIntervalId=null}
     state.sleepDeadline=null;state.sleepMinutes=0;
-    const status=$('#sleepTimerStatus');
-    if(state.isSpeaking&&!state.isPaused){
-      state.gentleStopPending=true;
-      if(status)status.textContent='Sleep timer ended · finishing this sentence…';
-      showToast('Sleep timer ended — finishing at a sentence break.');
-    }else{
-      stopAllSpeech();
-      showToast('Sleep timer ended');
+    const review=state.route==='review';
+    if(review&&state.reviewAudio){
+      stopReviewAudio();state.reviewSession=null;showToast('Sleep timer ended — review stopped.');navigate('queue');return;
     }
+    if(state.isSpeaking&&!state.isPaused){
+      state.gentleStopPending=true;updateSleepTimerStatus();
+      showToast('Sleep timer ended — finishing at a sentence break.');return;
+    }
+    stopAllSpeech();
+    showToast('Sleep timer ended');
+    if(review){state.reviewSession=null;navigate('queue')}
   },n*60000);
 }
 async function requestWakeLock(){
@@ -2337,12 +2347,12 @@ function dialogueSamanthaVoice(){
   const p=prefs(),voices=samanthaVoices(),key=p.dialogueVoiceKey||'';
   return voices.find(v=>voiceKey(v)===key)||mainSamanthaVoice();
 }
-async function speakBoundedRange(book,chapterIndex,paragraphIndex,start=0,end=null,{onDone=null,movePosition=false}={}){
+async function speakBoundedRange(book,chapterIndex,paragraphIndex,start=0,end=null,{onDone=null,movePosition=false,preserveSleep=false}={}){
   const ch=book?.chapters?.[chapterIndex],text=String(ch?.paragraphs?.[paragraphIndex]||'');
   if(!text){showToast('There is no passage to play.');return false}
   const a=Math.max(0,Math.min(Number(start)||0,text.length)),b=Math.max(a,Math.min(end===null?text.length:Number(end)||a,text.length));
   if(b<=a){showToast('There is no passage to play.');return false}
-  stopAllSpeech();
+  stopAllSpeech({preserveSleep});
   const token=++state.playbackToken,p=prefs(),pieces=speechPiecesForRange(text,a,b,book,{dialogueEnabled:!!p.dialogueEnabled});
   if(!pieces.length)return false;
   if(movePosition){
@@ -2356,12 +2366,12 @@ async function speakBoundedRange(book,chapterIndex,paragraphIndex,start=0,end=nu
 
   const finish=()=>{
     if(token!==state.playbackToken)return;
-    finishSpeech(token);
+    finishSpeech(token,{preserveSleep});
     try{onDone?.()}catch{}
   };
 
   if(currentEngine()==='local'){
-    try{await ensureLocalTTS()}catch(e){showToast(e.message||'Local voice could not start.');finishSpeech(token);return false}
+    try{await ensureLocalTTS()}catch(e){showToast(e.message||'Local voice could not start.');finishSpeech(token,{preserveSleep});return false}
     if(token!==state.playbackToken||!state.isSpeaking)return false;
     let i=0;
     const next=()=>{
@@ -2373,10 +2383,10 @@ async function speakBoundedRange(book,chapterIndex,paragraphIndex,start=0,end=nu
       const pitch=isDialogue?Math.max(20,Math.min(80,Math.round(50*Number(p.dialoguePitch??1.15)))):50;
       const id=meSpeak.speak(piece.text,{amplitude:100,speed,volume:1,pitch,voice:'en-us',variant:localVoiceVariant()},success=>{
         if(token!==state.playbackToken)return;state.localSpeakingId=null;
-        if(!success){finishSpeech(token);return}
+        if(!success){finishSpeech(token,{preserveSleep});return}
         next();
       });
-      if(!id){showToast('The local voice could not play this passage.');finishSpeech(token);return}
+      if(!id){showToast('The local voice could not play this passage.');finishSpeech(token,{preserveSleep});return}
       state.localSpeakingId=id;
     };
     next();return true;
@@ -2394,7 +2404,7 @@ async function speakBoundedRange(book,chapterIndex,paragraphIndex,start=0,end=nu
     if(v){u.voice=v;u.lang=v.lang||'en-US'}else u.lang='en-US';
     u.onboundary=e=>{if(token!==state.playbackToken||state.activeUtterance!==u)return;const rel=Number(e.charIndex);if(Number.isFinite(rel))state.liveCharOffset=piece.mapIndex(rel)};
     u.onend=()=>{if(token!==state.playbackToken||state.activeUtterance!==u)return;state.activeUtterance=null;next()};
-    u.onerror=e=>{if(token!==state.playbackToken||state.activeUtterance!==u)return;state.activeUtterance=null;if(e.error==='canceled'||e.error==='interrupted')return;showToast('Samantha could not play this passage.');finishSpeech(token)};
+    u.onerror=e=>{if(token!==state.playbackToken||state.activeUtterance!==u)return;state.activeUtterance=null;if(e.error==='canceled'||e.error==='interrupted')return;showToast('Samantha could not play this passage.');finishSpeech(token,{preserveSleep})};
     speechSynthesis.resume();speechSynthesis.speak(u);
   };
   next();return true;
@@ -2631,14 +2641,14 @@ function replayCurrentSentence(){
   if(!state.isSpeaking||!state.replayCurrent){showToast('Start reading first.');return}
   state.replayCurrent();
 }
-function stopAllSpeech(){
+function stopAllSpeech({preserveSleep=false}={}){
   state.playbackToken++;
   try{speechSynthesis.cancel()}catch{}
   try{if(window.meSpeak)meSpeak.stop()}catch{}
   state.isSpeaking=false;state.isPaused=false;state.activeUtterance=null;state.localSpeakingId=null;state.speakingParagraph=null;
   setMediaPlaybackState('none');
   state.speakingPIndex=null;state.speakingSIndex=null;state.speakingSegments=null;state.replayCurrent=null;state.liveCharOffset=null;
-  clearSleepTimer();releaseWakeLock();
+  if(!preserveSleep)clearSleepTimer();releaseWakeLock();
   const b=$('#playBtn');if(b){b.textContent='▶';b.setAttribute('aria-label','Play')}
   const replay=$('#replayBtn');if(replay)replay.disabled=true;
   const st=$('#voiceStatus');if(st)st.textContent='Device voice ready';
@@ -2852,12 +2862,12 @@ function markSpeaking(i){
   const st=$('#voiceStatus');
   if(st) st.textContent=`Reading paragraph ${i+1}`;
 }
-function finishSpeech(token=null){
+function finishSpeech(token=null,{preserveSleep=false}={}){
   if(token!==null&&token!==state.playbackToken)return;
   state.isSpeaking=false;state.isPaused=false;state.speakingParagraph=null;state.activeUtterance=null;state.localSpeakingId=null;
   setMediaPlaybackState('none');
   state.speakingPIndex=null;state.speakingSIndex=null;state.speakingSegments=null;state.replayCurrent=null;
-  clearSleepTimer();releaseWakeLock();
+  if(!preserveSleep)clearSleepTimer();releaseWakeLock();
   const b=$('#playBtn');if(b){b.textContent='▶';b.setAttribute('aria-label','Play')}
   const replay=$('#replayBtn');if(replay)replay.disabled=true;
   $$('#readingPage p').forEach(p=>p.classList.remove('speaking'));clearSentenceHighlights();
@@ -3087,15 +3097,15 @@ async function prepareReviewEntry(){
 }
 async function speakReviewText(text,book,onDone=null){
   const value=String(text||'').trim();if(!value){try{onDone?.()}catch{};return false}
-  stopReviewAudio();stopAllSpeech();
+  stopReviewAudio();stopAllSpeech({preserveSleep:true});
   const spoken=transformSpeechText(value,effectivePronunciations(book),0).text,p=prefs(),token=++state.playbackToken;
   state.isSpeaking=true;state.isPaused=false;requestWakeLock();setMediaPlaybackState('playing');
   const finish=()=>{if(token!==state.playbackToken)return;finishSpeech(token);try{onDone?.()}catch{}};
   if(currentEngine()==='local'){
-    try{await ensureLocalTTS()}catch(e){showToast(e.message||'Local voice could not read this note.');finishSpeech(token);return false}
+    try{await ensureLocalTTS()}catch(e){showToast(e.message||'Local voice could not read this note.');finishSpeech(token,{preserveSleep:true});return false}
     if(token!==state.playbackToken)return false;
     const id=meSpeak.speak(spoken,{amplitude:100,speed:localSpeed(),volume:1,pitch:50,voice:'en-us',variant:localVoiceVariant()},success=>{
-      if(token!==state.playbackToken)return;state.localSpeakingId=null;if(success)finish();else finishSpeech(token);
+      if(token!==state.playbackToken)return;state.localSpeakingId=null;if(success)finish();else finishSpeech(token,{preserveSleep:true});
     });
     if(!id){finishSpeech(token);showToast('The local voice could not read this note.');return false}
     state.localSpeakingId=id;return true;
@@ -3107,7 +3117,7 @@ async function speakReviewText(text,book,onDone=null){
   speechSynthesis.resume();speechSynthesis.speak(u);return true;
 }
 async function playReviewVoiceNote(item,onDone=null){
-  stopReviewAudio();stopAllSpeech();
+  stopReviewAudio();stopAllSpeech({preserveSleep:true});
   let blob=null;
   if(item?.audioData)blob=new Blob([item.audioData],{type:item.audioType||'audio/mp4'});
   else if(item?.audioBlob instanceof Blob)blob=item.audioBlob;
@@ -3134,13 +3144,13 @@ async function playReviewPassage(current,{thenNote=false}={}){
   stopReviewAudio();
   const {book,resolved}=current;
   return speakBoundedRange(book,resolved.chapterIndex,resolved.paragraphIndex,resolved.start||0,resolved.end||resolved.start||0,{
-    movePosition:false,
+    movePosition:false,preserveSleep:true,
     onDone:thenNote?()=>{state.reviewAutoTimer=setTimeout(()=>{state.reviewAutoTimer=null;playReviewNote(current)},320)}:null
   });
 }
 async function advanceFlagReview(markDone=false){
   const session=state.reviewSession;if(!session)return;
-  stopReviewAudio();stopAllSpeech();
+  stopReviewAudio();stopAllSpeech({preserveSleep:true});
   const entry=session.entries[session.index],item=entry?await idbGet('items',entry.itemId):null;
   if(markDone&&item){
     item.status='done';item.completedAt=new Date().toISOString();await idbPut('items',item);await updateQueueBadge();
