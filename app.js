@@ -1800,6 +1800,12 @@ function normalizeNameCandidate(value=''){
   if(!allCaps)return s;
   return s.split(/\s+/).map(token=>token.split(/([’'-])/).map(part=>/[’'-]/.test(part)?part:(part?part[0].toLocaleUpperCase()+part.slice(1).toLocaleLowerCase():'')).join('')).join(' ');
 }
+function trimCandidateStopwords(value=''){
+  const parts=String(value||'').trim().split(/\s+/).filter(Boolean);
+  while(parts.length>1&&NAME_STOPLIST.has(anchorNormalize(parts[0])))parts.shift();
+  if(!parts.length||NAME_STOPLIST.has(anchorNormalize(parts[0])))return '';
+  return parts.join(' ');
+}
 function nameOccurrenceIsSentenceInitial(text,index){
   let before=String(text||'').slice(0,index).trimEnd();
   before=before.replace(/["'”’)\]]+$/,'').trimEnd();
@@ -1819,8 +1825,8 @@ async function buildNameIndex(book,{save=true}={}){
     for(let pi=0;pi<ch.paragraphs.length;pi++){
       const text=String(ch.paragraphs[pi]||''),re=nameCandidateRegex();
       for(const match of text.matchAll(re)){
-        const name=normalizeNameCandidate(match[0]),key=anchorNormalize(name);
-        if(!name||hidden.has(key)||NAME_STOPLIST.has(anchorNormalize(name.split(/\s+/)[0])))continue;
+        const name=trimCandidateStopwords(normalizeNameCandidate(match[0])),key=anchorNormalize(name);
+        if(!name||hidden.has(key))continue;
         const existing=map.get(key)||{name,count:0,midSentenceCount:0,firstChapter:ci,firstParagraph:pi,lastChapter:ci,lastParagraph:pi};
         existing.count++;if(!nameOccurrenceIsSentenceInitial(text,match.index||0))existing.midSentenceCount++;
         existing.lastChapter=ci;existing.lastParagraph=pi;map.set(key,existing);
