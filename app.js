@@ -168,12 +168,12 @@ function pronunciationManager(book,prefill=''){
     if(state.isSpeaking)restartNarrationForSettingChange('Pronunciation updated');
   };
   $('#pronSave').onclick=()=>saveEntry();
-  $('[data-pron-edit]').forEach(btn=>btn.onclick=()=>{
+  $$('[data-pron-edit]').forEach(btn=>btn.onclick=()=>{
     const p=(book.pronunciations||[]).find(x=>x.id===btn.dataset.pronEdit);if(!p)return;
     $('#pronMatch').value=p.match;$('#pronReplacement').value=p.replacement;
     $('#pronSave').textContent='Save change';$('#pronSave').onclick=()=>saveEntry(p.id);
   });
-  $('[data-pron-delete]').forEach(btn=>btn.onclick=async()=>{
+  $$('[data-pron-delete]').forEach(btn=>btn.onclick=async()=>{
     book.pronunciations=(book.pronunciations||[]).filter(x=>x.id!==btn.dataset.pronDelete);
     book.updatedAt=new Date().toISOString();await idbPut('books',book);pronunciationManager(book);
   });
@@ -872,7 +872,7 @@ function downloadTextFile(filename,text,type='text/plain'){
   const blob=new Blob([text],{type}),url=URL.createObjectURL(blob),a=document.createElement('a');
   a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
-async async function openRevisionChecklist(book){
+async async async function openRevisionChecklist(book){
   const all=(await idbGetAll('items')).filter(i=>i.bookId===book.id&&['question','continuity','note','bookmark','voice'].includes(i.type));
   if(!all.length){showToast('No notes or flags in this book yet.');return}
   let filter='pending';
@@ -919,9 +919,9 @@ async function renderLibrary(){
   $('#exportBackupBtn').onclick=exportBackup;
   $('#restoreBackupBtn').onclick=()=>$('#restoreBackupInput').click();
   $('#restoreBackupInput').onchange=e=>{const file=e.target.files?.[0];e.target.value='';restoreBackup(file)};
-  $('.book-card').forEach(c=>c.onclick=async e=>{ if(e.target.closest('[data-delete],[data-export-revisions]')) return; state.bookId=c.dataset.id; state.recapBookId=state.bookId; savePrefs({lastBookId:state.bookId}); const b=await idbGet('books',state.bookId); state.chapterIndex=b.progress?.chapterIndex||0; state.selectedParagraph=b.progress?.paragraphIndex||0; state.selectedCharOffset=b.progress?.charOffset||0; state.selectedWordEnd=b.progress?.wordEnd||0; navigate('reader'); });
-  $('[data-delete]').forEach(btn=>btn.onclick=async e=>{e.stopPropagation();const id=btn.dataset.delete; if(confirm('Remove this manuscript and its saved notes from this device?')){await idbDelete('books',id); const all=await idbGetAll('items'); for(const i of all.filter(x=>x.bookId===id)) await idbDelete('items',i.id); if(state.bookId===id) state.bookId=null; renderLibrary(); updateQueueBadge();}});
-  $('[data-export-revisions]').forEach(btn=>btn.onclick=async e=>{e.stopPropagation();const book=await idbGet('books',btn.dataset.exportRevisions);if(book)openRevisionChecklist(book)});
+  $$('.book-card').forEach(c=>c.onclick=async e=>{ if(e.target.closest('[data-delete],[data-export-revisions]')) return; state.bookId=c.dataset.id; state.recapBookId=state.bookId; savePrefs({lastBookId:state.bookId}); const b=await idbGet('books',state.bookId); state.chapterIndex=b.progress?.chapterIndex||0; state.selectedParagraph=b.progress?.paragraphIndex||0; state.selectedCharOffset=b.progress?.charOffset||0; state.selectedWordEnd=b.progress?.wordEnd||0; navigate('reader'); });
+  $$('[data-delete]').forEach(btn=>btn.onclick=async e=>{e.stopPropagation();const id=btn.dataset.delete; if(confirm('Remove this manuscript and its saved notes from this device?')){await idbDelete('books',id); const all=await idbGetAll('items'); for(const i of all.filter(x=>x.bookId===id)) await idbDelete('items',i.id); if(state.bookId===id) state.bookId=null; renderLibrary(); updateQueueBadge();}});
+  $$('[data-export-revisions]').forEach(btn=>btn.onclick=async e=>{e.stopPropagation();const book=await idbGet('books',btn.dataset.exportRevisions);if(book)openRevisionChecklist(book)});
 }
 function chapterLabel(ch,book){ return (ch?.synthetic||ch?.title==='Beginning'||ch?.title==='Front matter')?(book?.title||'Manuscript'):(ch?.title||'Manuscript'); }
 function readerChapterTitle(ch){ return (ch?.synthetic||ch?.title==='Beginning'||ch?.title==='Front matter')?'':(ch?.title||''); }
@@ -1220,7 +1220,7 @@ function wireReaderSearchResults(book){
     }
   });
 }
-async function selectParagraph(i,noScroll=false,preserveWord=false){ state.selectedParagraph=i; if(!preserveWord){state.selectedCharOffset=0;state.selectedWordEnd=0;} $('#readingPage p').forEach(p=>p.classList.toggle('selected',+p.dataset.p===i)); $('#positionRange').value=i; $('#positionLabel').textContent=`Paragraph ${i+1} of ${$('#readingPage').children.length}`; const book=await idbGet('books',state.bookId); await saveProgress(book); updateReadingTimeMeta(book); if(!noScroll) scrollSelected(); }
+async function selectParagraph(i,noScroll=false,preserveWord=false){ state.selectedParagraph=i; if(!preserveWord){state.selectedCharOffset=0;state.selectedWordEnd=0;} $$('#readingPage p').forEach(p=>p.classList.toggle('selected',+p.dataset.p===i)); $('#positionRange').value=i; $('#positionLabel').textContent=`Paragraph ${i+1} of ${$('#readingPage').children.length}`; const book=await idbGet('books',state.bookId); await saveProgress(book); updateReadingTimeMeta(book); if(!noScroll) scrollSelected(); }
 function scrollSelected(smooth=true){ const el=$(`#readingPage p[data-p="${state.selectedParagraph}"]`); if(el) el.scrollIntoView({block:'center',behavior:smooth?'smooth':'auto'}); }
 function updateFollowControl(){
   const btn=$('#resumeFollowBtn');if(btn)btn.classList.toggle('hidden',!state.followNarrationSuspended);
