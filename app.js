@@ -1041,12 +1041,14 @@ function openPasteImport(initialText=''){
 }
 async function importFile(file){
   if(!file)return;
-  let paragraphs,parsedChapters=null;
+  let paragraphs,parsedChapters=null,sources=null,importDiagnostics=null;
   try{
     const name=file.name.toLowerCase();
     if(name.endsWith('.docx'))paragraphs=await parseDocx(file);
     else if(name.endsWith('.epub')){const parsed=await parseEpub(file);paragraphs=parsed.paragraphs;parsedChapters=parsed.chapters}
-    else if(name.endsWith('.pdf'))paragraphs=await parsePdf(file);
+    else if(name.endsWith('.pdf')){
+      const parsed=await parsePdf(file);paragraphs=parsed.paragraphs;sources=parsed.sources;importDiagnostics=parsed.diagnostics;
+    }
     else if(name.endsWith('.odt'))paragraphs=await parseOdt(file);
     else if(name.endsWith('.html')||name.endsWith('.htm'))paragraphs=await parseHtml(file);
     else if(name.endsWith('.md')||name.endsWith('.markdown'))paragraphs=await parseMarkdown(file);
@@ -1056,11 +1058,17 @@ async function importFile(file){
     let title=file.name.replace(/\.(docx|epub|pdf|odt|html?|md|markdown|txt)$/i,'').replace(/[_-]+/g,' ').trim();
     const firstUseful=paragraphs.find(p=>p.length>3&&!/^chapter\b/i.test(p));
     if(/the plus[ -]one problem/i.test(title)||/^the plus[ -]one problem/i.test(firstUseful||''))title='The Plus-One Problem';
-    const chapters=parsedChapters||splitChapters(paragraphs);
-    const book={id:uid(),title,fileName:file.name,createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),chapters,progress:{chapterIndex:0,paragraphIndex:0,charOffset:0,wordEnd:0,completed:false},version:'Imported manuscript'};
+    const chapters=parsedChapters||splitChapters(paragraphs,sources);
+    const now=new Date().toISOString();
+    const book={id:uid(),title,fileName:file.name,createdAt:now,updatedAt:now,chapters,progress:{chapterIndex:0,paragraphIndex:0,charOffset:0,wordEnd:0,completed:false},version:'Imported manuscript',importDiagnostics};
     await idbPut('books',book);state.bookId=book.id;state.chapterIndex=0;state.selectedParagraph=0;state.selectedCharOffset=0;state.selectedWordEnd=0;
-    savePrefs({lastBookId:book.id});showToast(`Imported ${book.chapters.length} chapter${book.chapters.length===1?'':'s'}`);navigate('reader');
-  }catch(e){showToast(e.message||'Could not import manuscript')}
+    savePrefs({lastBookId:book.id});showToast(`Imported ${book.chapters.length} chapter${book.chapters.length===1?'':'s'}`);
+    await navigate('reader');
+    if(importDiagnostics)showImportReport(book);
+  }catch(e){
+    if(modal.open){modal.onclose=null;modal.close()}
+    showToast(e.message||'Could not import manuscript');
+  }
 }
 
 async function updateQueueBadge(){ const items=await idbGetAll('items'); const open=items.filter(i=>['question','continuity','note','bookmark','voice'].includes(i.type)&&i.status!=='done').length; const b=$('#queueBadge'); b.textContent=open; b.classList.toggle('hidden',!open); }
@@ -1536,6 +1544,13 @@ function recapCardHtml(book){
     <div class="row recap-actions"><button id="recapResume" class="button">Resume</button><button id="recapChapterStart" class="ghost">Chapter start</button><button id="recapDismiss" class="ghost">Dismiss</button></div>
   </section>`;
 }
+function sourceRefFor(book,chapterIndex,paragraphIndex){
+  return book?.chapters?.[chapterIndex]?.sourceRefs?.[paragraphIndex]||null;
+}
+function readerPositionLabel(book,chapterIndex,paragraphIndex,total,extra=''){
+  const source=sourceRefFor(book,chapterIndex,paragraphIndex),sourceText=pdfSourceLabel(source);
+  return [`Paragraph ${paragraphIndex+1} of ${total}`,sourceText,extra].filter(Boolean).join(' · ');
+}
 function bookCard(b,items){ const total=b.chapters.reduce((n,c)=>n+c.paragraphs.length,0); let before=0; for(let i=0;i<(b.progress?.chapterIndex||0);i++) before+=b.chapters[i]?.paragraphs.length||0; before+=b.progress?.paragraphIndex||0; const pct=b.progress?.completed===true?100:Math.max(0,Math.min(100,Math.round((before/Math.max(total,1))*100))); const count=items.filter(i=>i.bookId===b.id&&['note','question','continuity','bookmark','voice'].includes(i.type)).length;
   const totalWords=b.chapters.reduce((n,ch)=>n+chapterWordCount(ch),0);
   return `<article class="card book-card" data-id="${b.id}"><div><div class="eyebrow">${escapeHtml(b.version||'Manuscript')}</div><div class="book-title">${escapeHtml(b.title)}</div><p class="meta">${b.chapters.length} chapter${b.chapters.length===1?'':'s'} · ${readingMinutesLabel(totalWords)} · ${count} revision item${count===1?'':'s'}</p></div><div class="stack"><div class="row between"><span class="meta">${pct}% listened</span><button data-delete="${b.id}" class="ghost tiny">Remove</button></div><div class="progress"><i style="width:${pct}%"></i></div><div class="row book-actions"><button class="button">Continue reading</button><button data-export-revisions="${b.id}" class="ghost tiny">Revision checklist</button></div></div></article>`;
@@ -1567,7 +1582,7 @@ async function renderReader(){
           <button id="replayBtn" class="ghost transport-replay" aria-label="Replay current sentence" disabled>↺</button>
           <button id="repeatBtn" class="ghost transport-replay ${p.repeatParagraph?'active':''}" aria-label="Repeat paragraph" aria-pressed="${p.repeatParagraph?'true':'false'}">⟳</button>
         </div>
-        <div class="transport-progress"><div class="row between"><span id="positionLabel" class="meta">Paragraph ${state.selectedParagraph+1} of ${ch.paragraphs.length}</span><span id="timeLeftLabel" class="meta">${readingMinutesLabel(remainingChapterWords(ch,state.selectedParagraph,state.selectedCharOffset||0))} left in chapter</span><span id="speedLabel" class="meta">${Number(p.rate||1.05).toFixed(2)}×</span></div><input id="positionRange" class="range" type="range" min="0" max="${Math.max(ch.paragraphs.length-1,0)}" value="${state.selectedParagraph}" /></div>
+        <div class="transport-progress"><div class="row between"><span id="positionLabel" class="meta">${escapeHtml(readerPositionLabel(book,state.chapterIndex,state.selectedParagraph,ch.paragraphs.length))}</span><span id="timeLeftLabel" class="meta">${readingMinutesLabel(remainingChapterWords(ch,state.selectedParagraph,state.selectedCharOffset||0))} left in chapter</span><span id="speedLabel" class="meta">${Number(p.rate||1.05).toFixed(2)}×</span></div><input id="positionRange" class="range" type="range" min="0" max="${Math.max(ch.paragraphs.length-1,0)}" value="${state.selectedParagraph}" /></div>
       </div>
       <div class="compact-status"><span id="voiceStatus" class="reading-status">Loading device voices…</span><button id="resumeFollowBtn" class="ghost tiny hidden">↧ Resume follow</button></div>
       <details id="voiceOptions" class="voice-options">
@@ -1659,7 +1674,7 @@ function wireReader(book,ch){
     await saveProgress(book);
     $$('#readingPage p').forEach(el=>el.classList.toggle('selected',+el.dataset.p===paragraphIndex));
     const range=$('#positionRange');if(range)range.value=paragraphIndex;
-    const label=$('#positionLabel');if(label)label.textContent=`Paragraph ${paragraphIndex+1} · sentence starts “${excerpt(seg.text,54)}”`;
+    const label=$('#positionLabel');if(label)label.textContent=readerPositionLabel(book,state.chapterIndex,paragraphIndex,ch.paragraphs.length,`sentence starts “${excerpt(seg.text,54)}”`);
     highlightRange(paragraphIndex,seg.start,seg.end);
     startSpeechFromSelection();
   });
@@ -1740,7 +1755,7 @@ function wireReaderSearchResults(book){
     }
   });
 }
-async function selectParagraph(i,noScroll=false,preserveWord=false){ state.selectedParagraph=i; if(!preserveWord){state.selectedCharOffset=0;state.selectedWordEnd=0;} $$('#readingPage p').forEach(p=>p.classList.toggle('selected',+p.dataset.p===i)); $('#positionRange').value=i; $('#positionLabel').textContent=`Paragraph ${i+1} of ${$('#readingPage').children.length}`; const book=await idbGet('books',state.bookId); await saveProgress(book); updateReadingTimeMeta(book); if(!noScroll) scrollSelected(); }
+async function selectParagraph(i,noScroll=false,preserveWord=false){ state.selectedParagraph=i; if(!preserveWord){state.selectedCharOffset=0;state.selectedWordEnd=0;} $$('#readingPage p').forEach(p=>p.classList.toggle('selected',+p.dataset.p===i)); $('#positionRange').value=i; $('#positionLabel').textContent=readerPositionLabel(book,state.chapterIndex,i,$('#readingPage').children.length); const book=await idbGet('books',state.bookId); await saveProgress(book); updateReadingTimeMeta(book); if(!noScroll) scrollSelected(); }
 function scrollSelected(smooth=true){ const el=$(`#readingPage p[data-p="${state.selectedParagraph}"]`); if(el) el.scrollIntoView({block:'center',behavior:smooth?'smooth':'auto'}); }
 function updateFollowControl(){
   const btn=$('#resumeFollowBtn');if(btn)btn.classList.toggle('hidden',!state.followNarrationSuspended);
@@ -2067,7 +2082,7 @@ function startSpeech(fromSelected=true,{preserveFollow=false}={}){
     state.speakingPIndex=pIndex;state.speakingSIndex=0;state.speakingSegments=segments;
     markSpeaking(pIndex);
     const range=$('#positionRange');if(range)range.value=pIndex;
-    const label=$('#positionLabel');if(label)label.textContent=`Paragraph ${pIndex+1} of ${paras.length}`;
+    const label=$('#positionLabel');if(label)label.textContent=readerPositionLabel(book,state.chapterIndex,pIndex,paras.length);
 
     const p=prefs();
     const naturalMode=(p.readingStyle||'natural')==='natural';
@@ -2290,7 +2305,7 @@ async function startLocalSpeech(fromSelected=true,{preserveFollow=false}={}){
     }
     state.speakingParagraph=pIndex;state.selectedParagraph=pIndex;markSpeaking(pIndex);
     const range=$('#positionRange');if(range)range.value=pIndex;
-    const label=$('#positionLabel');if(label)label.textContent=`Paragraph ${pIndex+1} of ${paras.length}`;
+    const label=$('#positionLabel');if(label)label.textContent=readerPositionLabel(book,state.chapterIndex,pIndex,paras.length);
 
     const speakSentence=()=>{
       if(token!==state.playbackToken||!state.isSpeaking)return;
