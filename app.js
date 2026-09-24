@@ -1067,7 +1067,7 @@ async function applyHandoffJump(book,packet,pos,match){
   await saveProgress(book);
   if(modal.open)modal.close();
   await navigate('reader');
-  showToast(pos.adjusted?'Handoff received · passage relocated':'Handoff received');
+  showToast(pos.adjusted?'Position adjusted. The manuscript changed since the handoff was made.':'Handoff received');
 }
 async function processHandoffValue(value,{quietInvalid=false}={}){
   const packet=decodeHandoffPacket(value);
