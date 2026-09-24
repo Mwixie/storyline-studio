@@ -317,15 +317,9 @@ function revisionCandidateForBook(book,books=[]){
   const others=books.filter(b=>b?.id!==book.id);
   const exact=others.filter(b=>storylineEditionFingerprint(b)===storylineEditionFingerprint(book));
   const sameTitle=others.filter(b=>anchorNormalize(b.title)===anchorNormalize(book.title));
-  const first=book.chapters?.[0],last=book.chapters?.[book.chapters.length-1];
-  const structure=others.filter(b=>{
-    if(!b.chapters?.length||!book.chapters?.length)return false;
-    const countClose=Math.abs(b.chapters.length-book.chapters.length)<=Math.max(2,Math.ceil(book.chapters.length*.15));
-    return countClose&&revisionChapterKey(b.chapters[0],b)===revisionChapterKey(first,book)&&revisionChapterKey(b.chapters[b.chapters.length-1],b)===revisionChapterKey(last,book);
-  });
-  const candidates=exact.length?exact:sameTitle.length?sameTitle:structure;
+  const candidates=exact.length?exact:sameTitle;
   candidates.sort((a,b)=>bookLastTouched(b)-bookLastTouched(a));
-  return {book:candidates[0]||null,exactEdition:!!exact.length,matchKind:exact.length?'edition':sameTitle.length?'title':structure.length?'structure':'none'};
+  return {book:candidates[0]||null,exactEdition:!!exact.length,matchKind:exact.length?'edition':sameTitle.length?'title':'none'};
 }
 function revisionChapterPairs(oldBook,newBook){
   const used=new Set(),pairs=[];
@@ -1783,6 +1777,93 @@ function recapCardHtml(book){
     ${sentences.length?`<blockquote>${escapeHtml(sentences.join(' '))}</blockquote>`:''}</div>
     <div class="row recap-actions"><button id="recapResume" class="button">Resume</button><button id="recapChapterStart" class="ghost">Chapter start</button><button id="recapDismiss" class="ghost">Dismiss</button></div>
   </section>`;
+}
+function revisionPromptCardHtml(book){
+  if(!book?.revisionPending||!book.revisionOf)return '';
+  return `<section id="revisionPromptCard" class="revision-prompt card">
+    <div><div class="eyebrow">New draft detected</div><h3>This looks like another revision of this manuscript.</h3>
+    <p class="sub">Compare the drafts, hear only what changed, or update this manuscript while carrying your reading position and revision items forward.</p></div>
+    <div class="row revision-prompt-actions"><button id="compareRevisionBtn" class="button">Compare revisions</button><button id="updateRevisionBtn" class="ghost">Update manuscript</button><button id="keepBothRevisionsBtn" class="ghost">Keep both</button></div>
+  </section>`;
+}
+function revisionPlayableEntries(diff,newBook){
+  const out=[];
+  for(const ch of diff.chapters){
+    if(ch.newIndex<0)continue;
+    const newCh=newBook.chapters[ch.newIndex];
+    if(ch.restructured){
+      for(let pi=0;pi<newCh.paragraphs.length;pi++)out.push({chapterIndex:ch.newIndex,paragraphIndex:pi,text:newCh.paragraphs[pi],label:`${ch.title} · paragraph ${pi+1}`});
+      continue;
+    }
+    for(const change of ch.changes){
+      if(change.newParagraphIndex===null||!change.newText)continue;
+      out.push({chapterIndex:ch.newIndex,paragraphIndex:change.newParagraphIndex,text:change.newText,label:`${ch.title} · paragraph ${change.newParagraphIndex+1}`});
+    }
+  }
+  return out;
+}
+function revisionDiffRows(diff,oldBook,newBook){
+  return diff.chapters.map((ch,ci)=>{
+    if(ch.restructured){
+      return `<section class="revision-diff-chapter"><div class="row between"><h4>${escapeHtml(ch.title)}</h4><span class="pill gold">Restructured</span></div>
+        <p class="sub">${ch.changes.length} paragraph difference${ch.changes.length===1?'':'s'} · only ${Math.round(ch.matchRate*100)}% aligned. Storyline will not claim paragraph-for-paragraph precision here.</p>
+        ${ch.newIndex>=0?`<button type="button" class="ghost tiny" data-play-restructured="${ci}">▶ Play new chapter</button>`:''}
+      </section>`;
+    }
+    const rows=ch.changes.map((change,ri)=>{
+      const label=change.kind==='changed'?'Changed':change.kind==='added'?'Added':'Removed';
+      return `<article class="revision-change">
+        <div class="row between"><span class="pill">${label}</span><span class="meta">${change.newParagraphIndex!==null?`new ¶${change.newParagraphIndex+1}`:`old ¶${(change.oldParagraphIndex??0)+1}`}</span></div>
+        ${change.oldText?`<div class="revision-old"><del>${escapeHtml(excerpt(change.oldText,500))}</del></div>`:''}
+        ${change.newText?`<div class="revision-new">${escapeHtml(excerpt(change.newText,500))}</div>`:''}
+        <div class="row">${change.newParagraphIndex!==null?`<button type="button" class="ghost tiny" data-play-diff="${ci}:${ri}">▶ Play new</button>`:''}${change.oldParagraphIndex!==null?`<button type="button" class="ghost tiny" data-play-old-diff="${ci}:${ri}">Hear old</button>`:''}</div>
+      </article>`;
+    }).join('');
+    return `<section class="revision-diff-chapter"><h4>${escapeHtml(ch.title)}</h4>${rows}</section>`;
+  }).join('');
+}
+async function openRevisionDiff(oldBook,newBook){
+  modalForm.innerHTML='<h3>Comparing revisions…</h3><p class="sub">Storyline is aligning chapters and paragraphs.</p>';
+  if(!modal.open)modal.showModal();
+  await new Promise(requestAnimationFrame);
+  const diff=diffManuscripts(oldBook,newBook);state.revisionDiff=diff;
+  const playable=revisionPlayableEntries(diff,newBook);
+  modalForm.innerHTML=`<h3>What changed</h3>
+    <div class="source-chip">${escapeHtml(oldBook.title)} → revision ${newBook.revisionIndex||2}</div>
+    ${diff.totalChanges?`<div class="row between"><strong>${diff.totalChanges} paragraph difference${diff.totalChanges===1?'':'s'}</strong><button type="button" id="playAllRevisionChanges" class="button" ${playable.length?'':'disabled'}>▶ Play all changes</button></div>
+      <div class="revision-diff-list">${revisionDiffRows(diff,oldBook,newBook)}</div>`:'<div class="empty">No changes found. These manuscript texts appear to be the same.</div>'}
+    <div class="row between revision-diff-footer"><button type="button" id="keepBothRevisionModal" class="ghost">Keep both</button><button type="button" id="applyRevisionUpdate" class="button">Update manuscript</button></div>`;
+  if(!modal.open)modal.showModal();
+
+  const playEntry=(entry,onDone=null)=>speakBoundedRange(newBook,entry.chapterIndex,entry.paragraphIndex,0,null,{onDone,movePosition:false});
+  const playAll=$('#playAllRevisionChanges');if(playAll)playAll.onclick=()=>{
+    let index=0;playAll.disabled=true;playAll.textContent='Playing changes…';
+    const next=()=>{
+      if(index>=playable.length){playAll.disabled=false;playAll.textContent='▶ Play all changes';showToast('Finished changed passages');return}
+      playEntry(playable[index++],next);
+    };next();
+  };
+  $$('[data-play-diff]').forEach(btn=>btn.onclick=()=>{
+    const [ci,ri]=btn.dataset.playDiff.split(':').map(Number),ch=diff.chapters[ci],change=ch?.changes?.[ri];
+    if(change?.newParagraphIndex!==null)speakBoundedRange(newBook,ch.newIndex,change.newParagraphIndex,0,null,{movePosition:false});
+  });
+  $$('[data-play-old-diff]').forEach(btn=>btn.onclick=()=>{
+    const [ci,ri]=btn.dataset.playOldDiff.split(':').map(Number),ch=diff.chapters[ci],change=ch?.changes?.[ri];
+    if(change?.oldParagraphIndex!==null&&ch.oldIndex>=0)speakBoundedRange(oldBook,ch.oldIndex,change.oldParagraphIndex,0,null,{movePosition:false});
+  });
+  $$('[data-play-restructured]').forEach(btn=>btn.onclick=()=>{
+    const ch=diff.chapters[Number(btn.dataset.playRestructured)];if(!ch||ch.newIndex<0)return;
+    const entries=(newBook.chapters[ch.newIndex]?.paragraphs||[]).map((text,pi)=>({chapterIndex:ch.newIndex,paragraphIndex:pi,text}));
+    let index=0;const next=()=>{if(index>=entries.length)return;speakBoundedRange(newBook,entries[index].chapterIndex,entries[index++].paragraphIndex,0,null,{onDone:next,movePosition:false})};next();
+  });
+  $('#keepBothRevisionModal').onclick=()=>keepBothRevisions(newBook);
+  $('#applyRevisionUpdate').onclick=()=>{if(confirm('Update to this revision and carry your reading position, pronunciations and revision items forward?'))updateManuscriptRevision(oldBook,newBook)};
+}
+async function keepBothRevisions(newBook){
+  stopAllSpeech();newBook.revisionPending=false;newBook.revisionStatus='kept-both';newBook.updatedAt=new Date().toISOString();
+  await idbPut('books',newBook);state.pendingRevisionPrompt=null;if(modal.open)modal.close();
+  if(state.bookId===newBook.id)await renderReader();else await renderLibrary();
+  showToast('Both revisions kept');
 }
 function sourceRefFor(book,chapterIndex,paragraphIndex){
   return book?.chapters?.[chapterIndex]?.sourceRefs?.[paragraphIndex]||null;
