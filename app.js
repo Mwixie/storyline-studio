@@ -172,6 +172,7 @@ function pronunciationManager(book,prefill=''){
   $$('[data-pron-delete]').forEach(btn=>btn.onclick=async()=>{
     book.pronunciations=(book.pronunciations||[]).filter(x=>x.id!==btn.dataset.pronDelete);
     book.updatedAt=new Date().toISOString();await idbPut('books',book);pronunciationManager(book);
+    if(state.isSpeaking)restartNarrationForSettingChange('Pronunciation removed');
   });
   requestAnimationFrame(()=>$('#pronReplacement')?.focus());
 }
@@ -915,7 +916,7 @@ async function renderLibrary(){
   $('#exportBackupBtn').onclick=exportBackup;
   $('#restoreBackupBtn').onclick=()=>$('#restoreBackupInput').click();
   $('#restoreBackupInput').onchange=e=>{const file=e.target.files?.[0];e.target.value='';restoreBackup(file)};
-  $$('.book-card').forEach(c=>c.onclick=async e=>{ if(e.target.closest('[data-delete],[data-export-revisions]')) return; state.bookId=c.dataset.id; state.recapBookId=state.bookId; savePrefs({lastBookId:state.bookId}); const b=await idbGet('books',state.bookId); state.chapterIndex=b.progress?.chapterIndex||0; state.selectedParagraph=b.progress?.paragraphIndex||0; state.selectedCharOffset=b.progress?.charOffset||0; state.selectedWordEnd=b.progress?.wordEnd||0; navigate('reader'); });
+  $$('.book-card').forEach(c=>c.onclick=async e=>{ if(e.target.closest('[data-delete],[data-export-revisions]')) return; state.bookId=c.dataset.id; state.recapBookId=state.bookId; state.selectedReaderPhrase=''; savePrefs({lastBookId:state.bookId}); const b=await idbGet('books',state.bookId); state.chapterIndex=b.progress?.chapterIndex||0; state.selectedParagraph=b.progress?.paragraphIndex||0; state.selectedCharOffset=b.progress?.charOffset||0; state.selectedWordEnd=b.progress?.wordEnd||0; navigate('reader'); });
   $$('[data-delete]').forEach(btn=>btn.onclick=async e=>{e.stopPropagation();const id=btn.dataset.delete; if(confirm('Remove this manuscript and its saved notes from this device?')){await idbDelete('books',id); const all=await idbGetAll('items'); for(const i of all.filter(x=>x.bookId===id)) await idbDelete('items',i.id); if(state.bookId===id) state.bookId=null; renderLibrary(); updateQueueBadge();}});
   $$('[data-export-revisions]').forEach(btn=>btn.onclick=async e=>{e.stopPropagation();const book=await idbGet('books',btn.dataset.exportRevisions);if(book)openRevisionChecklist(book)});
 }
@@ -1075,6 +1076,7 @@ async function renderReader(){
               <label><span class="meta">Dialogue Samantha</span><select id="dialogueVoiceSelect" class="select"><option value="">Same Samantha</option></select></label>
               <label><span class="meta">Pitch</span><select id="dialoguePitchSelect" class="select">${dialoguePitchOptions(p.dialoguePitch??1.15)}</select></label>
               <label><span class="meta">Rate offset</span><select id="dialogueRateSelect" class="select">${dialogueRateOptions(p.dialogueRateOffset??0)}</select></label>
+              <div class="meta dialogue-note">Quoted dialogue only in this version. Em-dash and screenplay-style dialogue stay in the narration voice.</div>
             </div>
           </div>
           <button id="testVoiceBtn" class="ghost tiny">Preview Samantha here</button>
@@ -1124,7 +1126,11 @@ function wireReader(book,ch){
   if(state.readerSearchQuery){renderReaderSearchResults(book,state.readerSearchQuery);wireReaderSearchResults(book)}
 
   $('#chapterSelect').onchange=async e=>{ stopAllSpeech(); state.chapterIndex=+e.target.value; state.selectedParagraph=0; state.selectedCharOffset=0; state.selectedWordEnd=0; await saveProgress(book); renderReader(); };
-  $$('#readingPage p').forEach(p=>p.onclick=async e=>{
+  $('#readingPage p').forEach(p=>p.onclick=async e=>{
+    const selection=window.getSelection?.();
+    if(selection&&!selection.isCollapsed&&selection.toString().trim()){
+      state.selectedReaderPhrase=selection.toString().trim();return;
+    }
     const paragraphIndex=+p.dataset.p;
     const text=ch.paragraphs[paragraphIndex]||p.textContent||'';
     const offset=caretOffsetInParagraph(p,e);
