@@ -1896,6 +1896,7 @@ async function renderReader(){
     <select id="chapterSelect" class="chapter-select">${book.chapters.map((c,i)=>`<option value="${i}" ${i===state.chapterIndex?'selected':''}>${escapeHtml(chapterLabel(c,book))} · ${readingMinutesLabel(chapterWordCount(c))}</option>`).join('')}</select>
     ${recapCardHtml(book)}
     ${handoffLandingCardHtml(book)}
+    ${revisionPromptCardHtml(book)}
     <div class="reader-search">
       <div class="reader-search-row"><input id="readerSearchInput" class="select reader-search-input" type="search" value="${escapeHtml(state.readerSearchQuery)}" placeholder="Search this manuscript…" aria-label="Search this manuscript" /><button id="readerSearchBtn" class="ghost">Search</button><button id="readerSearchClear" class="ghost tiny ${state.readerSearchQuery?'':'hidden'}" aria-label="Clear search">Clear</button></div>
       <div class="row between"><span id="readerSearchStatus" class="meta"></span><span class="meta">Word or phrase · all chapters</span></div>
@@ -2020,6 +2021,9 @@ function wireReader(book,ch){
   const recapResume=$('#recapResume');if(recapResume)recapResume.onclick=()=>{state.recapBookId=null;$('#recapCard')?.remove();scrollSelected(false)};
   const recapDismiss=$('#recapDismiss');if(recapDismiss)recapDismiss.onclick=()=>{state.recapBookId=null;$('#recapCard')?.remove()};
   const handoffDismiss=$('#dismissHandoffLanding');if(handoffDismiss)handoffDismiss.onclick=()=>{state.pendingHandoffContext=null;$('#handoffLandingCard')?.remove()};
+  const compareRevision=$('#compareRevisionBtn');if(compareRevision)compareRevision.onclick=async()=>{const old=await idbGet('books',book.revisionOf);if(!old){showToast('The earlier revision is no longer available.');return}openRevisionDiff(old,book)};
+  const updateRevision=$('#updateRevisionBtn');if(updateRevision)updateRevision.onclick=async()=>{const old=await idbGet('books',book.revisionOf);if(!old){showToast('The earlier revision is no longer available.');return}if(confirm('Update to this revision and carry your reading position, pronunciations and revision items forward?'))updateManuscriptRevision(old,book)};
+  const keepRevisions=$('#keepBothRevisionsBtn');if(keepRevisions)keepRevisions.onclick=()=>keepBothRevisions(book);
   const recapStart=$('#recapChapterStart');if(recapStart)recapStart.onclick=async()=>{
     state.recapBookId=null;state.selectedParagraph=0;state.selectedCharOffset=0;state.selectedWordEnd=0;
     await saveProgress(book);await renderReader();
