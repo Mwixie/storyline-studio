@@ -823,6 +823,74 @@ async function restoreBackup(file){
     await navigate('library');
   }catch(e){showToast(e.message||'Backup could not be restored')}
 }
+function revisionTypeMeta(type){
+  return type==='voice'?['🎙','VOICE NOTE']:type==='continuity'?['⚑','CONTINUITY']:type==='bookmark'?['⌑','BOOKMARK']:type==='question'?['?','ASK CHATGPT']:['📝','NOTE'];
+}
+function revisionDate(iso){
+  const d=new Date(iso);if(Number.isNaN(d.getTime()))return '';
+  return d.toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});
+}
+function revisionChecklistMarkdown(book,items,{preview=false}={}){
+  const date=new Date().toISOString().slice(0,10);
+  const matched=[],unmatched=[];
+  for(const item of items){
+    const resolved=resolvePassageAnchor(book,item);
+    const row={item,resolved};
+    if(resolved?.unverified)unmatched.push(row);else matched.push(row);
+  }
+  matched.sort((a,b)=>(a.resolved.chapterIndex-b.resolved.chapterIndex)||(a.resolved.paragraphIndex-b.resolved.paragraphIndex)||new Date(a.item.createdAt)-new Date(b.item.createdAt));
+  unmatched.sort((a,b)=>new Date(a.item.createdAt)-new Date(b.item.createdAt));
+  const lines=[`# Revision checklist — ${book.title} (${date}, ${items.length} item${items.length===1?'':'s'})`,''];
+  let lastChapter=-1;
+  for(const row of matched){
+    const {item,resolved}=row,ch=book.chapters[resolved.chapterIndex];
+    if(resolved.chapterIndex!==lastChapter){
+      if(lastChapter!==-1)lines.push('');
+      lines.push(`## ${chapterLabel(ch,book)}`);lastChapter=resolved.chapterIndex;
+    }
+    const [icon,label]=revisionTypeMeta(item.type);
+    const passage=excerpt(item.anchor?.selectedText||item.excerpt||'',140).replace(/\s+/g,' ');
+    let note=String(item.note||'').trim();
+    if(preview&&note.length>300)note=note.slice(0,299)+'…';
+    const audio=item.type==='voice'&&item.durationSec?` · ${formatDuration(item.durationSec)}`:'';
+    const detail=note?` — ${note}`:'';
+    lines.push(`- [ ] ${icon} ${label} · ¶${resolved.paragraphIndex+1}${audio} · "${passage}"${detail} (added ${revisionDate(item.createdAt)})`);
+  }
+  if(unmatched.length){
+    lines.push('','## Unmatched items');
+    for(const {item} of unmatched){
+      const [icon,label]=revisionTypeMeta(item.type),passage=excerpt(item.anchor?.selectedText||item.excerpt||'',140).replace(/\s+/g,' ');
+      let note=String(item.note||'').trim();if(preview&&note.length>300)note=note.slice(0,299)+'…';
+      lines.push(`- [ ] ${icon} ${label} · "${passage}"${note?` — ${note}`:''} (added ${revisionDate(item.createdAt)})`);
+    }
+  }
+  return lines.join('\n');
+}
+function downloadTextFile(filename,text,type='text/plain'){
+  const blob=new Blob([text],{type}),url=URL.createObjectURL(blob),a=document.createElement('a');
+  a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+async function openRevisionChecklist(book){
+  const all=(await idbGetAll('items')).filter(i=>i.bookId===book.id&&['question','continuity','note','bookmark','voice'].includes(i.type));
+  if(!all.length){showToast('No notes or flags in this book yet.');return}
+  let filter='pending';
+  const filtered=()=>filter==='all'?all:filter==='actioned'?all.filter(i=>i.status==='done'):all.filter(i=>i.status!=='done');
+  const render=()=>{
+    const items=filtered(),preview=revisionChecklistMarkdown(book,items,{preview:true});
+    modalForm.innerHTML=`<h3>Revision checklist</h3><div class="row between"><span class="meta">${escapeHtml(book.title)}</span><select id="revisionFilter" class="select"><option value="pending" ${filter==='pending'?'selected':''}>Pending only</option><option value="actioned" ${filter==='actioned'?'selected':''}>Actioned only</option><option value="all" ${filter==='all'?'selected':''}>Everything</option></select></div>
+      <textarea id="revisionChecklistPreview" class="revision-checklist-preview" readonly>${escapeHtml(preview)}</textarea>
+      <div class="row between"><button value="cancel" class="ghost">Close</button><div class="row"><button type="button" id="copyRevisionChecklist" class="ghost">Copy</button><button type="button" id="downloadRevisionChecklist" class="button">Download .md</button></div></div>`;
+    modal.showModal();
+    $('#revisionFilter').onchange=e=>{filter=e.target.value;render()};
+    $('#copyRevisionChecklist').onclick=()=>{const items=filtered();if(!items.length){showToast('No revision items in this view.');return}copyTextReliable(revisionChecklistMarkdown(book,items),'Revision checklist copied')};
+    $('#downloadRevisionChecklist').onclick=()=>{const items=filtered();if(!items.length){showToast('No revision items in this view.');return}
+      const safe=book.title.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')||'manuscript';
+      downloadTextFile(`${safe}-revision-checklist-${new Date().toISOString().slice(0,10)}.md`,revisionChecklistMarkdown(book,items),'text/markdown');
+      showToast('Revision checklist downloaded');
+    };
+  };
+  render();
+}
 async function renderLibrary(){
   const books=(await idbGetAll('books')).sort((a,b)=>new Date(b.updatedAt)-new Date(a.updatedAt));
   const items=await idbGetAll('items');
@@ -850,7 +918,8 @@ async function renderLibrary(){
   $('#restoreBackupBtn').onclick=()=>$('#restoreBackupInput').click();
   $('#restoreBackupInput').onchange=e=>{const file=e.target.files?.[0];e.target.value='';restoreBackup(file)};
   $('.book-card').forEach(c=>c.onclick=async e=>{ if(e.target.closest('[data-delete],[data-export-revisions]')) return; state.bookId=c.dataset.id; state.recapBookId=state.bookId; savePrefs({lastBookId:state.bookId}); const b=await idbGet('books',state.bookId); state.chapterIndex=b.progress?.chapterIndex||0; state.selectedParagraph=b.progress?.paragraphIndex||0; state.selectedCharOffset=b.progress?.charOffset||0; state.selectedWordEnd=b.progress?.wordEnd||0; navigate('reader'); });
-  $$('[data-delete]').forEach(btn=>btn.onclick=async e=>{e.stopPropagation();const id=btn.dataset.delete; if(confirm('Remove this manuscript and its saved notes from this device?')){await idbDelete('books',id); const all=await idbGetAll('items'); for(const i of all.filter(x=>x.bookId===id)) await idbDelete('items',i.id); if(state.bookId===id) state.bookId=null; renderLibrary(); updateQueueBadge();}});
+  $('[data-delete]').forEach(btn=>btn.onclick=async e=>{e.stopPropagation();const id=btn.dataset.delete; if(confirm('Remove this manuscript and its saved notes from this device?')){await idbDelete('books',id); const all=await idbGetAll('items'); for(const i of all.filter(x=>x.bookId===id)) await idbDelete('items',i.id); if(state.bookId===id) state.bookId=null; renderLibrary(); updateQueueBadge();}});
+  $('[data-export-revisions]').forEach(btn=>btn.onclick=async e=>{e.stopPropagation();const book=await idbGet('books',btn.dataset.exportRevisions);if(book)openRevisionChecklist(book)});
 }
 function chapterLabel(ch,book){ return (ch?.synthetic||ch?.title==='Beginning'||ch?.title==='Front matter')?(book?.title||'Manuscript'):(ch?.title||'Manuscript'); }
 function readerChapterTitle(ch){ return (ch?.synthetic||ch?.title==='Beginning'||ch?.title==='Front matter')?'':(ch?.title||''); }
@@ -959,8 +1028,9 @@ function recapCardHtml(book){
     <div class="row recap-actions"><button id="recapResume" class="button">Resume</button><button id="recapChapterStart" class="ghost">Chapter start</button><button id="recapDismiss" class="ghost">Dismiss</button></div>
   </section>`;
 }
-function bookCard(b,items){ const total=b.chapters.reduce((n,c)=>n+c.paragraphs.length,0); let before=0; for(let i=0;i<(b.progress?.chapterIndex||0);i++) before+=b.chapters[i]?.paragraphs.length||0; before+=b.progress?.paragraphIndex||0; const pct=b.progress?.completed===true?100:Math.max(0,Math.min(100,Math.round((before/Math.max(total,1))*100))); const count=items.filter(i=>i.bookId===b.id&&['note','question','continuity'].includes(i.type)).length;
-  return `<article class="card book-card" data-id="${b.id}"><div><div class="eyebrow">${escapeHtml(b.version||'Manuscript')}</div><div class="book-title">${escapeHtml(b.title)}</div><p class="meta">${b.chapters.length} chapter${b.chapters.length===1?'':'s'} · ${count} note${count===1?'':'s'}</p></div><div class="stack"><div class="row between"><span class="meta">${pct}% listened</span><button data-delete="${b.id}" class="ghost tiny">Remove</button></div><div class="progress"><i style="width:${pct}%"></i></div><button class="button">Continue reading</button></div></article>`;
+function bookCard(b,items){ const total=b.chapters.reduce((n,c)=>n+c.paragraphs.length,0); let before=0; for(let i=0;i<(b.progress?.chapterIndex||0);i++) before+=b.chapters[i]?.paragraphs.length||0; before+=b.progress?.paragraphIndex||0; const pct=b.progress?.completed===true?100:Math.max(0,Math.min(100,Math.round((before/Math.max(total,1))*100))); const count=items.filter(i=>i.bookId===b.id&&['note','question','continuity','bookmark','voice'].includes(i.type)).length;
+  const totalWords=b.chapters.reduce((n,ch)=>n+chapterWordCount(ch),0);
+  return `<article class="card book-card" data-id="${b.id}"><div><div class="eyebrow">${escapeHtml(b.version||'Manuscript')}</div><div class="book-title">${escapeHtml(b.title)}</div><p class="meta">${b.chapters.length} chapter${b.chapters.length===1?'':'s'} · ${readingMinutesLabel(totalWords)} · ${count} revision item${count===1?'':'s'}</p></div><div class="stack"><div class="row between"><span class="meta">${pct}% listened</span><button data-delete="${b.id}" class="ghost tiny">Remove</button></div><div class="progress"><i style="width:${pct}%"></i></div><div class="row book-actions"><button class="button">Continue reading</button><button data-export-revisions="${b.id}" class="ghost tiny">Revision checklist</button></div></div></article>`;
 }
 
 async function renderReader(){
