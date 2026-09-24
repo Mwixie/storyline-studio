@@ -1272,23 +1272,32 @@ async function importFile(file){
     const name=file.name.toLowerCase();
     if(name.endsWith('.docx'))paragraphs=await parseDocx(file);
     else if(name.endsWith('.epub')){const parsed=await parseEpub(file);paragraphs=parsed.paragraphs;parsedChapters=parsed.chapters}
-    else if(name.endsWith('.pdf')){
-      const parsed=await parsePdf(file);paragraphs=parsed.paragraphs;sources=parsed.sources;importDiagnostics=parsed.diagnostics;
-    }
+    else if(name.endsWith('.pdf')){const parsed=await parsePdf(file);paragraphs=parsed.paragraphs;sources=parsed.sources;importDiagnostics=parsed.diagnostics}
     else if(name.endsWith('.odt'))paragraphs=await parseOdt(file);
     else if(name.endsWith('.html')||name.endsWith('.htm'))paragraphs=await parseHtml(file);
     else if(name.endsWith('.md')||name.endsWith('.markdown'))paragraphs=await parseMarkdown(file);
     else if(name.endsWith('.txt'))paragraphs=(await file.text()).replace(/\r/g,'').split(/\n\s*\n|\n/).map(x=>x.trim()).filter(Boolean);
     else throw new Error('That file type is not supported yet.');
     if(!paragraphs?.length)throw new Error('No manuscript text was found.');
+
     let title=file.name.replace(/\.(docx|epub|pdf|odt|html?|md|markdown|txt)$/i,'').replace(/[_-]+/g,' ').trim();
     const firstUseful=paragraphs.find(p=>p.length>3&&!/^chapter\b/i.test(p));
     if(/the plus[ -]one problem/i.test(title)||/^the plus[ -]one problem/i.test(firstUseful||''))title='The Plus-One Problem';
-    const chapters=parsedChapters||splitChapters(paragraphs,sources);
-    const now=new Date().toISOString();
+    const chapters=parsedChapters||splitChapters(paragraphs,sources),now=new Date().toISOString();
     const book={id:uid(),title,fileName:file.name,createdAt:now,updatedAt:now,chapters,progress:{chapterIndex:0,paragraphIndex:0,charOffset:0,wordEnd:0,completed:false},version:'Imported manuscript',importDiagnostics};
-    await idbPut('books',book);state.bookId=book.id;state.chapterIndex=0;state.selectedParagraph=0;state.selectedCharOffset=0;state.selectedWordEnd=0;
-    savePrefs({lastBookId:book.id});showToast(`Imported ${book.chapters.length} chapter${book.chapters.length===1?'':'s'}`);
+
+    const existing=await idbGetAll('books'),revisionMatch=revisionCandidateForBook(book,existing);
+    if(revisionMatch.book){
+      const old=revisionMatch.book;
+      book.revisionOf=old.id;book.revisionRootId=old.revisionRootId||old.id;book.revisionIndex=Math.max(2,(old.revisionIndex||1)+1);
+      book.revisionPending=true;book.revisionMatchKind=revisionMatch.matchKind;
+      state.pendingRevisionPrompt={oldBookId:old.id,newBookId:book.id,matchKind:revisionMatch.matchKind};
+    }else state.pendingRevisionPrompt=null;
+
+    await idbPut('books',book);
+    state.bookId=book.id;state.chapterIndex=0;state.selectedParagraph=0;state.selectedCharOffset=0;state.selectedWordEnd=0;
+    savePrefs({lastBookId:book.id});
+    showToast(revisionMatch.book?`Imported revision ${book.revisionIndex} · compare when ready`:`Imported ${book.chapters.length} chapter${book.chapters.length===1?'':'s'}`);
     await navigate('reader');
     if(importDiagnostics)showImportReport(book);
   }catch(e){
