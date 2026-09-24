@@ -1316,9 +1316,9 @@ function setNav(route){
 }
 async function navigate(route){
   if(route==='reader'&&!state.bookId){ const books=await idbGetAll('books'); if(books[0]) state.bookId=books[0].id; else route='library'; }
-  revokeSavedAudioObjectUrls();
+  stopReviewAudio();revokeSavedAudioObjectUrls();
   state.route=route; setNav(route); stopAllSpeech();
-  if(route==='library') await renderLibrary(); if(route==='reader') await renderReader(); if(route==='notes') await renderNotes(); if(route==='queue') await renderQueue(); if(route==='actioned') await renderActioned(); updateQueueBadge();
+  if(route==='library') await renderLibrary(); if(route==='reader') await renderReader(); if(route==='notes') await renderNotes(); if(route==='queue') await renderQueue(); if(route==='actioned') await renderActioned(); if(route==='review') await renderFlagReview(); updateQueueBadge();
 }
 
 function arrayBufferToBase64(buffer){
@@ -3162,7 +3162,6 @@ async function renderFlagReview(){
     return;
   }
   const {entry,item,book,resolved}=current,ch=book.chapters[resolved.chapterIndex],total=session.entries.length,index=session.index;
-  const passage=item.anchor?.selectedText||item.excerpt||String(ch?.paragraphs?.[resolved.paragraphIndex]||'').slice(resolved.start||0,resolved.end||undefined);
   view.innerHTML=`<section class="flag-review-shell">
     <div class="row between flag-review-top"><div><div class="eyebrow">Review my flags</div><h1>${index+1} of ${total}</h1></div><button id="reviewExit" class="ghost">Exit</button></div>
     <div class="flag-review-progress"><i style="width:${Math.round(((index+1)/Math.max(total,1))*100)}%"></i></div>
@@ -3179,7 +3178,11 @@ async function renderFlagReview(){
       </div>
       <div class="flag-review-decisions"><button id="reviewDone" class="button">✓ Done</button><button id="reviewSkip" class="ghost">Skip →</button></div>
     </article>
-    <label class="flag-review-order"><span class="meta">Order</span><select id="reviewOrderSelect" class="select"><option value="reading" ${session.order==='reading'?'selected':''}>Reading order</option><option value="newest" ${session.order==='newest'?'selected':''}>Newest first</option></select></label>
+    <div class="flag-review-options">
+      <label class="flag-review-order"><span class="meta">Order</span><select id="reviewOrderSelect" class="select"><option value="reading" ${session.order==='reading'?'selected':''}>Reading order</option><option value="newest" ${session.order==='newest'?'selected':''}>Newest first</option></select></label>
+      <label><span class="meta">Sleep timer</span><select id="reviewSleepTimer" class="select"><option value="0">Off</option><option value="5">5 min</option><option value="10">10 min</option><option value="15">15 min</option><option value="30">30 min</option><option value="45">45 min</option><option value="60">60 min</option></select></label>
+      <span id="reviewSleepStatus" class="meta">${state.sleepDeadline?'Sleep timer running':'Sleep timer off'}</span>
+    </div>
   </section>`;
   $('#reviewExit').onclick=exitFlagReview;
   $('#reviewPlayPassage').onclick=()=>playReviewPassage(current);
@@ -3188,6 +3191,7 @@ async function renderFlagReview(){
   $('#reviewDone').onclick=()=>advanceFlagReview(true);
   $('#reviewSkip').onclick=()=>advanceFlagReview(false);
   $('#reviewOrderSelect').onchange=async e=>{savePrefs({flagReviewOrder:e.target.value});state.reviewSession=await buildFlagReviewSession(e.target.value);await renderFlagReview()};
+  const reviewSleep=$('#reviewSleepTimer');if(reviewSleep){if(state.sleepMinutes)reviewSleep.value=String(state.sleepMinutes);reviewSleep.onchange=e=>setSleepTimer(+e.target.value)}
   if(!entry.autoplayed){
     entry.autoplayed=true;
     requestAnimationFrame(()=>playReviewPassage(current,{thenNote:true}));
@@ -3199,7 +3203,7 @@ async function renderQueue(){
   const pending=all.filter(i=>i.status!=='done').sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt));
   const actionedCount=all.filter(i=>i.status==='done').length;
 
-  view.innerHTML=`<section class="hero"><div class="eyebrow">Revision desk</div><h1>Revision Queue</h1><p class="sub">Pending items stay here until you action them.</p></section>
+  view.innerHTML=`<section class="hero"><div class="eyebrow">Revision desk</div><h1>Revision Queue</h1><p class="sub">Pending items stay here until you action them.</p>${pending.length?`<div class="row hero-actions"><button id="reviewFlagsBtn" class="button">▶ Review my flags (${pending.length})</button></div>`:''}</section>
     <div class="stat-grid"><div class="stat"><b>${pending.length}</b><small>Pending</small></div><div class="stat"><b>${pending.filter(i=>i.type==='continuity').length}</b><small>Continuity</small></div><button class="stat stat-button" data-nav-inline="actioned"><b>${actionedCount}</b><small>Actioned</small></button></div>
     <section class="queue-section">
       ${pending.length?`<div class="queue-toolbar">
@@ -3216,6 +3220,7 @@ async function renderQueue(){
 
   wireItemButtons(pending);
   wireQueueBulk(pending);
+  const reviewFlags=$('#reviewFlagsBtn');if(reviewFlags)reviewFlags.onclick=startFlagReview;
   const copyAll=$('#copyAllPending');if(copyAll)copyAll.onclick=()=>copyItemsForChat(pending);
   const actionedLink=$('[data-nav-inline="actioned"]'); if(actionedLink)actionedLink.onclick=()=>navigate('actioned');
 }
