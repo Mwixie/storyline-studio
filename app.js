@@ -881,7 +881,7 @@ function pdfRepeatedMarginSignatures(pages){
   const threshold=Math.max(2,Math.ceil(pages.length*.5));
   return new Set([...counts].filter(([,count])=>count>=threshold).map(([sig])=>sig));
 }
-function pdfJoinLinesToParagraphs(pages){
+function pdfJoinLinesToRecords(pages){
   const repeated=pdfRepeatedMarginSignatures(pages);
   const all=[];
   for(const lines of pages){
@@ -898,12 +898,23 @@ function pdfJoinLinesToParagraphs(pages){
     usable.forEach((line,index)=>all.push({...line,normalGap,leftEdge,pageBreak:index===0&&all.length>0}));
   }
 
-  const paras=[];let current='';
-  const flush=()=>{const text=current.replace(/\s+/g,' ').trim();if(text)paras.push(text);current=''};
+  const records=[];let current='',pagesUsed=new Set(),ocrUsed=false,confidences=[];
+  const addSource=line=>{
+    if(Number.isFinite(line.pageNo))pagesUsed.add(line.pageNo);
+    if(line.ocr){ocrUsed=true;if(Number.isFinite(line.confidence)&&line.confidence>0)confidences.push(line.confidence)}
+  };
+  const flush=()=>{
+    const text=current.replace(/\s+/g,' ').trim();
+    if(text){
+      const pages=[...pagesUsed].sort((a,b)=>a-b);
+      records.push({text,source:{type:'pdf',pages,ocr:ocrUsed,confidence:confidences.length?Math.round(confidences.reduce((a,b)=>a+b,0)/confidences.length):null}});
+    }
+    current='';pagesUsed=new Set();ocrUsed=false;confidences=[];
+  };
   for(let i=0;i<all.length;i++){
     const line=all[i],prev=all[i-1],text=line.text.trim();
     if(!text)continue;
-    if(pdfHeadingLike(text)){flush();paras.push(text);continue}
+    if(pdfHeadingLike(text)){flush();addSource(line);current=text;flush();continue}
 
     let newParagraph=!current;
     if(current&&prev){
@@ -917,30 +928,58 @@ function pdfJoinLinesToParagraphs(pages){
     }
     if(newParagraph&&current)flush();
 
+    addSource(line);
     if(!current){current=text;continue}
     const hyphenated=/[A-Za-zÀ-ÖØ-öø-ÿ]-$/.test(current)&&/^[a-zà-öø-ÿ]/.test(text);
     if(hyphenated)current=current.slice(0,-1)+text;
     else current+=' '+text;
   }
   flush();
-  return paras.filter(Boolean);
+  return records.filter(r=>r.text);
+}
+function pdfJoinLinesToParagraphs(pages){
+  return pdfJoinLinesToRecords(pages).map(r=>r.text);
 }
 async function parsePdf(file){
   if(!window.pdfjsLib)throw new Error('PDF support has not finished loading. Check your connection and try again.');
   const pdf=await pdfjsLib.getDocument({data:new Uint8Array(await file.arrayBuffer())}).promise;
-  const pages=[];let characterCount=0;
+  const pages=[],ocrCandidates=[],embeddedPages=[];
   for(let pageNo=1;pageNo<=pdf.numPages;pageNo++){
     const page=await pdf.getPage(pageNo),content=await page.getTextContent();
-    const lines=pdfGroupPageLines(content,pageNo);
-    characterCount+=lines.reduce((n,line)=>n+line.text.length,0);
-    pages.push(lines);
+    const lines=pdfGroupPageLines(content,pageNo),chars=lines.reduce((n,line)=>n+line.text.length,0);
+    if(chars<14){ocrCandidates.push(pageNo);pages.push(lines)}
+    else{embeddedPages.push(pageNo);pages.push(lines)}
   }
-  if(characterCount<Math.max(20,pdf.numPages*8)){
-    throw new Error('This PDF appears to be scanned or image-based and does not contain enough selectable text. Storyline needs OCR before it can read this PDF.');
+
+  let ocrPages=[],lowConfidencePages=[],skippedOcrPages=[];
+  if(ocrCandidates.length){
+    const useOcr=await confirmPdfOcr(ocrCandidates.length,pdf.numPages);
+    if(useOcr){
+      const ocr=await ocrPdfPages(pdf,ocrCandidates);
+      const byPage=new Map(ocr.results.map(x=>[x.pageNo,x]));
+      for(const pageNo of ocrCandidates){
+        const result=byPage.get(pageNo);
+        if(result?.lines?.length){
+          pages[pageNo-1]=result.lines;ocrPages.push(pageNo);
+          if(result.confidence&&result.confidence<70)lowConfidencePages.push(pageNo);
+        }else skippedOcrPages.push(pageNo);
+      }
+      if(ocr.cancelled){
+        for(const pageNo of ocrCandidates)if(!ocrPages.includes(pageNo)&&!skippedOcrPages.includes(pageNo))skippedOcrPages.push(pageNo);
+      }
+    }else skippedOcrPages=[...ocrCandidates];
   }
-  const paras=pdfJoinLinesToParagraphs(pages);
-  if(!paras.length)throw new Error('No readable manuscript text was reconstructed from this PDF.');
-  return paras;
+
+  const records=pdfJoinLinesToRecords(pages);
+  if(!records.length){
+    if(ocrCandidates.length&&skippedOcrPages.length)throw new Error('This PDF is image-based. OCR was skipped, so there is no readable text to import.');
+    throw new Error('No readable manuscript text was reconstructed from this PDF.');
+  }
+  return {
+    paragraphs:records.map(r=>r.text),
+    sources:records.map(r=>r.source),
+    diagnostics:{format:'pdf',totalPages:pdf.numPages,embeddedPages,ocrPages,skippedOcrPages,lowConfidencePages}
+  };
 }
 async function importPastedText(text,title=''){
   const source=String(text||'').replace(/\r/g,'').trim();
