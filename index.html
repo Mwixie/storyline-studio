@@ -10,7 +10,7 @@
   <meta name="apple-mobile-web-app-title" content="Storyline" />
   <link rel="manifest" href="manifest.webmanifest" />
   <link rel="icon" href="icon.svg" type="image/svg+xml" />
-  <link rel="stylesheet" href="styles.css?v=40" />
+  <link rel="stylesheet" href="styles.css?v=41" />
   <title>Storyline Studio</title>
 </head>
 <body>
@@ -20,7 +20,7 @@
         <span class="brand-mark">S</span>
         <span><strong>Storyline Studio</strong><small>Listen. Notice. Revise.</small></span>
       </button>
-      <div class="row"><small style="color:#8f8794">Build 40</small><button id="installBtn" class="ghost tiny hidden">Install</button></div>
+      <div class="row"><small style="color:#8f8794">Build 41</small><button id="installBtn" class="ghost tiny hidden">Install</button></div>
     </header>
 
     <main id="view" class="view"></main>
@@ -39,6 +39,7 @@
         <button class="nav-tool" data-reader-act="continuity"><span>⚑</span><small>Continuity</small></button>
         <button class="nav-tool" data-reader-act="bookmark"><span>⌑</span><small>Bookmark</small></button>
         <button class="nav-tool" data-reader-act="pronunciations"><span>Aa</span><small>Pronunciations</small></button>
+        <button class="nav-tool" data-reader-act="handoff"><span>⌁</span><small>Handoff</small></button>
         <button class="nav-tool nav-tool-primary" data-reader-act="start"><span>▶</span><small>Start here</small></button>
       </div>
 
@@ -53,9 +54,11 @@
 
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="./vendor/qrcode.min.js"></script>
+  <script src="./vendor/jsQR.js"></script>
   <script>
     if(window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
   </script>
-  <script src="app.js?v=40"></script>
+  <script src="app.js?v=41"></script>
 </body>
 </html>

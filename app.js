@@ -10,7 +10,8 @@ const state = {
   playbackToken:0, speakingPIndex:null, speakingSIndex:null, speakingSegments:null, replayCurrent:null,
   sleepTimerId:null, sleepIntervalId:null, sleepDeadline:null, sleepMinutes:0, wakeLock:null, chapterTransitionNotice:'',
   pendingPassageReference:null, activeEngine:'device', readerSearchQuery:'',
-  followNarrationSuspended:false, readerBook:null, recapBookId:null, selectedReaderPhrase:''
+  followNarrationSuspended:false, readerBook:null, recapBookId:null, selectedReaderPhrase:'',
+  liveCharOffset:null, pendingHandoffContext:null, handoffScanStop:null
 };
 
 const PREF='storyline.prefs.v1';
@@ -199,6 +200,174 @@ function sentenceAtOffset(text,offset){
 function passageContext(text,start,end,span=120){
   const source=String(text||''),a=Math.max(0,Math.min(start,source.length)),b=Math.max(a,Math.min(end,source.length));
   return {prefix:source.slice(Math.max(0,a-span),a),selected:source.slice(a,b),suffix:source.slice(b,Math.min(source.length,b+span))};
+}
+function base64UrlEncodeUtf8(text=''){
+  const bytes=new TextEncoder().encode(String(text));let binary='';
+  const chunk=0x8000;
+  for(let i=0;i<bytes.length;i+=chunk)binary+=String.fromCharCode(...bytes.subarray(i,i+chunk));
+  return btoa(binary).replace(/\+/g,'-').replace(/\//g,'_').replace(/=+$/,'');
+}
+function base64UrlDecodeUtf8(value=''){
+  const raw=String(value).replace(/-/g,'+').replace(/_/g,'/');
+  const padded=raw+'='.repeat((4-raw.length%4)%4);
+  const binary=atob(padded),bytes=new Uint8Array(binary.length);
+  for(let i=0;i<binary.length;i++)bytes[i]=binary.charCodeAt(i);
+  return new TextDecoder().decode(bytes);
+}
+function meaningfulChapterTitles(book){
+  return (book?.chapters||[]).map(ch=>chapterLabel(ch,book)).filter(Boolean).map(anchorNormalize);
+}
+function portableFingerprint(text=''){
+  const value=String(text);
+  return anchorHash('a|'+value)+anchorHash('b|'+value);
+}
+function storylineBookFingerprint(book){
+  const titles=meaningfulChapterTitles(book);
+  const first=titles[0]||'',last=titles[titles.length-1]||'';
+  return portableFingerprint('storyline-book|'+anchorNormalize(book?.title||'')+'|'+first+'|'+last);
+}
+function storylineEditionFingerprint(book){
+  const chapters=book?.chapters||[];
+  const sample=[];
+  if(chapters.length){
+    const indices=[0,Math.floor((chapters.length-1)/2),chapters.length-1];
+    for(const ci of [...new Set(indices)]){
+      const ch=chapters[ci],paras=ch?.paragraphs||[];
+      sample.push(chapterAnchorKey(ch,book));
+      if(paras.length){
+        const pi=[0,Math.floor((paras.length-1)/2),paras.length-1];
+        for(const i of [...new Set(pi)])sample.push(anchorHash(paras[i]||''));
+      }
+    }
+  }
+  return portableFingerprint('storyline-edition|'+chapters.length+'|'+sample.join('|'));
+}
+function compactHandoffAnchor(anchor){
+  if(!anchor)return null;
+  return {
+    ck:anchor.chapterKey||'',pf:anchor.paragraphFingerprint||'',
+    s:String(anchor.selectedText||'').slice(0,140),
+    p:String(anchor.prefixContext||'').slice(-72),
+    x:String(anchor.suffixContext||'').slice(0,72),
+    cs:Number(anchor.charStart)||0,ce:Number(anchor.charEnd)||0,
+    pp:anchor.previousParagraphFingerprint||'',np:anchor.nextParagraphFingerprint||''
+  };
+}
+function expandHandoffAnchor(packet){
+  const a=packet?.anchor;if(!a||typeof a!=='object')return null;
+  return {
+    version:1,precision:'word',
+    chapterKey:String(a.ck||''),chapterTitle:String(packet.title||''),chapterIndex:Number(packet.chapter)||0,
+    paragraphIndex:Number(packet.paragraph)||0,paragraphFingerprint:String(a.pf||''),
+    charStart:Number(a.cs)||0,charEnd:Number(a.ce)||Number(a.cs)||0,
+    selectedText:String(a.s||''),selectionFingerprint:a.s?anchorHash(a.s):'',
+    prefixContext:String(a.p||''),suffixContext:String(a.x||''),
+    previousParagraphFingerprint:String(a.pp||''),nextParagraphFingerprint:String(a.np||''),
+    capturedAt:String(packet.ts||new Date().toISOString())
+  };
+}
+function handoffPosition(book){
+  const ci=Math.max(0,Math.min(state.chapterIndex,(book?.chapters?.length||1)-1));
+  const ch=book?.chapters?.[ci],pi=Math.max(0,Math.min(state.selectedParagraph,(ch?.paragraphs?.length||1)-1));
+  const text=String(ch?.paragraphs?.[pi]||'');
+  let offset=(state.isSpeaking&&state.speakingPIndex===pi&&Number.isFinite(state.liveCharOffset))?state.liveCharOffset:(state.selectedCharOffset||0);
+  offset=Math.max(0,Math.min(Number(offset)||0,text.length));
+  const word=wordRangeAt(text,offset),end=Math.max(offset,Math.min(word.end||offset,text.length));
+  return {chapterIndex:ci,paragraphIndex:pi,charOffset:offset,wordEnd:end,text,ch};
+}
+function makeHandoffPacket(book){
+  const pos=handoffPosition(book);
+  const anchor=makePassageAnchor(book,pos.ch,pos.paragraphIndex,pos.text,{start:pos.charOffset,end:pos.wordEnd,precision:'word'});
+  const ctx=passageContext(pos.text,pos.charOffset,pos.wordEnd,58);
+  return {
+    app:'storyline-handoff',v:1,
+    bookFingerprint:storylineBookFingerprint(book),
+    editionFingerprint:storylineEditionFingerprint(book),
+    title:String(book?.title||'Manuscript').slice(0,90),
+    chapter:pos.chapterIndex,paragraph:pos.paragraphIndex,
+    charOffset:pos.charOffset,wordEnd:pos.wordEnd,
+    anchor:compactHandoffAnchor(anchor),
+    excerpt:(ctx.prefix+ctx.selected+ctx.suffix).replace(/\s+/g,' ').trim().slice(0,150),
+    ts:new Date().toISOString()
+  };
+}
+function encodeHandoffPacket(packet){
+  return 'storyline://h1.'+base64UrlEncodeUtf8(JSON.stringify(packet));
+}
+function handoffWebUrl(code){
+  try{
+    const url=new URL(location.href);
+    url.hash='handoff='+encodeURIComponent(code);
+    return url.toString();
+  }catch{return code}
+}
+function extractHandoffCode(value=''){
+  const raw=String(value||'').trim();if(!raw)return '';
+  if(raw.startsWith('storyline://h1.'))return raw;
+  try{
+    const url=new URL(raw,location.href);
+    const hash=url.hash||'';
+    if(hash.startsWith('#handoff='))return decodeURIComponent(hash.slice(9));
+  }catch{}
+  const marker='#handoff=',i=raw.indexOf(marker);
+  if(i>=0){try{return decodeURIComponent(raw.slice(i+marker.length))}catch{}}
+  return '';
+}
+function decodeHandoffPacket(value=''){
+  try{
+    const code=extractHandoffCode(value);
+    if(!code||!code.startsWith('storyline://h1.'))return null;
+    const packet=JSON.parse(base64UrlDecodeUtf8(code.slice('storyline://h1.'.length)));
+    if(packet?.app!=='storyline-handoff'||Number(packet.v)!==1)return null;
+    for(const key of ['chapter','paragraph','charOffset','wordEnd'])if(!Number.isFinite(Number(packet[key])))return null;
+    if(typeof packet.title!=='string'||typeof packet.bookFingerprint!=='string'||typeof packet.editionFingerprint!=='string')return null;
+    if(packet.title.length>180||packet.bookFingerprint.length>80||packet.editionFingerprint.length>80||String(packet.excerpt||'').length>400)return null;
+    if(packet.anchor&&typeof packet.anchor!=='object')return null;
+    if(packet.anchor){
+      for(const key of ['ck','pf','s','p','x','pp','np'])if(String(packet.anchor[key]||'').length>240)return null;
+      for(const key of ['cs','ce'])if(packet.anchor[key]!==undefined&&!Number.isFinite(Number(packet.anchor[key])))return null;
+    }
+    packet.chapter=Math.max(0,Math.floor(Number(packet.chapter)));
+    packet.paragraph=Math.max(0,Math.floor(Number(packet.paragraph)));
+    packet.charOffset=Math.max(0,Math.floor(Number(packet.charOffset)));
+    packet.wordEnd=Math.max(packet.charOffset,Math.floor(Number(packet.wordEnd)));
+    return packet;
+  }catch{return null}
+}
+function bookLastTouched(book){
+  return Date.parse(book?.progress?.updatedAt||book?.updatedAt||book?.createdAt||0)||0;
+}
+async function matchHandoffBook(packet){
+  const books=await idbGetAll('books');
+  const edition=books.filter(b=>storylineEditionFingerprint(b)===packet.editionFingerprint);
+  const sameBook=books.filter(b=>storylineBookFingerprint(b)===packet.bookFingerprint);
+  const sameTitle=books.filter(b=>anchorNormalize(b.title)===anchorNormalize(packet.title));
+  const candidates=edition.length?edition:sameBook.length?sameBook:sameTitle;
+  candidates.sort((a,b)=>bookLastTouched(b)-bookLastTouched(a));
+  return {book:candidates[0]||null,exactEdition:!!edition.length,multiple:candidates.length>1,matchKind:edition.length?'edition':sameBook.length?'book':sameTitle.length?'title':'none'};
+}
+function resolveHandoffPosition(book,packet,exactEdition=false){
+  const maxCi=Math.max(0,(book?.chapters?.length||1)-1);
+  const fallbackCi=Math.max(0,Math.min(packet.chapter,maxCi)),fallbackCh=book.chapters[fallbackCi];
+  const fallbackPi=Math.max(0,Math.min(packet.paragraph,Math.max(0,(fallbackCh?.paragraphs?.length||1)-1)));
+  const fallbackText=String(fallbackCh?.paragraphs?.[fallbackPi]||'');
+  const fallbackStart=Math.max(0,Math.min(packet.charOffset,fallbackText.length));
+  const fallbackEnd=Math.max(fallbackStart,Math.min(packet.wordEnd,fallbackText.length));
+  const expanded=expandHandoffAnchor(packet);
+  if(!expanded)return {chapterIndex:fallbackCi,paragraphIndex:fallbackPi,start:fallbackStart,end:fallbackEnd,adjusted:!exactEdition,score:0};
+  const resolved=resolvePassageAnchor(book,{chapterIndex:packet.chapter,paragraphIndex:packet.paragraph,charOffset:packet.charOffset,wordEnd:packet.wordEnd,anchor:expanded});
+  if(!resolved||resolved.unverified){
+    return {chapterIndex:fallbackCi,paragraphIndex:fallbackPi,start:fallbackStart,end:fallbackEnd,adjusted:!exactEdition||fallbackCi!==packet.chapter||fallbackPi!==packet.paragraph||fallbackStart!==packet.charOffset,score:resolved?.score||0};
+  }
+  return {...resolved,adjusted:!exactEdition||!!resolved.moved};
+}
+function handoffDisplayLocation(book,pos){
+  const ch=book?.chapters?.[pos.chapterIndex];
+  return `${chapterLabel(ch,book)} · paragraph ${pos.paragraphIndex+1}`;
+}
+function stopHandoffScanner(){
+  const stop=state.handoffScanStop;state.handoffScanStop=null;
+  try{stop?.()}catch{}
 }
 function makePassageAnchor(book,ch,paragraphIndex,text,{start=0,end=0,spokenSegment=null,precision='sentence'}={}){
   const source=String(text||'');let a=start,b=end,kind=precision;
@@ -823,6 +992,188 @@ async function restoreBackup(file){
     await navigate('library');
   }catch(e){showToast(e.message||'Backup could not be restored')}
 }
+function handoffLandingCardHtml(book){
+  const h=state.pendingHandoffContext;
+  if(!h||h.bookId!==book?.id)return '';
+  return `<section id="handoffLandingCard" class="handoff-landing card">
+    <div><div class="eyebrow">Handoff received</div><h3>${escapeHtml(h.adjusted?'Passage relocated':'You are in the right place')}</h3>
+    <p class="meta">${escapeHtml(h.location||'')}</p>
+    ${h.excerpt?`<blockquote>${escapeHtml(h.excerpt)}</blockquote>`:''}
+    ${h.adjusted?'<p class="meta">This device has a different revision, so Storyline matched the passage using its surrounding text.</p>':''}</div>
+    <button id="dismissHandoffLanding" class="ghost tiny" type="button">Dismiss</button>
+  </section>`;
+}
+function openHandoffSender(book){
+  stopHandoffScanner();
+  const packet=makeHandoffPacket(book),code=encodeHandoffPacket(packet),webUrl=handoffWebUrl(code);
+  const pos=handoffPosition(book),locationText=handoffDisplayLocation(book,{chapterIndex:pos.chapterIndex,paragraphIndex:pos.paragraphIndex});
+  modalForm.innerHTML=`<h3>Handoff to another device</h3>
+    <p class="sub">Scan this with the other device. The code contains only this book's identity, reading position and a short passage excerpt.</p>
+    <div id="handoffQr" class="handoff-qr" aria-label="Storyline handoff QR code"></div>
+    <div class="handoff-location"><strong>${escapeHtml(locationText)}</strong><span class="meta">Word position ${pos.charOffset+1}</span></div>
+    <div class="excerpt">${escapeHtml(packet.excerpt||'')}</div>
+    <div class="row handoff-actions"><button type="button" id="copyHandoffLink" class="ghost">Copy handoff link</button><button type="button" id="shareHandoffLink" class="ghost ${navigator.share?'':'hidden'}">Share</button><button value="default" class="button">Done</button></div>
+    <p class="meta">The QR opens Storyline directly when scanned by a normal camera app. You can also scan it from inside Storyline.</p>`;
+  if(!modal.open)modal.showModal();
+  requestAnimationFrame(()=>{
+    const qr=$('#handoffQr');
+    if(qr&&window.QRCode){
+      try{new QRCode(qr,{text:webUrl,width:288,height:288,colorDark:'#111111',colorLight:'#ffffff',correctLevel:QRCode.CorrectLevel.L})}
+      catch{qr.innerHTML='<div class="empty">QR generation failed. Use Copy handoff link instead.</div>'}
+    }else if(qr)qr.innerHTML='<div class="empty">QR generator is unavailable. Use Copy handoff link instead.</div>';
+  });
+  $('#copyHandoffLink').onclick=()=>copyTextReliable(webUrl,'Handoff link copied');
+  const share=$('#shareHandoffLink');if(share)share.onclick=async()=>{
+    try{await navigator.share({title:`Storyline handoff — ${book.title}`,text:'Open this Storyline reading position:',url:webUrl})}
+    catch(e){if(e?.name!=='AbortError')copyTextReliable(webUrl,'Handoff link copied')}
+  };
+}
+async function showHandoffConfirmation(packet){
+  stopHandoffScanner();
+  const match=await matchHandoffBook(packet);
+  if(!match.book){
+    modalForm.innerHTML=`<h3>Manuscript not on this device</h3>
+      <p class="sub"><strong>${escapeHtml(packet.title||'This manuscript')}</strong> is not in this Storyline library yet.</p>
+      <div class="excerpt">${escapeHtml(packet.excerpt||'')}</div>
+      <p>Import the same manuscript (or another revision of it), then scan or paste the handoff again.</p>
+      <div class="row between"><button type="button" id="handoffTryAgain" class="ghost">Try another code</button><button type="button" id="handoffImportBook" class="button">Import manuscript</button></div>`;
+    if(!modal.open)modal.showModal();
+    $('#handoffTryAgain').onclick=()=>openHandoffReceiver();
+    $('#handoffImportBook').onclick=()=>{modal.close();fileInput.click()};
+    return;
+  }
+  const pos=resolveHandoffPosition(match.book,packet,match.exactEdition);
+  const locationText=handoffDisplayLocation(match.book,pos);
+  const matchText=match.exactEdition?'Exact manuscript match':match.matchKind==='book'?'Same book · different revision':'Matched by manuscript title';
+  modalForm.innerHTML=`<h3>Receive handoff?</h3>
+    <div class="source-chip">${escapeHtml(match.book.title)} · ${escapeHtml(matchText)}</div>
+    <h4>${escapeHtml(locationText)}</h4>
+    <div class="excerpt">${escapeHtml(packet.excerpt||'')}</div>
+    ${pos.adjusted?'<p class="sub">The manuscript appears to have changed. Storyline matched the surrounding passage and will use the best verified location.</p>':''}
+    ${match.multiple?'<p class="meta">More than one copy matched. Storyline selected the most recently read copy.</p>':''}
+    <div class="row between"><button type="button" id="handoffCancel" class="ghost">Cancel</button><button type="button" id="handoffJump" class="button">Jump there</button></div>`;
+  if(!modal.open)modal.showModal();
+  $('#handoffCancel').onclick=()=>modal.close();
+  $('#handoffJump').onclick=()=>applyHandoffJump(match.book,packet,pos,match);
+}
+async function applyHandoffJump(book,packet,pos,match){
+  stopHandoffScanner();stopAllSpeech();
+  state.bookId=book.id;state.chapterIndex=pos.chapterIndex;state.selectedParagraph=pos.paragraphIndex;
+  state.selectedCharOffset=Math.max(0,pos.start||0);state.selectedWordEnd=Math.max(state.selectedCharOffset,pos.end||state.selectedCharOffset);
+  state.recapBookId=null;state.liveCharOffset=null;
+  state.pendingPassageReference={chapterIndex:pos.chapterIndex,paragraphIndex:pos.paragraphIndex,start:state.selectedCharOffset,end:state.selectedWordEnd,moved:false,unverified:false};
+  state.pendingHandoffContext={bookId:book.id,excerpt:String(packet.excerpt||'').slice(0,180),adjusted:!!pos.adjusted,location:handoffDisplayLocation(book,pos),matchKind:match.matchKind};
+  savePrefs({lastBookId:book.id});
+  await saveProgress(book);
+  if(modal.open)modal.close();
+  await navigate('reader');
+  showToast(pos.adjusted?'Position adjusted. The manuscript changed since the handoff was made.':'Handoff received');
+}
+async function processHandoffValue(value,{quietInvalid=false}={}){
+  const packet=decodeHandoffPacket(value);
+  if(!packet){if(!quietInvalid)showToast("This code isn't a Storyline handoff.");return false}
+  await showHandoffConfirmation(packet);return true;
+}
+async function decodeHandoffImage(file){
+  if(!file)return;
+  try{
+    let source=null,revoke='';
+    if(window.createImageBitmap)source=await createImageBitmap(file);
+    else{
+      const url=URL.createObjectURL(file);revoke=url;
+      source=await new Promise((resolve,reject)=>{const img=new Image();img.onload=()=>resolve(img);img.onerror=reject;img.src=url});
+    }
+    const w=source.width||source.naturalWidth,h=source.height||source.naturalHeight;
+    const scale=Math.min(1,1200/Math.max(w,h)),canvas=document.createElement('canvas');
+    canvas.width=Math.max(1,Math.round(w*scale));canvas.height=Math.max(1,Math.round(h*scale));
+    const ctx=canvas.getContext('2d',{willReadFrequently:true});ctx.drawImage(source,0,0,canvas.width,canvas.height);
+    let raw='';
+    if('BarcodeDetector' in window){
+      try{
+        const detector=new BarcodeDetector({formats:['qr_code']});
+        const hits=await detector.detect(canvas);raw=hits?.[0]?.rawValue||'';
+      }catch{}
+    }
+    if(!raw&&window.jsQR){
+      const image=ctx.getImageData(0,0,canvas.width,canvas.height),hit=jsQR(image.data,image.width,image.height,{inversionAttempts:'attemptBoth'});
+      raw=hit?.data||'';
+    }
+    try{source.close?.()}catch{};if(revoke)URL.revokeObjectURL(revoke);
+    if(!raw){showToast('No QR code was found in that image.');return}
+    await processHandoffValue(raw);
+  }catch{showToast('Storyline could not read that QR image.')}
+}
+async function startHandoffCameraScan(){
+  stopHandoffScanner();
+  const video=$('#handoffVideo'),status=$('#handoffScanStatus');
+  if(!video||!navigator.mediaDevices?.getUserMedia){if(status)status.textContent='Camera scanning is not available here. Use a QR image or paste the handoff link.';return}
+  let stream;
+  try{
+    stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'environment'}},audio:false});
+  }catch{
+    if(status)status.textContent='Camera access was not available. You can still choose a QR image or paste the handoff link.';
+    return;
+  }
+  video.srcObject=stream;video.classList.remove('hidden');video.setAttribute('playsinline','');
+  try{await video.play()}catch{}
+  if(status)status.textContent='Point the camera at a Storyline handoff QR code.';
+  const canvas=document.createElement('canvas'),ctx=canvas.getContext('2d',{willReadFrequently:true});
+  let stopped=false,raf=0,lastBad=0,nativeDetector=null;
+  if('BarcodeDetector' in window){try{nativeDetector=new BarcodeDetector({formats:['qr_code']})}catch{}}
+  const stop=()=>{
+    if(stopped)return;stopped=true;if(raf)cancelAnimationFrame(raf);
+    try{stream?.getTracks().forEach(t=>t.stop())}catch{}
+    if(video)video.srcObject=null;
+  };
+  state.handoffScanStop=stop;
+  const scan=async()=>{
+    if(stopped)return;
+    if(video.readyState>=2&&video.videoWidth&&video.videoHeight){
+      const scale=Math.min(1,720/video.videoWidth);
+      canvas.width=Math.max(1,Math.round(video.videoWidth*scale));canvas.height=Math.max(1,Math.round(video.videoHeight*scale));
+      ctx.drawImage(video,0,0,canvas.width,canvas.height);
+      let raw='';
+      if(nativeDetector){
+        try{const hits=await nativeDetector.detect(canvas);raw=hits?.[0]?.rawValue||''}catch{nativeDetector=null}
+      }
+      if(!raw&&window.jsQR){
+        try{const image=ctx.getImageData(0,0,canvas.width,canvas.height),hit=jsQR(image.data,image.width,image.height,{inversionAttempts:'attemptBoth'});raw=hit?.data||''}catch{}
+      }
+      if(raw){
+        const packet=decodeHandoffPacket(raw);
+        if(packet){stop();await showHandoffConfirmation(packet);return}
+        if(Date.now()-lastBad>1800){lastBad=Date.now();showToast("That QR isn't a Storyline handoff.")}
+      }
+    }
+    if(!stopped)raf=requestAnimationFrame(scan);
+  };
+  raf=requestAnimationFrame(scan);
+}
+function openHandoffReceiver(initialValue=''){
+  stopHandoffScanner();
+  modalForm.innerHTML=`<h3>Receive a handoff</h3>
+    <p class="sub">Scan from the camera, choose a QR screenshot/photo, or paste a Storyline handoff link. Decoding stays on this device.</p>
+    <video id="handoffVideo" class="handoff-video hidden" muted playsinline></video>
+    <div id="handoffScanStatus" class="meta">Choose how you want to receive the position.</div>
+    <div class="handoff-receive-actions"><button type="button" id="handoffCameraBtn" class="button">Scan with camera</button><button type="button" id="handoffImageBtn" class="ghost">Choose QR image</button><input id="handoffImageInput" type="file" accept="image/*" hidden /></div>
+    <label class="handoff-paste"><span class="meta">Or paste the handoff link/code</span><textarea id="handoffPaste" placeholder="Paste Storyline handoff here…">${escapeHtml(initialValue)}</textarea></label>
+    <div class="row between"><button value="cancel" class="ghost">Close</button><button type="button" id="handoffPasteBtn" class="button">Open handoff</button></div>`;
+  if(!modal.open)modal.showModal();
+  modal.addEventListener('close',stopHandoffScanner,{once:true});
+  $('#handoffCameraBtn').onclick=startHandoffCameraScan;
+  $('#handoffImageBtn').onclick=()=>$('#handoffImageInput').click();
+  $('#handoffImageInput').onchange=e=>{const file=e.target.files?.[0];e.target.value='';decodeHandoffImage(file)};
+  $('#handoffPasteBtn').onclick=()=>processHandoffValue($('#handoffPaste').value);
+  if(initialValue)requestAnimationFrame(()=>processHandoffValue(initialValue));
+}
+async function processHandoffFromLocation(){
+  const code=extractHandoffCode(location.href);if(!code)return false;
+  try{
+    const clean=location.pathname+location.search;
+    history.replaceState(null,'',clean);
+  }catch{}
+  return processHandoffValue(code);
+}
 function revisionTypeMeta(type){
   return type==='voice'?['🎙','VOICE NOTE']:type==='continuity'?['⚑','CONTINUITY']:type==='bookmark'?['⌑','BOOKMARK']:type==='question'?['?','ASK CHATGPT']:['📝','NOTE'];
 }
@@ -895,13 +1246,14 @@ async function renderLibrary(){
   const books=(await idbGetAll('books')).sort((a,b)=>new Date(b.updatedAt)-new Date(a.updatedAt));
   const items=await idbGetAll('items');
   view.innerHTML=`
-    <section class="hero"><div class="eyebrow">Your private listening desk</div><h1>Read with your ears.<br>Revise with receipts.</h1><p class="sub">Your manuscript stays in this browser. Storyline remembers where you stopped and keeps every note tied to its exact passage.</p></section>
+    <section class="hero"><div class="eyebrow">Your private listening desk</div><h1>Read with your ears.<br>Revise with receipts.</h1><p class="sub">Your manuscript stays in this browser. Storyline remembers where you stopped and keeps every note tied to its exact passage.</p><div class="row hero-actions"><button id="receiveHandoffBtn" class="ghost">Receive handoff</button></div></section>
     <section id="importZone" class="import-zone" tabindex="0"><strong>${books.length?'Add another manuscript':'Bring in a manuscript'}</strong><p class="sub">DOCX, EPUB, PDF, ODT, Markdown, HTML, TXT, or pasted text. Chapter headings are detected automatically.</p><div class="row import-actions"><button id="importBtn" class="button">Choose manuscript</button><button id="pasteImportBtn" class="ghost">Paste text or file</button></div><div class="privacy">You can also drag/drop or paste a copied manuscript file here. Everything stays local to this browser.</div></section>
     <section class="backup-card card"><div><div class="eyebrow">Data safety</div><h2>Backup & restore</h2><p class="sub">Export manuscripts, reading positions, Queue and Actioned items, preferences, and saved voice-note audio.</p></div><div class="row backup-actions"><button id="exportBackupBtn" class="ghost">Export backup</button><button id="restoreBackupBtn" class="ghost">Restore backup</button><input id="restoreBackupInput" type="file" accept="application/json,.json" hidden /></div></section>
     ${books.length?`<h2 class="section-title">My manuscripts</h2><div class="grid books">${books.map(b=>bookCard(b,items)).join('')}</div>`:`<div class="empty">Your library is waiting for its first book.</div>`}
   `;
   $('#importBtn').onclick=()=>fileInput.click();
   $('#pasteImportBtn').onclick=()=>openPasteImport();
+  const receiveHandoff=$('#receiveHandoffBtn');if(receiveHandoff)receiveHandoff.onclick=()=>openHandoffReceiver();
   const importZone=$('#importZone');
   importZone.onpaste=async e=>{
     if(e.target.closest('input,textarea'))return;
@@ -1047,6 +1399,7 @@ async function renderReader(){
     <section class="reader-header"><div class="row between"><div><div class="eyebrow">${escapeHtml(book.title)}</div>${readerChapterTitle(ch)?`<h2 class="reader-title">${escapeHtml(readerChapterTitle(ch))}</h2>`:''}</div><button id="backLibrary" class="ghost tiny">Library</button></div>
     <select id="chapterSelect" class="chapter-select">${book.chapters.map((c,i)=>`<option value="${i}" ${i===state.chapterIndex?'selected':''}>${escapeHtml(chapterLabel(c,book))} · ${readingMinutesLabel(chapterWordCount(c))}</option>`).join('')}</select>
     ${recapCardHtml(book)}
+    ${handoffLandingCardHtml(book)}
     <div class="reader-search">
       <div class="reader-search-row"><input id="readerSearchInput" class="select reader-search-input" type="search" value="${escapeHtml(state.readerSearchQuery)}" placeholder="Search this manuscript…" aria-label="Search this manuscript" /><button id="readerSearchBtn" class="ghost">Search</button><button id="readerSearchClear" class="ghost tiny ${state.readerSearchQuery?'':'hidden'}" aria-label="Clear search">Clear</button></div>
       <div class="row between"><span id="readerSearchStatus" class="meta"></span><span class="meta">Word or phrase · all chapters</span></div>
@@ -1170,6 +1523,7 @@ function wireReader(book,ch){
   };
   const recapResume=$('#recapResume');if(recapResume)recapResume.onclick=()=>{state.recapBookId=null;$('#recapCard')?.remove();scrollSelected(false)};
   const recapDismiss=$('#recapDismiss');if(recapDismiss)recapDismiss.onclick=()=>{state.recapBookId=null;$('#recapCard')?.remove()};
+  const handoffDismiss=$('#dismissHandoffLanding');if(handoffDismiss)handoffDismiss.onclick=()=>{state.pendingHandoffContext=null;$('#handoffLandingCard')?.remove()};
   const recapStart=$('#recapChapterStart');if(recapStart)recapStart.onclick=async()=>{
     state.recapBookId=null;state.selectedParagraph=0;state.selectedCharOffset=0;state.selectedWordEnd=0;
     await saveProgress(book);await renderReader();
@@ -1572,7 +1926,7 @@ function startSpeech(fromSelected=true,{preserveFollow=false}={}){
       const seg=segments[index];if(!seg)return;
       state.speakingPIndex=pIndex;state.speakingSIndex=index;state.speakingSegments=segments;
       const startWord=wordRangeAt(full,seg.start);
-      state.selectedCharOffset=seg.start;state.selectedWordEnd=startWord.end;
+      state.selectedCharOffset=seg.start;state.selectedWordEnd=startWord.end;state.liveCharOffset=seg.start;
       persistReadingProgress();
       updateReadingTimeMeta(book);
       highlightRange(pIndex,seg.start,seg.end);
@@ -1616,6 +1970,8 @@ function startSpeech(fromSelected=true,{preserveFollow=false}={}){
         if(pieceIndex>=pieces.length){onDone();return}
         const piece=pieces[pieceIndex++];
         speakPiece(piece,nextPiece,sourceIndex=>{
+          state.liveCharOffset=Math.max(0,Math.min(sourceIndex,full.length));
+          const liveWord=wordRangeAt(full,state.liveCharOffset);state.selectedWordEnd=Math.max(state.liveCharOffset,liveWord.end||state.liveCharOffset);
           const next=sentenceIndexAtSource(sourceIndex);
           if(next!==highlighted){highlighted=next;setSentenceState(next)}
         });
@@ -1685,7 +2041,7 @@ function stopAllSpeech(){
   try{if(window.meSpeak)meSpeak.stop()}catch{}
   state.isSpeaking=false;state.isPaused=false;state.activeUtterance=null;state.localSpeakingId=null;state.speakingParagraph=null;
   setMediaPlaybackState('none');
-  state.speakingPIndex=null;state.speakingSIndex=null;state.speakingSegments=null;state.replayCurrent=null;
+  state.speakingPIndex=null;state.speakingSIndex=null;state.speakingSegments=null;state.replayCurrent=null;state.liveCharOffset=null;
   clearSleepTimer();releaseWakeLock();
   const b=$('#playBtn');if(b){b.textContent='▶';b.setAttribute('aria-label','Play')}
   const replay=$('#replayBtn');if(replay)replay.disabled=true;
@@ -1798,7 +2154,7 @@ async function startLocalSpeech(fromSelected=true,{preserveFollow=false}={}){
       }
       const sentenceIndex=sIndex,part=sentenceParts[sentenceIndex],settings=prefs();
       state.speakingPIndex=pIndex;state.speakingSIndex=sentenceIndex;state.speakingSegments=sentenceParts;
-      state.selectedCharOffset=part.start;state.selectedWordEnd=wordRangeAt(full,part.start).end;
+      state.selectedCharOffset=part.start;state.selectedWordEnd=wordRangeAt(full,part.start).end;state.liveCharOffset=part.start;
       persistReadingProgress();updateReadingTimeMeta(book);highlightSentence(pIndex,sentenceIndex,sentenceParts);
       if(st)st.textContent=`Reading paragraph ${pIndex+1} · sentence ${sentenceIndex+1}/${sentenceParts.length}`;
       const pieces=speechPiecesForRange(full,part.start,part.end,book,{dialogueEnabled:!!settings.dialogueEnabled});
@@ -1950,6 +2306,7 @@ async function handleAction(act,book,ch){
     anchor,excerpt:excerpt(anchor.selectedText||text),createdAt:new Date().toISOString(),status:'open'
   };
   if(act==='start'){ startSpeechFromSelection(); return} if(act==='queue'){navigate('queue');return}
+  if(act==='handoff'){openHandoffSender(book);return}
   if(act==='pronunciations'){pronunciationManager(book,selectedReaderText());return}
   if(act==='bookmark'){await idbPut('items',{...base,id:uid(),type:'bookmark',note:''});showToast('Bookmarked');updateQueueBadge();return}
   if(act==='note') return promptItem('note','Add note','What did you notice?',base);
@@ -2252,8 +2609,9 @@ fileInput.addEventListener('change',e=>{importFile(e.target.files[0]);e.target.v
 window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();state.deferredPrompt=e;$('#installBtn').classList.remove('hidden')});
 $('#installBtn').onclick=async()=>{if(state.deferredPrompt){state.deferredPrompt.prompt();await state.deferredPrompt.userChoice;state.deferredPrompt=null;$('#installBtn').classList.add('hidden')}};
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&state.isSpeaking)requestWakeLock()});
+window.addEventListener('hashchange',()=>{if(db&&extractHandoffCode(location.href))processHandoffFromLocation()});
 // Do not cancel speech merely because iOS backgrounds the installed app.
 if('serviceWorker' in navigator) window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
 
-openDB().then(async()=>{ await migrateLegacyPassageAnchors(); const p=prefs(); state.bookId=p.lastBookId||null; if(state.bookId){ const b=await idbGet('books',state.bookId); if(b){ state.chapterIndex=b.progress?.chapterIndex ?? p.lastChapterIndex ?? 0; state.selectedParagraph=b.progress?.paragraphIndex ?? p.lastParagraphIndex ?? 0; state.selectedCharOffset=b.progress?.charOffset ?? p.lastCharOffset ?? 0; state.selectedWordEnd=b.progress?.wordEnd ?? p.lastWordEnd ?? 0; } } await navigate('library'); }).catch(e=>{view.innerHTML=`<div class="empty">Storyline could not start: ${escapeHtml(e.message)}</div>`});
+openDB().then(async()=>{ await migrateLegacyPassageAnchors(); const p=prefs(); state.bookId=p.lastBookId||null; if(state.bookId){ const b=await idbGet('books',state.bookId); if(b){ state.chapterIndex=b.progress?.chapterIndex ?? p.lastChapterIndex ?? 0; state.selectedParagraph=b.progress?.paragraphIndex ?? p.lastParagraphIndex ?? 0; state.selectedCharOffset=b.progress?.charOffset ?? p.lastCharOffset ?? 0; state.selectedWordEnd=b.progress?.wordEnd ?? p.lastWordEnd ?? 0; } } await navigate('library'); await processHandoffFromLocation(); }).catch(e=>{view.innerHTML=`<div class="empty">Storyline could not start: ${escapeHtml(e.message)}</div>`});
 })();
