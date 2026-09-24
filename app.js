@@ -423,7 +423,8 @@ function migrateRevisionItemToBook(item,newBook,oldBook){
   next.bookId=newBook.id;next.bookTitle=newBook.title;next.chapterIndex=resolved.chapterIndex;next.chapterTitle=chapterLabel(ch,newBook);
   next.paragraphIndex=resolved.paragraphIndex;next.charOffset=start;next.wordEnd=end;
   next.migrationUncertain=!!resolved.unverified;next.migrationScore=resolved.score||0;
-  next.anchor=anchorForBookPosition(newBook,resolved.chapterIndex,resolved.paragraphIndex,start,end);
+  next.anchor=resolved.unverified?(item.anchor||anchorForBookPosition(oldBook,item.chapterIndex||0,item.paragraphIndex||0,item.charOffset||0,item.wordEnd||item.charOffset||0)):anchorForBookPosition(newBook,resolved.chapterIndex,resolved.paragraphIndex,start,end);
+  next.migrationFallback={chapterIndex:resolved.chapterIndex,paragraphIndex:resolved.paragraphIndex,charStart:start,charEnd:end};
   next.lastResolved={bookId:newBook.id,chapterIndex:resolved.chapterIndex,paragraphIndex:resolved.paragraphIndex,charStart:start,charEnd:end,score:resolved.score||0,moved:!!resolved.moved,unverified:!!resolved.unverified,resolvedAt:new Date().toISOString()};
   return next;
 }
