@@ -1423,11 +1423,13 @@ function revisionChecklistMarkdown(book,items,{preview=false}={}){
     const row={item,resolved};
     if(resolved?.unverified)unmatched.push(row);else matched.push(row);
   }
-  matched.sort((a,b)=>(a.resolved.chapterIndex-b.resolved.chapterIndex)||(a.resolved.paragraphIndex-b.resolved.paragraphIndex)||new Date(a.item.createdAt)-new Date(b.item.createdAt));
-  unmatched.sort((a,b)=>new Date(a.item.createdAt)-new Date(b.item.createdAt));
+  const sorter=(a,b)=>(a.resolved?.chapterIndex??a.item.chapterIndex??0)-(b.resolved?.chapterIndex??b.item.chapterIndex??0)||(a.resolved?.paragraphIndex??a.item.paragraphIndex??0)-(b.resolved?.paragraphIndex??b.item.paragraphIndex??0)||new Date(a.item.createdAt)-new Date(b.item.createdAt);
+  matched.sort(sorter);unmatched.sort((a,b)=>new Date(a.item.createdAt)-new Date(b.item.createdAt));
+  const questions=[...matched.filter(r=>r.item.type==='question'),...unmatched.filter(r=>r.item.type==='question')];
+  const fixes=matched.filter(r=>r.item.type!=='question'),unmatchedFixes=unmatched.filter(r=>r.item.type!=='question');
   const lines=[`# Revision checklist — ${book.title} (${date}, ${items.length} item${items.length===1?'':'s'})`,''];
   let lastChapter=-1;
-  for(const row of matched){
+  for(const row of fixes){
     const {item,resolved}=row,ch=book.chapters[resolved.chapterIndex];
     if(resolved.chapterIndex!==lastChapter){
       if(lastChapter!==-1)lines.push('');
@@ -1435,18 +1437,25 @@ function revisionChecklistMarkdown(book,items,{preview=false}={}){
     }
     const [icon,label]=revisionTypeMeta(item.type);
     const passage=excerpt(item.anchor?.selectedText||item.excerpt||'',140).replace(/\s+/g,' ');
-    let note=String(item.note||'').trim();
-    if(preview&&note.length>300)note=note.slice(0,299)+'…';
+    let note=String(item.note||'').trim();if(preview&&note.length>300)note=note.slice(0,299)+'…';
     const audio=item.type==='voice'&&item.durationSec?` · ${formatDuration(item.durationSec)}`:'';
-    const detail=note?` — ${note}`:'';
-    lines.push(`- [ ] ${icon} ${label} · ¶${resolved.paragraphIndex+1}${audio} · "${passage}"${detail} (added ${revisionDate(item.createdAt)})`);
+    lines.push(`- [ ] ${icon} ${label} · ¶${resolved.paragraphIndex+1}${audio} · "${passage}"${note?` — ${note}`:''} (added ${revisionDate(item.createdAt)})`);
   }
-  if(unmatched.length){
+  if(unmatchedFixes.length){
     lines.push('','## Unmatched items');
-    for(const {item} of unmatched){
+    for(const {item} of unmatchedFixes){
       const [icon,label]=revisionTypeMeta(item.type),passage=excerpt(item.anchor?.selectedText||item.excerpt||'',140).replace(/\s+/g,' ');
       let note=String(item.note||'').trim();if(preview&&note.length>300)note=note.slice(0,299)+'…';
       lines.push(`- [ ] ${icon} ${label} · "${passage}"${note?` — ${note}`:''} (added ${revisionDate(item.createdAt)})`);
+    }
+  }
+  if(questions.length){
+    lines.push('','## Questions for ChatGPT');
+    for(const {item,resolved} of questions){
+      const passage=excerpt(item.anchor?.selectedText||item.excerpt||'',140).replace(/\s+/g,' ');
+      let note=String(item.note||'').trim();if(preview&&note.length>300)note=note.slice(0,299)+'…';
+      const loc=resolved&&!resolved.unverified?`${chapterLabel(book.chapters[resolved.chapterIndex],book)} · ¶${resolved.paragraphIndex+1}`:'Unmatched passage';
+      lines.push(`- [ ] ? ${loc} · "${passage}"${note?` — ${note}`:''} (added ${revisionDate(item.createdAt)})`);
     }
   }
   return lines.join('\n');
@@ -1614,7 +1623,7 @@ function recapCardHtml(book){
   const p=book.progress,ch=book.chapters[p.chapterIndex||0],sentences=recapSentences(book,p);
   return `<section id="recapCard" class="recap-card card">
     <div><div class="eyebrow">Pick up the thread</div><h3>Last read ${escapeHtml(relativeDateText(p.updatedAt||book.updatedAt))}</h3>
-    <p class="meta">${escapeHtml(chapterLabel(ch,book))} · paragraph ${(p.paragraphIndex||0)+1} of ${ch?.paragraphs?.length||0}</p>
+    <p class="meta">${escapeHtml(chapterLabel(ch,book))} · paragraph ${(p.paragraphIndex||0)+1} of ${ch?.paragraphs?.length||0} · ${readingMinutesLabel(remainingChapterWords(ch,p.paragraphIndex||0,p.charOffset||0))} left in chapter</p>
     ${sentences.length?`<blockquote>${escapeHtml(sentences.join(' '))}</blockquote>`:''}</div>
     <div class="row recap-actions"><button id="recapResume" class="button">Resume</button><button id="recapChapterStart" class="ghost">Chapter start</button><button id="recapDismiss" class="ghost">Dismiss</button></div>
   </section>`;
@@ -1945,10 +1954,17 @@ function loadVoices(){
   fill();
   speechSynthesis.onvoiceschanged=fill;
 }
+function completeGentleSleepStop(token=null){
+  if(!state.gentleStopPending)return false;
+  state.gentleStopPending=false;
+  showToast('Sleep timer ended — stopped at a sentence break.');
+  finishSpeech(token);
+  return true;
+}
 function clearSleepTimer(){
   if(state.sleepTimerId){clearTimeout(state.sleepTimerId);state.sleepTimerId=null}
   if(state.sleepIntervalId){clearInterval(state.sleepIntervalId);state.sleepIntervalId=null}
-  state.sleepDeadline=null;state.sleepMinutes=0;
+  state.sleepDeadline=null;state.sleepMinutes=0;state.gentleStopPending=false;
   const status=$('#sleepTimerStatus'); if(status)status.textContent='Sleep timer off';
   const select=$('#sleepTimerSelect'); if(select)select.value='0';
 }
@@ -1962,7 +1978,7 @@ function updateSleepTimerStatus(){
 function setSleepTimer(minutes){
   if(state.sleepTimerId)clearTimeout(state.sleepTimerId);
   if(state.sleepIntervalId)clearInterval(state.sleepIntervalId);
-  state.sleepTimerId=null;state.sleepIntervalId=null;state.sleepDeadline=null;state.sleepMinutes=0;
+  state.sleepTimerId=null;state.sleepIntervalId=null;state.sleepDeadline=null;state.sleepMinutes=0;state.gentleStopPending=false;
   const n=Number(minutes)||0;
   if(!n){updateSleepTimerStatus();return}
   state.sleepMinutes=n;state.sleepDeadline=Date.now()+n*60000;
@@ -1970,8 +1986,17 @@ function setSleepTimer(minutes){
   state.sleepIntervalId=setInterval(updateSleepTimerStatus,1000);
   state.sleepTimerId=setTimeout(()=>{
     state.sleepTimerId=null;
-    stopAllSpeech();
-    showToast('Sleep timer ended');
+    if(state.sleepIntervalId){clearInterval(state.sleepIntervalId);state.sleepIntervalId=null}
+    state.sleepDeadline=null;state.sleepMinutes=0;
+    const status=$('#sleepTimerStatus');
+    if(state.isSpeaking&&!state.isPaused){
+      state.gentleStopPending=true;
+      if(status)status.textContent='Sleep timer ended · finishing this sentence…';
+      showToast('Sleep timer ended — finishing at a sentence break.');
+    }else{
+      stopAllSpeech();
+      showToast('Sleep timer ended');
+    }
   },n*60000);
 }
 async function requestWakeLock(){
@@ -2208,13 +2233,16 @@ function startSpeech(fromSelected=true,{preserveFollow=false}={}){
       setSentenceState(highlighted);
       const nextPiece=()=>{
         if(token!==state.playbackToken||!state.isSpeaking)return;
-        if(pieceIndex>=pieces.length){onDone();return}
+        if(pieceIndex>=pieces.length){if(completeGentleSleepStop(token))return;onDone();return}
         const piece=pieces[pieceIndex++];
         speakPiece(piece,nextPiece,sourceIndex=>{
           state.liveCharOffset=Math.max(0,Math.min(sourceIndex,full.length));
           const liveWord=wordRangeAt(full,state.liveCharOffset);state.selectedWordEnd=Math.max(state.liveCharOffset,liveWord.end||state.liveCharOffset);
           const next=sentenceIndexAtSource(sourceIndex);
-          if(next!==highlighted){highlighted=next;setSentenceState(next)}
+          if(next!==highlighted){
+            if(state.gentleStopPending){try{speechSynthesis.cancel()}catch{};completeGentleSleepStop(token);return}
+            highlighted=next;setSentenceState(next)
+          }
         });
       };
       nextPiece();
@@ -2402,7 +2430,7 @@ async function startLocalSpeech(fromSelected=true,{preserveFollow=false}={}){
       let pieceIndex=0;
       const speakPiece=()=>{
         if(token!==state.playbackToken||!state.isSpeaking)return;
-        if(pieceIndex>=pieces.length){sIndex=sentenceIndex+1;speakSentence();return}
+        if(pieceIndex>=pieces.length){if(completeGentleSleepStop(token))return;sIndex=sentenceIndex+1;speakSentence();return}
         const piece=pieces[pieceIndex++],isDialogue=piece.kind==='dialogue'&&settings.dialogueEnabled;
         const rate=Math.max(.5,Math.min(2,Number(settings.rate||1.05)+(isDialogue?Number(settings.dialogueRateOffset||0):0)));
         const speed=Math.max(90,Math.min(310,Math.round(170*rate)));
