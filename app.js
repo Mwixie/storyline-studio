@@ -2228,6 +2228,76 @@ function setupMediaSession(){
   safe('nexttrack',()=>{mediaMoveParagraph(1)});
   safe('stop',()=>stopAllSpeech());
 }
+function mainSamanthaVoice(){
+  const p=prefs(),voices=samanthaVoices(),key=p.voiceKey||'';
+  return voices.find(v=>voiceKey(v)===key)||voices.find(v=>v.name===p.voiceName)||voices.find(v=>v.localService)||voices[0]||null;
+}
+function dialogueSamanthaVoice(){
+  const p=prefs(),voices=samanthaVoices(),key=p.dialogueVoiceKey||'';
+  return voices.find(v=>voiceKey(v)===key)||mainSamanthaVoice();
+}
+async function speakBoundedRange(book,chapterIndex,paragraphIndex,start=0,end=null,{onDone=null,movePosition=false}={}){
+  const ch=book?.chapters?.[chapterIndex],text=String(ch?.paragraphs?.[paragraphIndex]||'');
+  if(!text){showToast('There is no passage to play.');return false}
+  const a=Math.max(0,Math.min(Number(start)||0,text.length)),b=Math.max(a,Math.min(end===null?text.length:Number(end)||a,text.length));
+  if(b<=a){showToast('There is no passage to play.');return false}
+  stopAllSpeech();
+  const token=++state.playbackToken,p=prefs(),pieces=speechPiecesForRange(text,a,b,book,{dialogueEnabled:!!p.dialogueEnabled});
+  if(!pieces.length)return false;
+  if(movePosition){
+    state.bookId=book.id;state.chapterIndex=chapterIndex;state.selectedParagraph=paragraphIndex;state.selectedCharOffset=a;state.selectedWordEnd=b;
+    await saveProgress(book);
+  }
+  state.isSpeaking=true;state.isPaused=false;state.speakingPIndex=paragraphIndex;state.speakingParagraph=paragraphIndex;state.liveCharOffset=a;
+  setMediaPlaybackState('playing');requestWakeLock();
+  const play=$('#playBtn');if(play){play.textContent='Ⅱ';play.setAttribute('aria-label','Pause')}
+  if(state.route==='reader'&&state.bookId===book.id&&state.chapterIndex===chapterIndex)highlightRange(paragraphIndex,a,b);
+
+  const finish=()=>{
+    if(token!==state.playbackToken)return;
+    finishSpeech(token);
+    try{onDone?.()}catch{}
+  };
+
+  if(currentEngine()==='local'){
+    try{await ensureLocalTTS()}catch(e){showToast(e.message||'Local voice could not start.');finishSpeech(token);return false}
+    if(token!==state.playbackToken||!state.isSpeaking)return false;
+    let i=0;
+    const next=()=>{
+      if(token!==state.playbackToken||!state.isSpeaking)return;
+      if(i>=pieces.length){finish();return}
+      const piece=pieces[i++],isDialogue=piece.kind==='dialogue'&&p.dialogueEnabled;
+      const rate=Math.max(.5,Math.min(2,Number(p.rate||1.05)+(isDialogue?Number(p.dialogueRateOffset||0):0)));
+      const speed=Math.max(90,Math.min(310,Math.round(170*rate)));
+      const pitch=isDialogue?Math.max(20,Math.min(80,Math.round(50*Number(p.dialoguePitch??1.15)))):50;
+      const id=meSpeak.speak(piece.text,{amplitude:100,speed,volume:1,pitch,voice:'en-us',variant:localVoiceVariant()},success=>{
+        if(token!==state.playbackToken)return;state.localSpeakingId=null;
+        if(!success){finishSpeech(token);return}
+        next();
+      });
+      if(!id){showToast('The local voice could not play this passage.');finishSpeech(token);return}
+      state.localSpeakingId=id;
+    };
+    next();return true;
+  }
+
+  let i=0;
+  const next=()=>{
+    if(token!==state.playbackToken||!state.isSpeaking)return;
+    if(i>=pieces.length){finish();return}
+    const piece=pieces[i++],isDialogue=piece.kind==='dialogue'&&p.dialogueEnabled,u=new SpeechSynthesisUtterance(piece.text);
+    state.activeUtterance=u;
+    const v=isDialogue?dialogueSamanthaVoice():mainSamanthaVoice(),baseRate=Number(p.rate||1.05);
+    u.rate=Math.max(.5,Math.min(2,isDialogue?baseRate+Number(p.dialogueRateOffset||0):baseRate));
+    u.pitch=isDialogue?Number(p.dialoguePitch??1.15):1;u.volume=1;
+    if(v){u.voice=v;u.lang=v.lang||'en-US'}else u.lang='en-US';
+    u.onboundary=e=>{if(token!==state.playbackToken||state.activeUtterance!==u)return;const rel=Number(e.charIndex);if(Number.isFinite(rel))state.liveCharOffset=piece.mapIndex(rel)};
+    u.onend=()=>{if(token!==state.playbackToken||state.activeUtterance!==u)return;state.activeUtterance=null;next()};
+    u.onerror=e=>{if(token!==state.playbackToken||state.activeUtterance!==u)return;state.activeUtterance=null;if(e.error==='canceled'||e.error==='interrupted')return;showToast('Samantha could not play this passage.');finishSpeech(token)};
+    speechSynthesis.resume();speechSynthesis.speak(u);
+  };
+  next();return true;
+}
 function startSpeechFromSelection(){
   if(currentEngine()==='local'){startLocalSpeech(true);return}
   startSpeech(true);
