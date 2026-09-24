@@ -49,11 +49,7 @@ function dialogueRateOptions(selected){
   const wanted=Number(selected??0);
   return DIALOGUE_RATE_OFFSETS.map(v=>`<option value="${v.toFixed(2)}" ${Math.abs(v-wanted)<.001?'selected':''}>${v>0?'+':''}${v.toFixed(2)}× rate</option>`).join('');
 }
-function regexEscape(s=''){return String(s).replace(/[.*+?^${}()|[\]\\]/g,'\\function rateOptions(selected){
-  const wanted=Number(selected||1.05);
-  return READING_RATES.map(r=>`<option value="${r.toFixed(2)}" ${Math.abs(r-wanted)<.001?'selected':''}>${r.toFixed(2)}×</option>`).join('');
-}
-')}
+function regexEscape(s=''){return String(s).replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}
 function pronunciationRegex(entry){
   const raw=String(entry?.match||'').trim();
   if(!raw)return null;
