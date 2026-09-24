@@ -1790,8 +1790,8 @@ function openPacingView(book,chapterIndex=state.chapterIndex){
   $$('[data-pacing-paragraph]').forEach(btn=>btn.onclick=()=>jumpToPacingParagraph(book,ci,+btn.dataset.pacingParagraph));
 }
 function nameCandidateRegex(){
-  try{return new RegExp("(?<![\\\\p{L}\\\\p{M}])(?:\\\\p{Lu}[\\\\p{Ll}\\\\p{M}’'\\\\-]+|\\\\p{Lu}{2,})(?:\\\\s+(?:\\\\p{Lu}[\\\\p{Ll}\\\\p{M}’'\\\\-]+|\\\\p{Lu}{2,})){0,2}(?![\\\\p{L}\\\\p{M}])",'gu')}
-  catch{return /\b(?:[A-Z][a-z’'-]+|[A-Z]{2,})(?:\s+(?:[A-Z][a-z’'-]+|[A-Z]{2,})){0,2}\b/g}
+  try{return new RegExp("(?<![\\p{L}\\p{M}])\\p{Lu}[\\p{L}\\p{M}’'\\-]+(?:\\s+\\p{Lu}[\\p{L}\\p{M}’'\\-]+){0,2}(?![\\p{L}\\p{M}])",'gu')}
+  catch{return /\b[A-Z][A-Za-z’'-]+(?:\s+[A-Z][A-Za-z’'-]+){0,2}\b/g}
 }
 function normalizeNameCandidate(value=''){
   const s=String(value).replace(/\s+/g,' ').trim();if(!s)return '';
