@@ -442,6 +442,8 @@ async function migrateRevisionAtomically(oldBook,newBook,items){
 async function updateManuscriptRevision(oldBook,newBook){
   const allItems=(await idbGetAll('items')).filter(i=>i.bookId===oldBook.id);
   mergeBookPronunciations(oldBook,newBook);
+  newBook.nameIndexHidden=[...new Set([...(oldBook.nameIndexHidden||[]),...(newBook.nameIndexHidden||[])])];
+  newBook.nameIndex=[];newBook.nameIndexStatus='pending';
   newBook.progress=revisionProgressForNewBook(oldBook,newBook);
   newBook.revisionRootId=oldBook.revisionRootId||oldBook.id;
   newBook.revisionIndex=Math.max(2,(oldBook.revisionIndex||1)+1);
@@ -454,7 +456,7 @@ async function updateManuscriptRevision(oldBook,newBook){
   state.selectedCharOffset=newBook.progress.charOffset||0;state.selectedWordEnd=newBook.progress.wordEnd||0;
   savePrefs({lastBookId:newBook.id});
   if(modal.open)modal.close();
-  await navigate('reader');
+  await navigate('reader');queueNameIndexBuild(newBook);
   showToast(uncertain.length?`Updated manuscript · ${uncertain.length} item${uncertain.length===1?' needs':'s need'} location review`:`Updated manuscript · ${migrated.length} revision item${migrated.length===1?'':'s'} carried forward`);
 }
 function compactHandoffAnchor(anchor){
