@@ -970,7 +970,8 @@ async function renderReader(){
   const p=prefs();
   view.innerHTML=`
     <section class="reader-header"><div class="row between"><div><div class="eyebrow">${escapeHtml(book.title)}</div>${readerChapterTitle(ch)?`<h2 class="reader-title">${escapeHtml(readerChapterTitle(ch))}</h2>`:''}</div><button id="backLibrary" class="ghost tiny">Library</button></div>
-    <select id="chapterSelect" class="chapter-select">${book.chapters.map((c,i)=>`<option value="${i}" ${i===state.chapterIndex?'selected':''}>${escapeHtml(chapterLabel(c,book))}</option>`).join('')}</select>
+    <select id="chapterSelect" class="chapter-select">${book.chapters.map((c,i)=>`<option value="${i}" ${i===state.chapterIndex?'selected':''}>${escapeHtml(chapterLabel(c,book))} · ${readingMinutesLabel(chapterWordCount(c))}</option>`).join('')}</select>
+    ${recapCardHtml(book)}
     <div class="reader-search">
       <div class="reader-search-row"><input id="readerSearchInput" class="select reader-search-input" type="search" value="${escapeHtml(state.readerSearchQuery)}" placeholder="Search this manuscript…" aria-label="Search this manuscript" /><button id="readerSearchBtn" class="ghost">Search</button><button id="readerSearchClear" class="ghost tiny ${state.readerSearchQuery?'':'hidden'}" aria-label="Clear search">Clear</button></div>
       <div class="row between"><span id="readerSearchStatus" class="meta"></span><span class="meta">Word or phrase · all chapters</span></div>
@@ -984,8 +985,9 @@ async function renderReader(){
           <button id="playBtn" class="button play" aria-label="Play">▶</button>
           <button id="nextBtn" class="ghost transport-skip" aria-label="Next paragraph">›</button>
           <button id="replayBtn" class="ghost transport-replay" aria-label="Replay current sentence" disabled>↺</button>
+          <button id="repeatBtn" class="ghost transport-replay ${p.repeatParagraph?'active':''}" aria-label="Repeat paragraph" aria-pressed="${p.repeatParagraph?'true':'false'}">⟳</button>
         </div>
-        <div class="transport-progress"><div class="row between"><span id="positionLabel" class="meta">Paragraph ${state.selectedParagraph+1} of ${ch.paragraphs.length}</span><span id="speedLabel" class="meta">${Number(p.rate||1.05).toFixed(2)}×</span></div><input id="positionRange" class="range" type="range" min="0" max="${Math.max(ch.paragraphs.length-1,0)}" value="${state.selectedParagraph}" /></div>
+        <div class="transport-progress"><div class="row between"><span id="positionLabel" class="meta">Paragraph ${state.selectedParagraph+1} of ${ch.paragraphs.length}</span><span id="timeLeftLabel" class="meta">${readingMinutesLabel(remainingChapterWords(ch,state.selectedParagraph,state.selectedCharOffset||0))} left in chapter</span><span id="speedLabel" class="meta">${Number(p.rate||1.05).toFixed(2)}×</span></div><input id="positionRange" class="range" type="range" min="0" max="${Math.max(ch.paragraphs.length-1,0)}" value="${state.selectedParagraph}" /></div>
       </div>
       <div class="compact-status"><span id="voiceStatus" class="reading-status">Loading device voices…</span><button id="resumeFollowBtn" class="ghost tiny hidden">↧ Resume follow</button></div>
       <details id="voiceOptions" class="voice-options">
@@ -1012,6 +1014,7 @@ async function renderReader(){
     </section>`;
   wireReader(book,ch); loadVoices(); requestAnimationFrame(()=>{
     if(state.sleepDeadline){const sleep=$('#sleepTimerSelect');if(sleep)sleep.value=String(state.sleepMinutes||0);updateSleepTimerStatus()}
+    updateReadingTimeMeta(book);
     const ref=state.pendingPassageReference;
     if(ref&&ref.chapterIndex===state.chapterIndex&&ref.paragraphIndex===state.selectedParagraph){
       markReferenceRange(ref.paragraphIndex,ref.start,ref.end);
@@ -1066,6 +1069,17 @@ function wireReader(book,ch){
   $('#playBtn').onclick=toggleSpeech;
   $('#prevBtn').onclick=()=>{ stopAllSpeech(); state.selectedCharOffset=0;state.selectedWordEnd=0;selectParagraph(Math.max(0,state.selectedParagraph-1)); };
   $('#nextBtn').onclick=()=>{ stopAllSpeech(); state.selectedCharOffset=0;state.selectedWordEnd=0;selectParagraph(Math.min(ch.paragraphs.length-1,state.selectedParagraph+1)); };
+  const repeatBtn=$('#repeatBtn');if(repeatBtn)repeatBtn.onclick=()=>{
+    const enabled=!prefs().repeatParagraph;savePrefs({repeatParagraph:enabled});
+    repeatBtn.classList.toggle('active',enabled);repeatBtn.setAttribute('aria-pressed',String(enabled));
+    showToast(enabled?'Repeating paragraph':'Repeat off');
+  };
+  const recapResume=$('#recapResume');if(recapResume)recapResume.onclick=()=>{state.recapBookId=null;$('#recapCard')?.remove();scrollSelected(false)};
+  const recapDismiss=$('#recapDismiss');if(recapDismiss)recapDismiss.onclick=()=>{state.recapBookId=null;$('#recapCard')?.remove()};
+  const recapStart=$('#recapChapterStart');if(recapStart)recapStart.onclick=async()=>{
+    state.recapBookId=null;state.selectedParagraph=0;state.selectedCharOffset=0;state.selectedWordEnd=0;
+    await saveProgress(book);await renderReader();
+  };
   $('#testVoiceBtn').onclick=testVoice;
   $('#replayBtn').onclick=replayCurrentSentence;
   $('#sleepTimerSelect').onchange=e=>setSleepTimer(+e.target.value);
@@ -1074,7 +1088,7 @@ function wireReader(book,ch){
     const rate=Number(e.target.value)||1.05;
     savePrefs({rate});
     const label=$('#speedLabel');if(label)label.textContent=rate.toFixed(2)+'×';
-    updateVoiceSummary();
+    updateVoiceSummary();updateReadingTimeMeta(book);
     restartNarrationForSettingChange('Speed changed');
   };
   const voiceSelect=$('#voiceSelect'); if(voiceSelect) voiceSelect.onchange=e=>{
@@ -1127,7 +1141,7 @@ function wireReaderSearchResults(book){
     }
   });
 }
-async function selectParagraph(i,noScroll=false,preserveWord=false){ state.selectedParagraph=i; if(!preserveWord){state.selectedCharOffset=0;state.selectedWordEnd=0;} $$('#readingPage p').forEach(p=>p.classList.toggle('selected',+p.dataset.p===i)); $('#positionRange').value=i; $('#positionLabel').textContent=`Paragraph ${i+1} of ${$('#readingPage').children.length}`; const book=await idbGet('books',state.bookId); await saveProgress(book); if(!noScroll) scrollSelected(); }
+async function selectParagraph(i,noScroll=false,preserveWord=false){ state.selectedParagraph=i; if(!preserveWord){state.selectedCharOffset=0;state.selectedWordEnd=0;} $('#readingPage p').forEach(p=>p.classList.toggle('selected',+p.dataset.p===i)); $('#positionRange').value=i; $('#positionLabel').textContent=`Paragraph ${i+1} of ${$('#readingPage').children.length}`; const book=await idbGet('books',state.bookId); await saveProgress(book); updateReadingTimeMeta(book); if(!noScroll) scrollSelected(); }
 function scrollSelected(smooth=true){ const el=$(`#readingPage p[data-p="${state.selectedParagraph}"]`); if(el) el.scrollIntoView({block:'center',behavior:smooth?'smooth':'auto'}); }
 function updateFollowControl(){
   const btn=$('#resumeFollowBtn');if(btn)btn.classList.toggle('hidden',!state.followNarrationSuspended);
