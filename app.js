@@ -1564,75 +1564,88 @@ async function startLocalSpeech(fromSelected=true,{preserveFollow=false}={}){
   const token=++state.playbackToken;
   const paras=$$('#readingPage p').map(p=>(p.textContent||'').trim());
   if(!paras.some(Boolean)){showToast('There is no text to read in this chapter.');return}
+  const book=state.readerBook;
+  if(!book){showToast('The manuscript is still loading.');return}
   let pIndex=fromSelected?state.selectedParagraph:(state.speakingParagraph??state.selectedParagraph);
   pIndex=Math.max(0,Math.min(pIndex,paras.length-1));
   let firstOffset=fromSelected?(state.selectedCharOffset||0):0;
-  const st=$('#voiceStatus'); if(st)st.textContent=state.chapterTransitionNotice||'Loading free local voice…';
+  const st=$('#voiceStatus');if(st)st.textContent=state.chapterTransitionNotice||'Loading free local voice…';
   state.chapterTransitionNotice='';
-  const play=$('#playBtn'); if(play)play.textContent='…';
-  try{await ensureLocalTTS();}catch(e){if(token!==state.playbackToken)return;if(st)st.textContent='Local voice failed to load';if(play)play.textContent='▶';showToast(e.message);return}
+  const play=$('#playBtn');if(play)play.textContent='…';
+  try{await ensureLocalTTS()}catch(e){if(token!==state.playbackToken)return;if(st)st.textContent='Local voice failed to load';if(play)play.textContent='▶';showToast(e.message);return}
   if(token!==state.playbackToken)return;
-  try{meSpeak.stop();}catch{}
-  state.isSpeaking=true; state.isPaused=false;
-  requestWakeLock();
-  if(play){play.textContent='■';play.setAttribute('aria-label','Stop');}
+  try{meSpeak.stop()}catch{}
+  state.isSpeaking=true;state.isPaused=false;requestWakeLock();
+  if(play){play.textContent='■';play.setAttribute('aria-label','Stop')}
 
   const continueLocalChapter=async()=>{
     if(token!==state.playbackToken||!state.isSpeaking)return;
-    const book=await idbGet('books',state.bookId);
+    const fresh=await idbGet('books',state.bookId);
     if(token!==state.playbackToken||!state.isSpeaking)return;
-    if(!book){finishSpeech(token);return}
-    if(state.chapterIndex>=book.chapters.length-1){await saveProgress(book,{completed:true});finishSpeech(token);return}
+    if(!fresh){finishSpeech(token);return}
+    state.readerBook=fresh;
+    if(state.chapterIndex>=fresh.chapters.length-1){await saveProgress(fresh,{completed:true});finishSpeech(token);return}
     if(prefs().autoAdvance===false){finishSpeech(token);return}
-    const completedLabel=chapterLabel(book.chapters[state.chapterIndex],book);
+    const completedLabel=chapterLabel(fresh.chapters[state.chapterIndex],fresh);
     state.chapterIndex++;state.selectedParagraph=0;state.selectedCharOffset=0;state.selectedWordEnd=0;state.speakingParagraph=null;
-    await saveProgress(book);
+    await saveProgress(fresh);
     if(token!==state.playbackToken||!state.isSpeaking)return;
-    const notice=`${completedLabel} complete · continuing to ${chapterLabel(book.chapters[state.chapterIndex],book)}…`;
-    state.chapterTransitionNotice=notice;
-    showToast(notice);
+    const notice=`${completedLabel} complete · continuing to ${chapterLabel(fresh.chapters[state.chapterIndex],fresh)}…`;
+    state.chapterTransitionNotice=notice;showToast(notice);
     await renderReader();
     if(token!==state.playbackToken||!state.isSpeaking)return;
-    startLocalSpeech(false);
+    startLocalSpeech(false,{preserveFollow:true});
   };
 
   const speakParagraph=()=>{
     if(token!==state.playbackToken||!state.isSpeaking)return;
     if(pIndex>=paras.length){continueLocalChapter();return}
-    const sentenceParts=sentenceSegments(paras[pIndex],0);
-    const sentences=sentenceParts.map(x=>x.text);
+    const full=paras[pIndex],sentenceParts=sentenceSegments(full,0);
     let sIndex=0;
     if(pIndex===state.selectedParagraph&&firstOffset>0){
       const found=sentenceParts.findIndex(x=>firstOffset>=x.start&&firstOffset<x.end);
       sIndex=found>=0?found:Math.max(0,sentenceParts.findIndex(x=>x.start>=firstOffset));
       if(sIndex<0)sIndex=Math.max(0,sentenceParts.length-1);
     }
-    state.speakingParagraph=pIndex; state.selectedParagraph=pIndex; markSpeaking(pIndex);
-    const range=$('#positionRange'); if(range)range.value=pIndex;
-    const label=$('#positionLabel'); if(label)label.textContent=`Paragraph ${pIndex+1} of ${paras.length}`;
+    state.speakingParagraph=pIndex;state.selectedParagraph=pIndex;markSpeaking(pIndex);
+    const range=$('#positionRange');if(range)range.value=pIndex;
+    const label=$('#positionLabel');if(label)label.textContent=`Paragraph ${pIndex+1} of ${paras.length}`;
 
     const speakSentence=()=>{
       if(token!==state.playbackToken||!state.isSpeaking)return;
-      if(sIndex>=sentences.length){
-        const currentP=$(`#readingPage p[data-p="${pIndex}"]`); if(currentP) currentP.textContent=paras[pIndex];
-        state.selectedCharOffset=paras[pIndex].length;state.selectedWordEnd=paras[pIndex].length;
-        idbGet('books',state.bookId).then(book=>book&&saveProgress(book)).catch(()=>{});
-        pIndex++;firstOffset=0;speakParagraph(); return;
+      if(sIndex>=sentenceParts.length){
+        const currentP=$(`#readingPage p[data-p="${pIndex}"]`);if(currentP)currentP.textContent=full;
+        if(prefs().repeatParagraph){
+          state.selectedCharOffset=0;state.selectedWordEnd=0;firstOffset=0;
+          persistReadingProgress();speakParagraph();return;
+        }
+        state.selectedCharOffset=full.length;state.selectedWordEnd=full.length;
+        persistReadingProgress();pIndex++;firstOffset=0;speakParagraph();return;
       }
-      const part=sentenceParts[sIndex];
-      state.speakingPIndex=pIndex;state.speakingSIndex=sIndex;state.speakingSegments=sentenceParts;
-      state.selectedCharOffset=part.start;state.selectedWordEnd=wordRangeAt(paras[pIndex],part.start).end;
-      persistReadingProgress();
-      if(st)st.textContent=`Reading paragraph ${pIndex+1} · sentence ${sIndex+1}/${sentences.length}`; highlightSentence(pIndex,sIndex,sentenceParts);
-      const id=meSpeak.speak(sentences[sIndex],{amplitude:100,speed:localSpeed(),volume:1,voice:'en-us',variant:localVoiceVariant()},success=>{
-        if(token!==state.playbackToken)return;
-        state.localSpeakingId=null;
-        if(!state.isSpeaking)return;
-        if(!success){finishSpeech(token);return}
-        sIndex++; speakSentence();
-      });
-      if(!id){showToast('The local voice could not generate this sentence.');finishSpeech(token);return}
-      state.localSpeakingId=id;
+      const sentenceIndex=sIndex,part=sentenceParts[sentenceIndex],settings=prefs();
+      state.speakingPIndex=pIndex;state.speakingSIndex=sentenceIndex;state.speakingSegments=sentenceParts;
+      state.selectedCharOffset=part.start;state.selectedWordEnd=wordRangeAt(full,part.start).end;
+      persistReadingProgress();highlightSentence(pIndex,sentenceIndex,sentenceParts);
+      if(st)st.textContent=`Reading paragraph ${pIndex+1} · sentence ${sentenceIndex+1}/${sentenceParts.length}`;
+      const pieces=speechPiecesForRange(full,part.start,part.end,book,{dialogueEnabled:!!settings.dialogueEnabled});
+      let pieceIndex=0;
+      const speakPiece=()=>{
+        if(token!==state.playbackToken||!state.isSpeaking)return;
+        if(pieceIndex>=pieces.length){sIndex=sentenceIndex+1;speakSentence();return}
+        const piece=pieces[pieceIndex++],isDialogue=piece.kind==='dialogue'&&settings.dialogueEnabled;
+        const rate=Math.max(.5,Math.min(2,Number(settings.rate||1.05)+(isDialogue?Number(settings.dialogueRateOffset||0):0)));
+        const speed=Math.max(90,Math.min(310,Math.round(170*rate)));
+        const pitch=isDialogue?Math.max(20,Math.min(80,Math.round(50*Number(settings.dialoguePitch??1.15)))):50;
+        const id=meSpeak.speak(piece.text,{amplitude:100,speed,volume:1,pitch,voice:'en-us',variant:localVoiceVariant()},success=>{
+          if(token!==state.playbackToken)return;
+          state.localSpeakingId=null;if(!state.isSpeaking)return;
+          if(!success){finishSpeech(token);return}
+          speakPiece();
+        });
+        if(!id){showToast('The local voice could not generate this sentence.');finishSpeech(token);return}
+        state.localSpeakingId=id;
+      };
+      speakPiece();
     };
     speakSentence();
   };
