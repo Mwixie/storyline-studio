@@ -2599,8 +2599,9 @@ fileInput.addEventListener('change',e=>{importFile(e.target.files[0]);e.target.v
 window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();state.deferredPrompt=e;$('#installBtn').classList.remove('hidden')});
 $('#installBtn').onclick=async()=>{if(state.deferredPrompt){state.deferredPrompt.prompt();await state.deferredPrompt.userChoice;state.deferredPrompt=null;$('#installBtn').classList.add('hidden')}};
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&state.isSpeaking)requestWakeLock()});
+window.addEventListener('hashchange',()=>{if(extractHandoffCode(location.href))processHandoffFromLocation()});
 // Do not cancel speech merely because iOS backgrounds the installed app.
 if('serviceWorker' in navigator) window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
 
-openDB().then(async()=>{ await migrateLegacyPassageAnchors(); const p=prefs(); state.bookId=p.lastBookId||null; if(state.bookId){ const b=await idbGet('books',state.bookId); if(b){ state.chapterIndex=b.progress?.chapterIndex ?? p.lastChapterIndex ?? 0; state.selectedParagraph=b.progress?.paragraphIndex ?? p.lastParagraphIndex ?? 0; state.selectedCharOffset=b.progress?.charOffset ?? p.lastCharOffset ?? 0; state.selectedWordEnd=b.progress?.wordEnd ?? p.lastWordEnd ?? 0; } } await navigate('library'); }).catch(e=>{view.innerHTML=`<div class="empty">Storyline could not start: ${escapeHtml(e.message)}</div>`});
+openDB().then(async()=>{ await migrateLegacyPassageAnchors(); const p=prefs(); state.bookId=p.lastBookId||null; if(state.bookId){ const b=await idbGet('books',state.bookId); if(b){ state.chapterIndex=b.progress?.chapterIndex ?? p.lastChapterIndex ?? 0; state.selectedParagraph=b.progress?.paragraphIndex ?? p.lastParagraphIndex ?? 0; state.selectedCharOffset=b.progress?.charOffset ?? p.lastCharOffset ?? 0; state.selectedWordEnd=b.progress?.wordEnd ?? p.lastWordEnd ?? 0; } } await navigate('library'); await processHandoffFromLocation(); }).catch(e=>{view.innerHTML=`<div class="empty">Storyline could not start: ${escapeHtml(e.message)}</div>`});
 })();
