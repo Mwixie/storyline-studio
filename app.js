@@ -11,7 +11,8 @@ const state = {
   sleepTimerId:null, sleepIntervalId:null, sleepDeadline:null, sleepMinutes:0, wakeLock:null, chapterTransitionNotice:'',
   pendingPassageReference:null, activeEngine:'device', readerSearchQuery:'',
   followNarrationSuspended:false, readerBook:null, recapBookId:null, selectedReaderPhrase:'',
-  liveCharOffset:null, pendingHandoffContext:null, handoffScanStop:null
+  liveCharOffset:null, pendingHandoffContext:null, handoffScanStop:null,
+  sharedPronunciations:[], gentleStopPending:false
 };
 
 const PREF='storyline.prefs.v1';
@@ -124,8 +125,14 @@ function dialogueRanges(source,start=0,end=source.length){
   if(dialogueStart!==null)push(dialogueStart,b,'narration');else push(cursor,b,'narration');
   return ranges.length?ranges:[{start:a,end:b,kind:'narration'}];
 }
+function effectivePronunciations(book){
+  const local=Array.isArray(book?.pronunciations)?book.pronunciations:[];
+  const overrides=new Set(local.map(x=>String(x.match||'').trim().toLowerCase()).filter(Boolean));
+  const shared=(state.sharedPronunciations||[]).filter(x=>!overrides.has(String(x.match||'').trim().toLowerCase()));
+  return [...local,...shared];
+}
 function speechPiecesForRange(source,start,end,book,settings={}){
-  const pronunciations=book?.pronunciations||[];
+  const pronunciations=effectivePronunciations(book);
   const ranges=settings.dialogueEnabled?dialogueRanges(source,start,end):[{start,end,kind:'narration'}];
   return ranges.map(range=>{
     const transformed=transformSpeechText(source.slice(range.start,range.end),pronunciations,range.start);
@@ -142,39 +149,96 @@ function selectedReaderText(){
   }catch{}
   return state.selectedReaderPhrase||'';
 }
-function pronunciationManager(book,prefill=''){
-  const rows=(book.pronunciations||[]).map(p=>`<div class="pronunciation-row" data-pronunciation="${p.id}"><div><strong>${escapeHtml(p.match)}</strong><span> → “${escapeHtml(p.replacement)}”</span></div><div class="row"><button type="button" class="ghost tiny" data-pron-edit="${p.id}">Edit</button><button type="button" class="ghost tiny danger-ghost" data-pron-delete="${p.id}">Delete</button></div></div>`).join('');
-  modalForm.innerHTML=`<h3>Pronunciations</h3><p class="sub">Storyline changes only what the voice says. Your manuscript text stays untouched.</p>
-    <div class="pronunciation-add"><input id="pronMatch" class="select" maxlength="100" placeholder="Word or phrase" value="${escapeHtml(prefill)}" /><input id="pronReplacement" class="select" maxlength="160" placeholder="Say it as…" /></div>
-    <div class="row between"><span class="meta">${(book.pronunciations||[]).length}/200 saved</span><button type="button" id="pronSave" class="button">Add pronunciation</button></div>
-    <div class="pronunciation-list">${rows||'<div class="empty">No custom pronunciations yet.</div>'}</div>
-    <div class="row between"><span class="meta">Longest matching phrase wins.</span><button value="default" class="ghost">Close</button></div>`;
+function speakPronunciationPreview(text){
+  const value=String(text||'').trim();if(!value)return;
+  if(!('speechSynthesis' in window)||typeof SpeechSynthesisUtterance==='undefined'){showToast('Voice preview is not available in this browser.');return}
+  if(state.isSpeaking)stopAllSpeech();else try{speechSynthesis.cancel()}catch{}
+  const p=prefs(),voices=samanthaVoices(),selectedKey=$('#voiceSelect')?.value||p.voiceKey;
+  const v=voices.find(x=>voiceKey(x)===selectedKey)||voices.find(x=>x.localService)||voices[0]||null;
+  const u=new SpeechSynthesisUtterance(value);u.rate=Number(p.rate||1.05);u.pitch=1;u.volume=1;
+  if(v){u.voice=v;u.lang=v.lang||'en-US'}else u.lang='en-US';
+  u.onerror=e=>{if(e.error!=='canceled'&&e.error!=='interrupted')showToast('Pronunciation preview could not play.')};
+  speechSynthesis.resume();speechSynthesis.speak(u);
+}
+async function openPronunciationCopy(book){
+  const books=(await idbGetAll('books')).filter(b=>b.id!==book.id&&(b.pronunciations||[]).length);
+  if(!books.length){showToast('No other manuscript has pronunciations to copy yet.');return}
+  modalForm.innerHTML=`<h3>Copy pronunciations from…</h3><p class="sub">Only entries not already in this book will be added.</p>
+    <select id="pronCopyBook" class="select">${books.map(b=>`<option value="${b.id}">${escapeHtml(b.title)} · ${(b.pronunciations||[]).length}</option>`).join('')}</select>
+    <div class="row between"><button type="button" id="pronCopyBack" class="ghost">Back</button><button type="button" id="pronCopyConfirm" class="button">Copy entries</button></div>`;
   if(!modal.open)modal.showModal();
+  $('#pronCopyBack').onclick=()=>pronunciationManager(book,'','book');
+  $('#pronCopyConfirm').onclick=async()=>{
+    const source=await idbGet('books',$('#pronCopyBook').value);if(!source)return;
+    const target=[...(book.pronunciations||[])],seen=new Set(target.map(x=>String(x.match||'').toLowerCase()));
+    let added=0,existing=0,full=0;
+    for(const p of source.pronunciations||[]){
+      const key=String(p.match||'').toLowerCase();
+      if(seen.has(key)){existing++;continue}
+      if(target.length>=200){full++;continue}
+      target.push({...p,id:uid(),createdAt:new Date().toISOString(),copiedFrom:source.id});seen.add(key);added++;
+    }
+    book.pronunciations=target;book.updatedAt=new Date().toISOString();await idbPut('books',book);
+    if(state.bookId===book.id)state.readerBook=book;
+    showToast(`${added} added${existing?`, ${existing} already there`:''}${full?`, ${full} skipped at limit`:''}`);
+    pronunciationManager(book,'','book');
+  };
+}
+async function pronunciationManager(book,prefill='',scope='book'){
+  if(!state.sharedPronunciations)await loadSharedPronunciations();
+  const isShared=scope==='shared',list=isShared?(state.sharedPronunciations||[]):(book.pronunciations||[]);
+  const rowHtml=(p,{shared=false,editable=true}={})=>`<div class="pronunciation-row" data-pronunciation="${p.id}">
+    <div><strong>${escapeHtml(p.match)}</strong><span> → “${escapeHtml(p.replacement)}”</span>${shared?'<span class="pill">shared</span>':''}</div>
+    <div class="row"><button type="button" class="ghost tiny" data-pron-hear="${p.id}" data-pron-shared="${shared?'1':'0'}">🔊</button>${editable?`<button type="button" class="ghost tiny" data-pron-edit="${p.id}">Edit</button><button type="button" class="ghost tiny danger-ghost" data-pron-delete="${p.id}">Delete</button>`:''}</div>
+  </div>`;
+  const rows=list.map(p=>rowHtml(p,{shared:isShared,editable:true})).join('');
+  const sharedPreview=!isShared&&(state.sharedPronunciations||[]).length
+    ?`<div class="pronunciation-shared-preview"><div class="row between"><strong>Shared pronunciations also active</strong><span class="meta">${state.sharedPronunciations.length}</span></div>${state.sharedPronunciations.map(p=>rowHtml(p,{shared:true,editable:false})).join('')}</div>`:'';
+  modalForm.innerHTML=`<h3>Pronunciations</h3><p class="sub">Storyline changes only what the voice says. Your manuscript text stays untouched.</p>
+    <div class="pronunciation-tabs"><button type="button" id="pronBookTab" class="${isShared?'ghost':'button'}">This book</button><button type="button" id="pronSharedTab" class="${isShared?'button':'ghost'}">Shared</button></div>
+    <div class="pronunciation-add"><input id="pronMatch" class="select" maxlength="100" placeholder="Word or phrase" value="${escapeHtml(prefill)}" /><input id="pronReplacement" class="select" maxlength="160" placeholder="Say it as…" /></div>
+    <div class="row between"><span class="meta">${list.length}/200 ${isShared?'shared':'book'} entries</span><div class="row">${!isShared?'<button type="button" id="pronCopyFrom" class="ghost tiny">Copy from…</button>':''}<button type="button" id="pronSave" class="button">Add pronunciation</button></div></div>
+    <div class="pronunciation-list">${rows||`<div class="empty">No ${isShared?'shared':'book'} pronunciations yet.</div>`}</div>
+    ${sharedPreview}
+    <div class="row between"><span class="meta">${isShared?'Shared entries apply to every manuscript.':'Book entries override shared entries with the same spelling.'}</span><button value="default" class="ghost">Close</button></div>`;
+  if(!modal.open)modal.showModal();
+
+  $('#pronBookTab').onclick=()=>pronunciationManager(book,'','book');
+  $('#pronSharedTab').onclick=()=>pronunciationManager(book,'','shared');
+  const copyBtn=$('#pronCopyFrom');if(copyBtn)copyBtn.onclick=()=>openPronunciationCopy(book);
+
+  const currentList=()=>isShared?[...(state.sharedPronunciations||[])]:[...(book.pronunciations||[])];
+  const persist=async next=>{
+    if(isShared)await saveSharedPronunciations(next);
+    else{book.pronunciations=next;book.updatedAt=new Date().toISOString();await idbPut('books',book);if(state.bookId===book.id)state.readerBook=book}
+  };
   const saveEntry=async(existingId=null)=>{
     const match=$('#pronMatch').value.trim(),replacement=$('#pronReplacement').value.trim();
     if(!match||!replacement){showToast('Add both the written form and how it should sound.');return}
-    const list=[...(book.pronunciations||[])];
-    if(!existingId&&list.length>=200){showToast('This book already has 200 pronunciations.');return}
-    const duplicate=list.find(x=>x.id!==existingId&&x.match.toLowerCase()===match.toLowerCase());
-    if(duplicate){showToast('That pronunciation already exists.');return}
-    const found=list.find(x=>x.id===existingId);
+    const next=currentList();
+    if(!existingId&&next.length>=200){showToast(`This ${isShared?'shared list':'book'} already has 200 pronunciations.`);return}
+    const duplicate=next.find(x=>x.id!==existingId&&String(x.match||'').toLowerCase()===match.toLowerCase());
+    if(duplicate){showToast('That pronunciation already exists in this list.');return}
+    const found=next.find(x=>x.id===existingId);
     if(found){found.match=match;found.replacement=replacement;found.updatedAt=new Date().toISOString()}
-    else list.push({id:uid(),match,replacement,createdAt:new Date().toISOString()});
-    book.pronunciations=list;book.updatedAt=new Date().toISOString();await idbPut('books',book);
-    if(state.bookId===book.id)state.readerBook=book;
-    pronunciationManager(book);
+    else next.push({id:uid(),match,replacement,createdAt:new Date().toISOString()});
+    await persist(next);await pronunciationManager(book,'',scope);
     if(state.isSpeaking)restartNarrationForSettingChange('Pronunciation updated');
   };
   $('#pronSave').onclick=()=>saveEntry();
   $$('[data-pron-edit]').forEach(btn=>btn.onclick=()=>{
-    const p=(book.pronunciations||[]).find(x=>x.id===btn.dataset.pronEdit);if(!p)return;
+    const p=currentList().find(x=>x.id===btn.dataset.pronEdit);if(!p)return;
     $('#pronMatch').value=p.match;$('#pronReplacement').value=p.replacement;
     $('#pronSave').textContent='Save change';$('#pronSave').onclick=()=>saveEntry(p.id);
   });
   $$('[data-pron-delete]').forEach(btn=>btn.onclick=async()=>{
-    book.pronunciations=(book.pronunciations||[]).filter(x=>x.id!==btn.dataset.pronDelete);
-    book.updatedAt=new Date().toISOString();await idbPut('books',book);if(state.bookId===book.id)state.readerBook=book;pronunciationManager(book);
+    const next=currentList().filter(x=>x.id!==btn.dataset.pronDelete);await persist(next);
+    await pronunciationManager(book,'',scope);
     if(state.isSpeaking)restartNarrationForSettingChange('Pronunciation removed');
+  });
+  $$('[data-pron-hear]').forEach(btn=>btn.onclick=()=>{
+    const source=btn.dataset.pronShared==='1'?(state.sharedPronunciations||[]):currentList();
+    const p=source.find(x=>x.id===btn.dataset.pronHear);if(p)speakPronunciationPreview(p.replacement);
   });
   requestAnimationFrame(()=>$('#pronReplacement')?.focus());
 }
@@ -585,9 +649,11 @@ function highlightRange(paragraphIndex,start,end){
 
 
 async function openDB(){
-  return new Promise((res,rej)=>{ const r=indexedDB.open(dbName,1); r.onupgradeneeded=()=>{
-    const d=r.result; if(!d.objectStoreNames.contains('books')) d.createObjectStore('books',{keyPath:'id'});
-    if(!d.objectStoreNames.contains('items')){ const s=d.createObjectStore('items',{keyPath:'id'}); s.createIndex('bookId','bookId'); s.createIndex('type','type'); }
+  return new Promise((res,rej)=>{ const r=indexedDB.open(dbName,2); r.onupgradeneeded=()=>{
+    const d=r.result;
+    if(!d.objectStoreNames.contains('books'))d.createObjectStore('books',{keyPath:'id'});
+    if(!d.objectStoreNames.contains('items')){const s=d.createObjectStore('items',{keyPath:'id'});s.createIndex('bookId','bookId');s.createIndex('type','type')}
+    if(!d.objectStoreNames.contains('meta'))d.createObjectStore('meta',{keyPath:'key'});
   }; r.onsuccess=()=>{db=r.result;res(db)}; r.onerror=()=>rej(r.error); });
 }
 function store(name,mode='readonly'){return db.transaction(name,mode).objectStore(name)}
@@ -596,20 +662,31 @@ function idbGet(name,id){return new Promise((res,rej)=>{const r=store(name).get(
 function idbPut(name,obj){return new Promise((res,rej)=>{const r=store(name,'readwrite').put(obj);r.onsuccess=()=>res(obj);r.onerror=()=>rej(r.error)})}
 function idbDelete(name,id){return new Promise((res,rej)=>{const r=store(name,'readwrite').delete(id);r.onsuccess=()=>res();r.onerror=()=>rej(r.error)})}
 function idbClear(name){return new Promise((res,rej)=>{const r=store(name,'readwrite').clear();r.onsuccess=()=>res();r.onerror=()=>rej(r.error)})}
-function replaceLibraryAtomically(books,items){
+async function loadSharedPronunciations(){
+  const row=await idbGet('meta','sharedPronunciations');
+  state.sharedPronunciations=Array.isArray(row?.value)?row.value:[];
+  return state.sharedPronunciations;
+}
+async function saveSharedPronunciations(list){
+  state.sharedPronunciations=[...list];
+  await idbPut('meta',{key:'sharedPronunciations',value:state.sharedPronunciations,updatedAt:new Date().toISOString()});
+  return state.sharedPronunciations;
+}
+function replaceLibraryAtomically(books,items,meta=[]){
   return new Promise((res,rej)=>{
     let tx;
     try{
-      tx=db.transaction(['books','items'],'readwrite');
-      const booksStore=tx.objectStore('books'),itemsStore=tx.objectStore('items');
+      tx=db.transaction(['books','items','meta'],'readwrite');
+      const booksStore=tx.objectStore('books'),itemsStore=tx.objectStore('items'),metaStore=tx.objectStore('meta');
       let settled=false;
       tx.oncomplete=()=>{if(!settled){settled=true;res()}};
       tx.onabort=()=>{if(!settled){settled=true;rej(tx.error||new Error('Restore transaction was rolled back.'))}};
       tx.onerror=()=>{};
       try{
-        booksStore.clear();itemsStore.clear();
+        booksStore.clear();itemsStore.clear();metaStore.clear();
         for(const book of books)booksStore.put(book);
         for(const item of items)itemsStore.put(item);
+        for(const row of meta)metaStore.put(row);
       }catch(e){
         try{tx.abort()}catch{}
         if(!settled){settled=true;rej(e)}
@@ -620,7 +697,6 @@ function replaceLibraryAtomically(books,items){
     }
   });
 }
-
 function splitChapters(paragraphs,sources=null){
   const chapters=[]; let current={title:'Front matter', paragraphs:[],synthetic:true,sourceRefs:[]};
   const heading=/^(chapter\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|[a-z-]+)|prologue|epilogue)\b/i;
@@ -1108,9 +1184,9 @@ async function backupItem(item){
 }
 async function exportBackup(){
   try{
-    const books=await idbGetAll('books'),rawItems=await idbGetAll('items');
+    const books=await idbGetAll('books'),rawItems=await idbGetAll('items'),meta=await idbGetAll('meta');
     const items=[];for(const item of rawItems)items.push(await backupItem(item));
-    const payload={app:'Storyline Studio',schemaVersion:1,exportedAt:new Date().toISOString(),books,items,preferences:prefs()};
+    const payload={app:'Storyline Studio',schemaVersion:2,exportedAt:new Date().toISOString(),books,items,meta,preferences:prefs()};
     const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
     const url=URL.createObjectURL(blob),a=document.createElement('a');
     const date=new Date().toISOString().slice(0,10);
@@ -1124,7 +1200,7 @@ async function restoreBackup(file){
   try{
     const data=JSON.parse(await file.text());
     if(data?.app!=='Storyline Studio'||!Array.isArray(data.books)||!Array.isArray(data.items))throw new Error('This is not a valid Storyline backup.');
-    if(Number(data.schemaVersion||0)>1)throw new Error('This backup was created by a newer Storyline version.');
+    if(Number(data.schemaVersion||0)>2)throw new Error('This backup was created by a newer Storyline version.');
     if(data.books.some(book=>!book||!book.id)||data.items.some(item=>!item||!item.id))throw new Error('This backup contains records without valid IDs.');
     const bookIds=new Set(data.books.map(book=>book.id)),itemIds=new Set(data.items.map(item=>item.id));
     if(bookIds.size!==data.books.length||itemIds.size!==data.items.length)throw new Error('This backup contains duplicate record IDs.');
@@ -1137,13 +1213,12 @@ async function restoreBackup(file){
       delete copy.audioBackup;
       return copy;
     });
-    if(!confirm(`Restore this backup? It will replace the ${(await idbGetAll('books')).length} manuscript(s) and all notes currently stored in this browser.`))return;
-
-    // Replace both stores in one IndexedDB transaction. If any clear/put fails,
-    // IndexedDB rolls the entire restore back instead of leaving a half-restored library.
-    await replaceLibraryAtomically(data.books,items);
+    const meta=Array.isArray(data.meta)?data.meta.filter(x=>x&&typeof x.key==='string'):[];
+    if(!confirm(`Restore this backup? It will replace the ${(await idbGetAll('books')).length} manuscript(s), shared pronunciations and all notes currently stored in this browser.`))return;
+    await replaceLibraryAtomically(data.books,items,meta);
 
     if(data.preferences&&typeof data.preferences==='object')localStorage.setItem(PREF,JSON.stringify(data.preferences));
+    await loadSharedPronunciations();
     const p=prefs();
     state.bookId=(p.lastBookId&&bookIds.has(p.lastBookId))?p.lastBookId:(data.books[0]?.id||null);
     if(state.bookId){const book=await idbGet('books',state.bookId);state.chapterIndex=book?.progress?.chapterIndex||0;state.selectedParagraph=book?.progress?.paragraphIndex||0;state.selectedCharOffset=book?.progress?.charOffset||0;state.selectedWordEnd=book?.progress?.wordEnd||0}
@@ -1348,11 +1423,13 @@ function revisionChecklistMarkdown(book,items,{preview=false}={}){
     const row={item,resolved};
     if(resolved?.unverified)unmatched.push(row);else matched.push(row);
   }
-  matched.sort((a,b)=>(a.resolved.chapterIndex-b.resolved.chapterIndex)||(a.resolved.paragraphIndex-b.resolved.paragraphIndex)||new Date(a.item.createdAt)-new Date(b.item.createdAt));
-  unmatched.sort((a,b)=>new Date(a.item.createdAt)-new Date(b.item.createdAt));
+  const sorter=(a,b)=>(a.resolved?.chapterIndex??a.item.chapterIndex??0)-(b.resolved?.chapterIndex??b.item.chapterIndex??0)||(a.resolved?.paragraphIndex??a.item.paragraphIndex??0)-(b.resolved?.paragraphIndex??b.item.paragraphIndex??0)||new Date(a.item.createdAt)-new Date(b.item.createdAt);
+  matched.sort(sorter);unmatched.sort((a,b)=>new Date(a.item.createdAt)-new Date(b.item.createdAt));
+  const questions=[...matched.filter(r=>r.item.type==='question'),...unmatched.filter(r=>r.item.type==='question')];
+  const fixes=matched.filter(r=>r.item.type!=='question'),unmatchedFixes=unmatched.filter(r=>r.item.type!=='question');
   const lines=[`# Revision checklist — ${book.title} (${date}, ${items.length} item${items.length===1?'':'s'})`,''];
   let lastChapter=-1;
-  for(const row of matched){
+  for(const row of fixes){
     const {item,resolved}=row,ch=book.chapters[resolved.chapterIndex];
     if(resolved.chapterIndex!==lastChapter){
       if(lastChapter!==-1)lines.push('');
@@ -1360,18 +1437,25 @@ function revisionChecklistMarkdown(book,items,{preview=false}={}){
     }
     const [icon,label]=revisionTypeMeta(item.type);
     const passage=excerpt(item.anchor?.selectedText||item.excerpt||'',140).replace(/\s+/g,' ');
-    let note=String(item.note||'').trim();
-    if(preview&&note.length>300)note=note.slice(0,299)+'…';
+    let note=String(item.note||'').trim();if(preview&&note.length>300)note=note.slice(0,299)+'…';
     const audio=item.type==='voice'&&item.durationSec?` · ${formatDuration(item.durationSec)}`:'';
-    const detail=note?` — ${note}`:'';
-    lines.push(`- [ ] ${icon} ${label} · ¶${resolved.paragraphIndex+1}${audio} · "${passage}"${detail} (added ${revisionDate(item.createdAt)})`);
+    lines.push(`- [ ] ${icon} ${label} · ¶${resolved.paragraphIndex+1}${audio} · "${passage}"${note?` — ${note}`:''} (added ${revisionDate(item.createdAt)})`);
   }
-  if(unmatched.length){
+  if(unmatchedFixes.length){
     lines.push('','## Unmatched items');
-    for(const {item} of unmatched){
+    for(const {item} of unmatchedFixes){
       const [icon,label]=revisionTypeMeta(item.type),passage=excerpt(item.anchor?.selectedText||item.excerpt||'',140).replace(/\s+/g,' ');
       let note=String(item.note||'').trim();if(preview&&note.length>300)note=note.slice(0,299)+'…';
       lines.push(`- [ ] ${icon} ${label} · "${passage}"${note?` — ${note}`:''} (added ${revisionDate(item.createdAt)})`);
+    }
+  }
+  if(questions.length){
+    lines.push('','## Questions for ChatGPT');
+    for(const {item,resolved} of questions){
+      const passage=excerpt(item.anchor?.selectedText||item.excerpt||'',140).replace(/\s+/g,' ');
+      let note=String(item.note||'').trim();if(preview&&note.length>300)note=note.slice(0,299)+'…';
+      const loc=resolved&&!resolved.unverified?`${chapterLabel(book.chapters[resolved.chapterIndex],book)} · ¶${resolved.paragraphIndex+1}`:'Unmatched passage';
+      lines.push(`- [ ] ? ${loc} · "${passage}"${note?` — ${note}`:''} (added ${revisionDate(item.createdAt)})`);
     }
   }
   return lines.join('\n');
@@ -1539,7 +1623,7 @@ function recapCardHtml(book){
   const p=book.progress,ch=book.chapters[p.chapterIndex||0],sentences=recapSentences(book,p);
   return `<section id="recapCard" class="recap-card card">
     <div><div class="eyebrow">Pick up the thread</div><h3>Last read ${escapeHtml(relativeDateText(p.updatedAt||book.updatedAt))}</h3>
-    <p class="meta">${escapeHtml(chapterLabel(ch,book))} · paragraph ${(p.paragraphIndex||0)+1} of ${ch?.paragraphs?.length||0}</p>
+    <p class="meta">${escapeHtml(chapterLabel(ch,book))} · paragraph ${(p.paragraphIndex||0)+1} of ${ch?.paragraphs?.length||0} · ${readingMinutesLabel(remainingChapterWords(ch,p.paragraphIndex||0,p.charOffset||0))} left in chapter</p>
     ${sentences.length?`<blockquote>${escapeHtml(sentences.join(' '))}</blockquote>`:''}</div>
     <div class="row recap-actions"><button id="recapResume" class="button">Resume</button><button id="recapChapterStart" class="ghost">Chapter start</button><button id="recapDismiss" class="ghost">Dismiss</button></div>
   </section>`;
@@ -1870,10 +1954,17 @@ function loadVoices(){
   fill();
   speechSynthesis.onvoiceschanged=fill;
 }
+function completeGentleSleepStop(token=null){
+  if(!state.gentleStopPending)return false;
+  state.gentleStopPending=false;
+  showToast('Sleep timer ended — stopped at a sentence break.');
+  finishSpeech(token);
+  return true;
+}
 function clearSleepTimer(){
   if(state.sleepTimerId){clearTimeout(state.sleepTimerId);state.sleepTimerId=null}
   if(state.sleepIntervalId){clearInterval(state.sleepIntervalId);state.sleepIntervalId=null}
-  state.sleepDeadline=null;state.sleepMinutes=0;
+  state.sleepDeadline=null;state.sleepMinutes=0;state.gentleStopPending=false;
   const status=$('#sleepTimerStatus'); if(status)status.textContent='Sleep timer off';
   const select=$('#sleepTimerSelect'); if(select)select.value='0';
 }
@@ -1887,7 +1978,7 @@ function updateSleepTimerStatus(){
 function setSleepTimer(minutes){
   if(state.sleepTimerId)clearTimeout(state.sleepTimerId);
   if(state.sleepIntervalId)clearInterval(state.sleepIntervalId);
-  state.sleepTimerId=null;state.sleepIntervalId=null;state.sleepDeadline=null;state.sleepMinutes=0;
+  state.sleepTimerId=null;state.sleepIntervalId=null;state.sleepDeadline=null;state.sleepMinutes=0;state.gentleStopPending=false;
   const n=Number(minutes)||0;
   if(!n){updateSleepTimerStatus();return}
   state.sleepMinutes=n;state.sleepDeadline=Date.now()+n*60000;
@@ -1895,8 +1986,17 @@ function setSleepTimer(minutes){
   state.sleepIntervalId=setInterval(updateSleepTimerStatus,1000);
   state.sleepTimerId=setTimeout(()=>{
     state.sleepTimerId=null;
-    stopAllSpeech();
-    showToast('Sleep timer ended');
+    if(state.sleepIntervalId){clearInterval(state.sleepIntervalId);state.sleepIntervalId=null}
+    state.sleepDeadline=null;state.sleepMinutes=0;
+    const status=$('#sleepTimerStatus');
+    if(state.isSpeaking&&!state.isPaused){
+      state.gentleStopPending=true;
+      if(status)status.textContent='Sleep timer ended · finishing this sentence…';
+      showToast('Sleep timer ended — finishing at a sentence break.');
+    }else{
+      stopAllSpeech();
+      showToast('Sleep timer ended');
+    }
   },n*60000);
 }
 async function requestWakeLock(){
@@ -2133,13 +2233,16 @@ function startSpeech(fromSelected=true,{preserveFollow=false}={}){
       setSentenceState(highlighted);
       const nextPiece=()=>{
         if(token!==state.playbackToken||!state.isSpeaking)return;
-        if(pieceIndex>=pieces.length){onDone();return}
+        if(pieceIndex>=pieces.length){if(completeGentleSleepStop(token))return;onDone();return}
         const piece=pieces[pieceIndex++];
         speakPiece(piece,nextPiece,sourceIndex=>{
           state.liveCharOffset=Math.max(0,Math.min(sourceIndex,full.length));
           const liveWord=wordRangeAt(full,state.liveCharOffset);state.selectedWordEnd=Math.max(state.liveCharOffset,liveWord.end||state.liveCharOffset);
           const next=sentenceIndexAtSource(sourceIndex);
-          if(next!==highlighted){highlighted=next;setSentenceState(next)}
+          if(next!==highlighted){
+            if(state.gentleStopPending){try{speechSynthesis.cancel()}catch{};completeGentleSleepStop(token);return}
+            highlighted=next;setSentenceState(next)
+          }
         });
       };
       nextPiece();
@@ -2327,7 +2430,7 @@ async function startLocalSpeech(fromSelected=true,{preserveFollow=false}={}){
       let pieceIndex=0;
       const speakPiece=()=>{
         if(token!==state.playbackToken||!state.isSpeaking)return;
-        if(pieceIndex>=pieces.length){sIndex=sentenceIndex+1;speakSentence();return}
+        if(pieceIndex>=pieces.length){if(completeGentleSleepStop(token))return;sIndex=sentenceIndex+1;speakSentence();return}
         const piece=pieces[pieceIndex++],isDialogue=piece.kind==='dialogue'&&settings.dialogueEnabled;
         const rate=Math.max(.5,Math.min(2,Number(settings.rate||1.05)+(isDialogue?Number(settings.dialogueRateOffset||0):0)));
         const speed=Math.max(90,Math.min(310,Math.round(170*rate)));
@@ -2779,5 +2882,5 @@ window.addEventListener('hashchange',()=>{if(db&&extractHandoffCode(location.hre
 // Do not cancel speech merely because iOS backgrounds the installed app.
 if('serviceWorker' in navigator) window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
 
-openDB().then(async()=>{ await migrateLegacyPassageAnchors(); const p=prefs(); state.bookId=p.lastBookId||null; if(state.bookId){ const b=await idbGet('books',state.bookId); if(b){ state.chapterIndex=b.progress?.chapterIndex ?? p.lastChapterIndex ?? 0; state.selectedParagraph=b.progress?.paragraphIndex ?? p.lastParagraphIndex ?? 0; state.selectedCharOffset=b.progress?.charOffset ?? p.lastCharOffset ?? 0; state.selectedWordEnd=b.progress?.wordEnd ?? p.lastWordEnd ?? 0; } } await navigate('library'); await processHandoffFromLocation(); }).catch(e=>{view.innerHTML=`<div class="empty">Storyline could not start: ${escapeHtml(e.message)}</div>`});
+openDB().then(async()=>{ await loadSharedPronunciations(); await migrateLegacyPassageAnchors(); const p=prefs(); state.bookId=p.lastBookId||null; if(state.bookId){ const b=await idbGet('books',state.bookId); if(b){ state.chapterIndex=b.progress?.chapterIndex ?? p.lastChapterIndex ?? 0; state.selectedParagraph=b.progress?.paragraphIndex ?? p.lastParagraphIndex ?? 0; state.selectedCharOffset=b.progress?.charOffset ?? p.lastCharOffset ?? 0; state.selectedWordEnd=b.progress?.wordEnd ?? p.lastWordEnd ?? 0; } } await navigate('library'); await processHandoffFromLocation(); }).catch(e=>{view.innerHTML=`<div class="empty">Storyline could not start: ${escapeHtml(e.message)}</div>`});
 })();
