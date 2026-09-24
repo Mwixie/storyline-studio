@@ -3069,34 +3069,89 @@ function promptItem(type,title,placeholder,base){
   setTimeout(()=>$('#itemText')?.focus(),50);
   $('#saveItem').onclick=async e=>{e.preventDefault();const note=$('#itemText').value.trim(); if(!note){showToast('Add a note first');return} await idbPut('items',{...base,id:uid(),type,note}); modal.close(); showToast(type==='question'?'Added to revision queue':'Saved'); updateQueueBadge();};
 }
-async function voiceNote(base){
-  const canRecord=!!(navigator.mediaDevices?.getUserMedia && window.MediaRecorder);
+async function voiceNote(base,existing=null){
+  const canRecord=!!(navigator.mediaDevices?.getUserMedia&&window.MediaRecorder);
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
   let stream=null,recorder=null,chunks=[],audioBlob=null,previewUrl=null,recording=false,recordStartedAt=0,audioDurationSec=0,timer=null;
+  let recognition=null,recognitionWanted=false,recognitionFinal='',recognitionSessionFinal='',recognitionInterim='',transcriptPartial=false,generatedTranscript=String(existing?.transcript||''),transcriptEdited=!!existing?.transcriptEdited;
 
-  modalForm.innerHTML=`<h3>Voice note</h3>
+  modalForm.innerHTML=`<h3>${existing?'Re-record voice note':'Voice note'}</h3>
     <div class="source-chip">${escapeHtml(base.chapterTitle)} · paragraph ${base.paragraphIndex+1} · exact passage</div>
     <div class="excerpt passage-preview">${referenceExcerptHtml(base)}</div>
-    <div id="voiceRecordStatus" class="sub">${canRecord?'Record an audio note. It stays in this browser.':'Audio recording is not available in this browser.'}</div>
+    <div id="voiceRecordStatus" class="sub">${canRecord?'Record an audio note. Audio stays in this browser.':'Audio recording is not available in this browser.'}</div>
     <div id="recordTimer" class="record-timer">0:00</div>
     <audio id="voicePreview" class="voice-preview hidden" controls></audio>
-    <textarea id="voiceCaption" placeholder="Optional typed caption"></textarea>
+    <div class="voice-transcript-capture">
+      <div class="row between"><strong>Transcript</strong><span id="voiceTranscriptStatus" class="meta">${SR?'Live transcription starts with recording when available.':'Live transcription is unavailable on this browser. You can type a transcript manually.'}</span></div>
+      <div id="voiceTranscriptLive" class="voice-transcript-live hidden"></div>
+      <textarea id="voiceTranscript" placeholder="Live transcript appears here, or type your own transcript.">${escapeHtml(existing?.transcript||'')}</textarea>
+      <span class="meta">Live recognition may use the browser or device speech service and is not guaranteed offline. Audio recording does not depend on it.</span>
+    </div>
     <div class="voice-note-actions">
       <button value="cancel" class="button secondary">Cancel</button>
-      <button type="button" id="recordAudioBtn" class="ghost" ${canRecord?'':'disabled'}>● Record</button>
-      <button type="button" id="saveAudioNote" class="button">Save voice note</button>
+      <button type="button" id="recordAudioBtn" class="ghost" ${canRecord?'':'disabled'}>● ${existing?'Re-record':'Record'}</button>
+      <button type="button" id="saveAudioNote" class="button">${existing?'Save replacement':'Save voice note'}</button>
     </div>`;
   modal.showModal();
+
+  const transcriptEl=$('#voiceTranscript'),liveEl=$('#voiceTranscriptLive'),transcriptStatus=$('#voiceTranscriptStatus');
+  transcriptEl.addEventListener('input',()=>{if(!recording)transcriptEdited=transcriptEl.value.trim()!==generatedTranscript.trim()});
+
+  const transcriptPreview=()=>{
+    return [recognitionFinal.trim(),recognitionSessionFinal.trim(),recognitionInterim.trim()].filter(Boolean).join(' ').replace(/\s+/g,' ').trim();
+  };
+  const paintTranscript=()=>{
+    const text=transcriptPreview();
+    if(liveEl){liveEl.textContent=text||'Listening…';liveEl.classList.remove('hidden')}
+    if(transcriptEl)transcriptEl.value=text;
+  };
+  const stopRecognition=()=>{
+    recognitionWanted=false;
+    try{recognition?.stop?.()}catch{}
+  };
+  const startRecognition=()=>{
+    if(!SR||!recording||!recognitionWanted)return;
+    recognitionSessionFinal='';recognitionInterim='';
+    try{
+      const rec=new SR();recognition=rec;rec.continuous=true;rec.interimResults=true;rec.lang='en-US';
+      rec.onstart=()=>{if(transcriptStatus)transcriptStatus.textContent='Live transcript active'};
+      rec.onresult=e=>{
+        let interim='';
+        for(let i=e.resultIndex;i<e.results.length;i++){
+          const text=String(e.results[i]?.[0]?.transcript||'').trim();if(!text)continue;
+          if(e.results[i].isFinal)recognitionSessionFinal+=(recognitionSessionFinal?' ':'')+text;
+          else interim+=(interim?' ':'')+text;
+        }
+        recognitionInterim=interim;paintTranscript();
+      };
+      rec.onerror=e=>{
+        transcriptPartial=!!transcriptPreview();
+        if(transcriptStatus)transcriptStatus.textContent=`Transcript ${transcriptPartial?'partial':'unavailable'} · audio is still recording`;
+        if(e?.error==='not-allowed'||e?.error==='service-not-allowed')recognitionWanted=false;
+      };
+      rec.onend=()=>{
+        const finalPart=recognitionSessionFinal.trim();
+        if(finalPart)recognitionFinal=[recognitionFinal.trim(),finalPart].filter(Boolean).join(' ');
+        recognitionSessionFinal='';recognitionInterim='';paintTranscript();
+        if(recording&&recognitionWanted)setTimeout(startRecognition,180);
+      };
+      rec.start();
+    }catch{
+      transcriptPartial=!!transcriptPreview();recognitionWanted=false;
+      if(transcriptStatus)transcriptStatus.textContent='Live transcript unavailable · audio is still recording';
+    }
+  };
 
   const setPreview=blob=>{
     audioBlob=blob;
     if(previewUrl)URL.revokeObjectURL(previewUrl);
     previewUrl=URL.createObjectURL(audioBlob);
-    const a=$('#voicePreview'); a.src=previewUrl; a.classList.remove('hidden');
+    const a=$('#voicePreview');a.src=previewUrl;a.classList.remove('hidden');
   };
   const stopTimer=()=>{if(timer){clearInterval(timer);timer=null}};
   const cleanup=()=>{
-    stopTimer();
-    try{if(recorder&&recorder.state!=='inactive')recorder.stop()}catch{}
+    recognitionWanted=false;try{recognition?.abort?.()}catch{}
+    stopTimer();try{if(recorder&&recorder.state!=='inactive')recorder.stop()}catch{}
     try{stream?.getTracks().forEach(t=>t.stop())}catch{}
     if(previewUrl){URL.revokeObjectURL(previewUrl);previewUrl=null}
   };
@@ -3105,66 +3160,79 @@ async function voiceNote(base){
   const recordBtn=$('#recordAudioBtn');
   if(recordBtn)recordBtn.onclick=async()=>{
     if(recording){
+      stopRecognition();
       try{recorder.requestData()}catch{}
       setTimeout(()=>{try{if(recorder&&recorder.state!=='inactive')recorder.stop()}catch{}},100);
       return;
     }
     try{
       stream=await navigator.mediaDevices.getUserMedia({audio:true,video:false});
-      chunks=[]; audioBlob=null; audioDurationSec=0;
+      chunks=[];audioBlob=null;audioDurationSec=0;recognitionFinal='';recognitionSessionFinal='';recognitionInterim='';transcriptPartial=false;
+      transcriptEdited=false;generatedTranscript='';transcriptEl.value='';transcriptEl.disabled=true;if(liveEl){liveEl.textContent='Listening…';liveEl.classList.remove('hidden')}
       recorder=new MediaRecorder(stream);
       recorder.ondataavailable=e=>{if(e.data&&e.data.size>0)chunks.push(e.data)};
       recorder.onstart=()=>{
-        recording=true;recordStartedAt=Date.now();
-        recordBtn.textContent='■ Stop recording';
+        recording=true;recordStartedAt=Date.now();recordBtn.textContent='■ Stop recording';
         $('#voiceRecordStatus').textContent='Recording audio…';
-        const timerEl=$('#recordTimer');
-        timer=setInterval(()=>{if(timerEl)timerEl.textContent=formatDuration((Date.now()-recordStartedAt)/1000)},250);
+        const timerEl=$('#recordTimer');timer=setInterval(()=>{if(timerEl)timerEl.textContent=formatDuration((Date.now()-recordStartedAt)/1000)},250);
+        recognitionWanted=!!SR;
+        if(recognitionWanted)startRecognition();
+        else if(transcriptStatus)transcriptStatus.textContent='Transcript unavailable · audio is recording normally';
       };
       recorder.onstop=()=>{
-        recording=false;stopTimer();
+        recording=false;recognitionWanted=false;stopTimer();try{recognition?.stop?.()}catch{}
         audioDurationSec=recordStartedAt?Math.max(1,Math.round((Date.now()-recordStartedAt)/1000)):0;
-        recordBtn.textContent='● Record again';
-        try{stream?.getTracks().forEach(t=>t.stop())}catch{}
-        const type=recorder.mimeType||chunks.find(c=>c.type)?.type||'audio/mp4';
-        const blob=new Blob(chunks,{type});
-        if(!blob.size){
-          $('#voiceRecordStatus').textContent='No audio was captured. Please try again.';
-          showToast('No audio was captured.');
-          return;
-        }
-        setPreview(blob);
-        $('#voiceRecordStatus').textContent=`Recorded · ${formatDuration(audioDurationSec)}. Play it back before saving if you want.`;
+        recordBtn.textContent='● Record again';try{stream?.getTracks().forEach(t=>t.stop())}catch{}
+        const type=recorder.mimeType||chunks.find(x=>x.type)?.type||'audio/mp4',blob=new Blob(chunks,{type});
+        transcriptEl.disabled=false;
+        const live=transcriptPreview();if(live)transcriptEl.value=live;generatedTranscript=transcriptEl.value.trim();
+        if(liveEl)liveEl.classList.add('hidden');
+        if(transcriptStatus)transcriptStatus.textContent=generatedTranscript?(transcriptPartial?'Partial live transcript · review before saving':'Live transcript captured · editable before saving'):(SR?'No transcript captured · you can type one manually':'Type a transcript manually if useful');
+        if(!blob.size){$('#voiceRecordStatus').textContent='No audio was captured. Please try again.';showToast('No audio was captured.');return}
+        setPreview(blob);$('#voiceRecordStatus').textContent=`Recorded · ${formatDuration(audioDurationSec)}. Play it back before saving if you want.`;
       };
-      recorder.onerror=()=>{
-        recording=false;stopTimer();recordBtn.textContent='● Record again';
-        $('#voiceRecordStatus').textContent='Recording failed. Please try again.';
-      };
+      recorder.onerror=()=>{recording=false;recognitionWanted=false;stopRecognition();stopTimer();transcriptEl.disabled=false;recordBtn.textContent='● Record again';$('#voiceRecordStatus').textContent='Recording failed. Please try again.'};
       recorder.start(250);
-    }catch(e){
-      recording=false;stopTimer();
+    }catch{
+      recording=false;recognitionWanted=false;stopTimer();transcriptEl.disabled=false;
       $('#voiceRecordStatus').textContent='Microphone recording was not available.';
+      if(transcriptStatus)transcriptStatus.textContent='You can still type a transcript, but there is no audio recording to save.';
       showToast('Microphone recording was not available.');
     }
   };
 
   $('#saveAudioNote').onclick=async()=>{
     if(recording){showToast('Stop the recording before saving.');return}
-    if(!audioBlob){showToast('Record something first.');return}
-    const btn=$('#saveAudioNote'); btn.disabled=true; btn.textContent='Saving…';
+    if(!audioBlob){showToast(existing?'Re-record the voice note before replacing it.':'Record something first.');return}
+    const btn=$('#saveAudioNote');btn.disabled=true;btn.textContent='Saving…';
     try{
-      const audioData=await audioBlob.arrayBuffer();
-      const note=$('#voiceCaption').value.trim();
-      await idbPut('items',{...base,id:uid(),type:'voice',note,voice:true,audioData,audioType:audioBlob.type||'audio/mp4',durationSec:audioDurationSec});
-      modal.onclose=null; cleanup(); modal.close(); showToast('Voice note saved'); updateQueueBadge();
-    }catch(e){
-      btn.disabled=false;btn.textContent='Save voice note';
-      $('#voiceRecordStatus').textContent='The recording could not be saved. Please try again.';
-      showToast('Voice note could not be saved.');
+      const audioData=await audioBlob.arrayBuffer(),transcript=transcriptEl.value.trim();
+      const item={...(existing||{}),...base,id:existing?.id||uid(),type:'voice',note:existing?.note||'',voice:true,audioData,audioType:audioBlob.type||'audio/mp4',durationSec:audioDurationSec,transcript,transcriptEdited:!!transcript&&(transcriptEdited||transcript!==generatedTranscript),transcriptPartial:!!transcript&&transcriptPartial};
+      if(!item.createdAt)item.createdAt=new Date().toISOString();
+      await idbPut('items',item);
+      modal.onclose=null;cleanup();modal.close();showToast(existing?'Voice note re-recorded':'Voice note saved');updateQueueBadge();
+      if(state.route==='queue'||state.route==='notes'||state.route==='actioned')navigate(state.route);
+    }catch{
+      btn.disabled=false;btn.textContent=existing?'Save replacement':'Save voice note';
+      $('#voiceRecordStatus').textContent='The recording could not be saved. Please try again.';showToast('Voice note could not be saved.');
     }
   };
 }
-
+function editVoiceTranscript(item){
+  const original=String(item?.transcript||'');
+  modalForm.innerHTML=`<h3>${original?'Edit transcript':'Add transcript'}</h3>
+    <p class="sub">Editing this text does not change the saved audio.</p>
+    <textarea id="editVoiceTranscriptText" class="voice-transcript-editor" autofocus>${escapeHtml(original)}</textarea>
+    <div class="row between"><button value="cancel" class="ghost">Cancel</button><button type="button" id="saveVoiceTranscriptEdit" class="button">Save transcript</button></div>`;
+  if(!modal.open)modal.showModal();
+  $('#saveVoiceTranscriptEdit').onclick=async()=>{
+    const transcript=$('#editVoiceTranscriptText').value.trim();
+    item.transcript=transcript;item.transcriptEdited=transcript!==original;item.transcriptPartial=false;
+    await idbPut('items',item);modal.close();showToast(transcript?'Transcript saved':'Transcript cleared');
+    if(['queue','notes','actioned'].includes(state.route))navigate(state.route);
+  };
+  requestAnimationFrame(()=>$('#editVoiceTranscriptText')?.focus());
+}
 async function renderNotes(){ const books=await idbGetAll('books'); const bookMap=Object.fromEntries(books.map(b=>[b.id,b])); const items=(await idbGetAll('items')).filter(i=>['note','bookmark','voice'].includes(i.type)).sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt));
   view.innerHTML=`<section class="hero"><div class="eyebrow">Listening memory</div><h1>Notes & bookmarks</h1><p class="sub">Everything you caught while listening, still attached to where you heard it.</p></section>${items.length?`<div class="list">${items.map(i=>itemHtml(i,bookMap)).join('')}</div>`:`<div class="empty card">No notes yet. This is suspiciously peaceful.</div>`}`; wireItemButtons(items); }
 function stopReviewAudio(){
