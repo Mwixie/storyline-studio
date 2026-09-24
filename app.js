@@ -160,6 +160,7 @@ function pronunciationManager(book,prefill=''){
     if(found){found.match=match;found.replacement=replacement;found.updatedAt=new Date().toISOString()}
     else list.push({id:uid(),match,replacement,createdAt:new Date().toISOString()});
     book.pronunciations=list;book.updatedAt=new Date().toISOString();await idbPut('books',book);
+    if(state.bookId===book.id)state.readerBook=book;
     pronunciationManager(book);
     if(state.isSpeaking)restartNarrationForSettingChange('Pronunciation updated');
   };
@@ -171,7 +172,7 @@ function pronunciationManager(book,prefill=''){
   });
   $$('[data-pron-delete]').forEach(btn=>btn.onclick=async()=>{
     book.pronunciations=(book.pronunciations||[]).filter(x=>x.id!==btn.dataset.pronDelete);
-    book.updatedAt=new Date().toISOString();await idbPut('books',book);pronunciationManager(book);
+    book.updatedAt=new Date().toISOString();await idbPut('books',book);if(state.bookId===book.id)state.readerBook=book;pronunciationManager(book);
     if(state.isSpeaking)restartNarrationForSettingChange('Pronunciation removed');
   });
   requestAnimationFrame(()=>$('#pronReplacement')?.focus());
@@ -1052,6 +1053,7 @@ async function renderReader(){
       <div id="readerSearchResults" class="reader-search-results hidden"></div>
     </div></section>
     <article id="readingPage" class="reading-page" aria-label="Manuscript text">${ch.paragraphs.map((t,i)=>`<p data-p="${i}" class="${i===state.selectedParagraph?'selected':''}">${escapeHtml(t)}</p>`).join('')}</article>
+    <button id="selectionPronunciationBtn" class="ghost tiny selection-pronunciation hidden" type="button">Say selected text as…</button>
     <section class="player compact-player">
       <div class="player-main compact-player-main">
         <div class="transport-buttons">
@@ -1106,10 +1108,17 @@ async function renderReader(){
 
 function wireReader(book,ch){
   $('#backLibrary').onclick=()=>navigate('library');
-  const readingPage=$('#readingPage'),resumeFollow=$('#resumeFollowBtn');
-  const cacheReaderSelection=()=>{setTimeout(()=>{const text=selectedReaderText();if(text)state.selectedReaderPhrase=text},0)};
+  const readingPage=$('#readingPage'),resumeFollow=$('#resumeFollowBtn'),selectionPronunciation=$('#selectionPronunciationBtn');
+  const cacheReaderSelection=()=>{setTimeout(()=>{
+    const text=selectedReaderText();
+    if(text){
+      state.selectedReaderPhrase=text;
+      if(selectionPronunciation){selectionPronunciation.textContent=`Say “${excerpt(text,34)}” as…`;selectionPronunciation.classList.remove('hidden')}
+    }
+  },0)};
   readingPage?.addEventListener('mouseup',cacheReaderSelection);
   readingPage?.addEventListener('touchend',cacheReaderSelection,{passive:true});
+  if(selectionPronunciation)selectionPronunciation.onclick=()=>pronunciationManager(book,state.selectedReaderPhrase);
   const suspendFollow=()=>{
     if(!state.isSpeaking||state.followNarrationSuspended)return;
     state.followNarrationSuspended=true;updateFollowControl();
@@ -1129,8 +1138,11 @@ function wireReader(book,ch){
   $$('#readingPage p').forEach(p=>p.onclick=async e=>{
     const selection=window.getSelection?.();
     if(selection&&!selection.isCollapsed&&selection.toString().trim()){
-      state.selectedReaderPhrase=selection.toString().trim();return;
+      state.selectedReaderPhrase=selection.toString().trim();
+      if(selectionPronunciation){selectionPronunciation.textContent=`Say “${excerpt(state.selectedReaderPhrase,34)}” as…`;selectionPronunciation.classList.remove('hidden')}
+      return;
     }
+    selectionPronunciation?.classList.add('hidden');
     const paragraphIndex=+p.dataset.p;
     const text=ch.paragraphs[paragraphIndex]||p.textContent||'';
     const offset=caretOffsetInParagraph(p,e);
