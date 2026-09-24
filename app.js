@@ -872,7 +872,7 @@ function downloadTextFile(filename,text,type='text/plain'){
   const blob=new Blob([text],{type}),url=URL.createObjectURL(blob),a=document.createElement('a');
   a.href=url;a.download=filename;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
 }
-async async async function openRevisionChecklist(book){
+async function openRevisionChecklist(book){
   const all=(await idbGetAll('items')).filter(i=>i.bookId===book.id&&['question','continuity','note','bookmark','voice'].includes(i.type));
   if(!all.length){showToast('No notes or flags in this book yet.');return}
   let filter='pending';
