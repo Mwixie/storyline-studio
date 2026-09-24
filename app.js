@@ -1708,21 +1708,50 @@ function searchBook(book,query,limit=400){
   return {query:q,results,truncated};
 }
 function searchResultHtml(result,index){
+  if(result.kind==='item'){
+    const label=result.itemType==='voice'?'Voice-note transcript':result.itemType==='question'?'Question':result.itemType==='continuity'?'Continuity flag':result.itemType==='bookmark'?'Bookmark':'Revision note';
+    return `<button type="button" class="reader-search-result revision-search-result" data-search-result="${index}">
+      <span class="reader-search-location">${escapeHtml(label)} · ${escapeHtml(result.chapterTitle)} · paragraph ${result.paragraphIndex+1}</span>
+      <span class="reader-search-snippet">${result.before?'…'+escapeHtml(result.before):''}<mark>${escapeHtml(result.match)}</mark>${result.after?escapeHtml(result.after)+'…':''}</span>
+      <span class="reader-search-actions"><span>Open saved item</span></span>
+    </button>`;
+  }
   return `<button type="button" class="reader-search-result" data-search-result="${index}">
     <span class="reader-search-location">${escapeHtml(result.chapterTitle)} · paragraph ${result.paragraphIndex+1}</span>
     <span class="reader-search-snippet">${result.before?'…'+escapeHtml(result.before):''}<mark>${escapeHtml(result.match)}</mark>${result.after?escapeHtml(result.after)+'…':''}</span>
     <span class="reader-search-actions"><span>Go to match</span><span data-search-play="${index}">▶ Play from here</span></span>
   </button>`;
 }
-function renderReaderSearchResults(book,query){
+async function searchRevisionItems(book,query,limit=120){
+  const q=String(query||'').trim();if(!q)return [];
+  const needle=q.toLocaleLowerCase(),items=(await idbGetAll('items')).filter(i=>i.bookId===book.id);
+  const results=[];
+  for(const item of items){
+    const fields=[];
+    if(item.transcript)fields.push({name:'transcript',text:String(item.transcript)});
+    if(item.note)fields.push({name:'note',text:String(item.note)});
+    for(const field of fields){
+      const hay=field.text.toLocaleLowerCase(),start=hay.indexOf(needle);if(start<0)continue;
+      const end=start+q.length;
+      results.push({kind:'item',itemId:item.id,itemType:item.type,field:field.name,chapterIndex:item.chapterIndex??0,paragraphIndex:item.paragraphIndex??0,chapterTitle:item.chapterTitle||'Chapter',start,end,before:field.text.slice(Math.max(0,start-90),start),match:field.text.slice(start,end),after:field.text.slice(end,Math.min(field.text.length,end+90))});
+      break;
+    }
+    if(results.length>=limit)break;
+  }
+  return results;
+}
+async function renderReaderSearchResults(book,query){
   const panel=$('#readerSearchResults'),status=$('#readerSearchStatus');if(!panel||!status)return;
   const found=searchBook(book,query);
   state.readerSearchQuery=found.query;
-  if(!found.query){panel.innerHTML='';panel.classList.add('hidden');status.textContent='';return}
-  status.textContent=found.results.length?(found.truncated?`Showing first ${found.results.length} matches`:`${found.results.length} match${found.results.length===1?'':'es'}`):'No matches';
-  panel.innerHTML=found.results.length?found.results.map(searchResultHtml).join(''):'<div class="reader-search-empty">No matches in this manuscript.</div>';
-  panel.classList.remove('hidden');
-  panel.dataset.searchResults=JSON.stringify(found.results);
+  if(!found.query){panel.innerHTML='';panel.classList.add('hidden');status.textContent='';panel.dataset.searchResults='[]';return}
+  const revision=await searchRevisionItems(book,found.query),manuscript=found.results.map(x=>({...x,kind:'manuscript'})),combined=[...manuscript,...revision];
+  const parts=[];
+  if(manuscript.length)parts.push(`<div class="reader-search-section-label">Manuscript · ${manuscript.length}${found.truncated?' shown':''}</div>`+manuscript.map((x,i)=>searchResultHtml(x,i)).join(''));
+  if(revision.length)parts.push(`<div class="reader-search-section-label">Revision notes · ${revision.length}</div>`+revision.map((x,i)=>searchResultHtml(x,manuscript.length+i)).join(''));
+  status.textContent=combined.length?`${combined.length} result${combined.length===1?'':'s'}${found.truncated?' · manuscript results truncated':''}`:'No matches';
+  panel.innerHTML=parts.join('')||'<div class="reader-search-empty">No matches in this manuscript or its revision notes.</div>';
+  panel.classList.remove('hidden');panel.dataset.searchResults=JSON.stringify(combined);
 }
 function wordCount(text=''){return (String(text).trim().match(/\S+/g)||[]).length}
 function chapterWordCount(ch){return (ch?.paragraphs||[]).reduce((n,p)=>n+wordCount(p),0)}
@@ -2130,11 +2159,11 @@ function wireReader(book,ch){
   updateFollowControl();
   const pacingBtn=$('#pacingBtn');if(pacingBtn)pacingBtn.onclick=()=>openPacingView(book,state.chapterIndex);
   const searchInput=$('#readerSearchInput'),searchBtn=$('#readerSearchBtn'),searchClear=$('#readerSearchClear');
-  const runSearch=()=>{renderReaderSearchResults(book,searchInput?.value||'');searchClear?.classList.toggle('hidden',!String(searchInput?.value||'').trim());wireReaderSearchResults(book)};
+  const runSearch=async()=>{await renderReaderSearchResults(book,searchInput?.value||'');searchClear?.classList.toggle('hidden',!String(searchInput?.value||'').trim());wireReaderSearchResults(book)};
   if(searchBtn)searchBtn.onclick=runSearch;
   if(searchInput)searchInput.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();runSearch()}else if(e.key==='Escape'){e.preventDefault();searchInput.value='';state.readerSearchQuery='';renderReaderSearchResults(book,'');searchClear?.classList.add('hidden')}};
   if(searchClear)searchClear.onclick=()=>{if(searchInput)searchInput.value='';state.readerSearchQuery='';renderReaderSearchResults(book,'');searchClear.classList.add('hidden');searchInput?.focus()};
-  if(state.readerSearchQuery){renderReaderSearchResults(book,state.readerSearchQuery);wireReaderSearchResults(book)}
+  if(state.readerSearchQuery){renderReaderSearchResults(book,state.readerSearchQuery).then(()=>wireReaderSearchResults(book))}
 
   $('#chapterSelect').onchange=async e=>{ stopAllSpeech(); state.chapterIndex=+e.target.value; state.selectedParagraph=0; state.selectedCharOffset=0; state.selectedWordEnd=0; await saveProgress(book); renderReader(); };
   $$('#readingPage p').forEach(p=>p.onclick=async e=>{
@@ -3395,6 +3424,7 @@ async function renderFlagReview(){
       ${resolved.unverified?'<div class="review-warning">Storyline could not fully verify this anchor. Playback uses the best available location while the original saved excerpt remains below.</div>':''}
       <div class="excerpt passage-reference-preview">${referenceExcerptHtml(item)}</div>
       ${item.note?`<div class="note-text">${escapeHtml(item.note)}</div>`:''}
+      ${item.type==='voice'&&item.transcript?`<div class="voice-transcript-saved"><strong>Transcript</strong><div>${escapeHtml(item.transcript)}</div></div>`:''}
       <div class="flag-review-controls">
         <button id="reviewPlayPassage" class="button">▶ Play passage</button>
         <button id="reviewReadNote" class="ghost">${item.type==='voice'?'▶ Play my voice note':'🗣 Read my note'}</button>
