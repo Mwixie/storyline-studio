@@ -10,7 +10,7 @@ const state = {
   playbackToken:0, speakingPIndex:null, speakingSIndex:null, speakingSegments:null, replayCurrent:null,
   sleepTimerId:null, sleepIntervalId:null, sleepDeadline:null, sleepMinutes:0, wakeLock:null, chapterTransitionNotice:'',
   pendingPassageReference:null, activeEngine:'device', readerSearchQuery:'',
-  followNarrationSuspended:false, readerBook:null
+  followNarrationSuspended:false, readerBook:null, recapBookId:null
 };
 
 const PREF='storyline.prefs.v1';
@@ -849,7 +849,7 @@ async function renderLibrary(){
   $('#exportBackupBtn').onclick=exportBackup;
   $('#restoreBackupBtn').onclick=()=>$('#restoreBackupInput').click();
   $('#restoreBackupInput').onchange=e=>{const file=e.target.files?.[0];e.target.value='';restoreBackup(file)};
-  $$('.book-card').forEach(c=>c.onclick=async e=>{ if(e.target.closest('[data-delete]')) return; state.bookId=c.dataset.id; savePrefs({lastBookId:state.bookId}); const b=await idbGet('books',state.bookId); state.chapterIndex=b.progress?.chapterIndex||0; state.selectedParagraph=b.progress?.paragraphIndex||0; state.selectedCharOffset=b.progress?.charOffset||0; state.selectedWordEnd=b.progress?.wordEnd||0; navigate('reader'); });
+  $('.book-card').forEach(c=>c.onclick=async e=>{ if(e.target.closest('[data-delete],[data-export-revisions]')) return; state.bookId=c.dataset.id; state.recapBookId=state.bookId; savePrefs({lastBookId:state.bookId}); const b=await idbGet('books',state.bookId); state.chapterIndex=b.progress?.chapterIndex||0; state.selectedParagraph=b.progress?.paragraphIndex||0; state.selectedCharOffset=b.progress?.charOffset||0; state.selectedWordEnd=b.progress?.wordEnd||0; navigate('reader'); });
   $$('[data-delete]').forEach(btn=>btn.onclick=async e=>{e.stopPropagation();const id=btn.dataset.delete; if(confirm('Remove this manuscript and its saved notes from this device?')){await idbDelete('books',id); const all=await idbGetAll('items'); for(const i of all.filter(x=>x.bookId===id)) await idbDelete('items',i.id); if(state.bookId===id) state.bookId=null; renderLibrary(); updateQueueBadge();}});
 }
 function chapterLabel(ch,book){ return (ch?.synthetic||ch?.title==='Beginning'||ch?.title==='Front matter')?(book?.title||'Manuscript'):(ch?.title||'Manuscript'); }
@@ -893,6 +893,71 @@ function renderReaderSearchResults(book,query){
   panel.innerHTML=found.results.length?found.results.map(searchResultHtml).join(''):'<div class="reader-search-empty">No matches in this manuscript.</div>';
   panel.classList.remove('hidden');
   panel.dataset.searchResults=JSON.stringify(found.results);
+}
+function wordCount(text=''){return (String(text).trim().match(/\S+/g)||[]).length}
+function chapterWordCount(ch){return (ch?.paragraphs||[]).reduce((n,p)=>n+wordCount(p),0)}
+function readingWpm(){return 170*Math.max(.1,Number(prefs().rate||1.05))}
+function readingMinutesLabel(words){
+  const minutes=words/readingWpm();
+  if(minutes<1)return '<1 min';
+  return '~'+Math.max(1,Math.round(minutes))+' min';
+}
+function remainingChapterWords(ch,paragraphIndex=0,charOffset=0){
+  if(!ch?.paragraphs?.length)return 0;
+  let words=0;
+  for(let i=paragraphIndex;i<ch.paragraphs.length;i++){
+    const text=String(ch.paragraphs[i]||'');
+    words+=wordCount(i===paragraphIndex?text.slice(Math.max(0,charOffset)):text);
+  }
+  return words;
+}
+function updateReadingTimeMeta(book){
+  const ch=book?.chapters?.[state.chapterIndex],el=$('#timeLeftLabel');
+  if(!ch||!el)return;
+  el.textContent=readingMinutesLabel(remainingChapterWords(ch,state.selectedParagraph,state.selectedCharOffset||0))+' left in chapter';
+}
+function relativeDateText(iso){
+  const t=Date.parse(iso||'');if(!Number.isFinite(t))return '';
+  const diff=Date.now()-t,day=86400000;
+  if(diff<day*2)return 'yesterday';
+  const days=Math.floor(diff/day);
+  if(days<14)return days+' days ago';
+  const weeks=Math.floor(days/7);if(weeks<8)return weeks+' weeks ago';
+  const months=Math.max(1,Math.floor(days/30));return months+' months ago';
+}
+function recapSentences(book,progress,limit=3){
+  const ci=Math.max(0,Math.min(progress?.chapterIndex||0,book.chapters.length-1));
+  const ch=book.chapters[ci];if(!ch)return [];
+  const pi=Math.max(0,Math.min(progress?.paragraphIndex||0,ch.paragraphs.length-1));
+  const snippets=[];
+  const collect=text=>{
+    const parts=sentenceSegments(text,0).map(x=>x.text).filter(Boolean);
+    for(let i=parts.length-1;i>=0&&snippets.length<limit;i--)snippets.unshift(parts[i]);
+  };
+  const current=String(ch.paragraphs[pi]||'');
+  collect(current.slice(0,Math.max(0,progress?.charOffset||0)));
+  for(let p=pi-1;p>=0&&snippets.length<limit;p--)collect(ch.paragraphs[p]||'');
+  if(snippets.length<limit&&ci>0){
+    const prev=book.chapters[ci-1];
+    for(let p=prev.paragraphs.length-1;p>=0&&snippets.length<limit;p--)collect(prev.paragraphs[p]||'');
+  }
+  return snippets.slice(-limit);
+}
+function shouldShowRecap(book){
+  const p=book?.progress;if(!p||p.completed||state.recapBookId!==book.id)return false;
+  const moved=(p.chapterIndex||0)>0||(p.paragraphIndex||0)>0||(p.charOffset||0)>0;
+  const t=Date.parse(p.updatedAt||'');
+  return moved&&Number.isFinite(t)&&(Date.now()-t)>=86400000;
+}
+function recapCardHtml(book){
+  if(!shouldShowRecap(book))return '';
+  const p=book.progress,ch=book.chapters[p.chapterIndex||0],sentences=recapSentences(book,p);
+  return `<section id="recapCard" class="recap-card card">
+    <div><div class="eyebrow">Pick up the thread</div><h3>Last read ${escapeHtml(relativeDateText(p.updatedAt))}</h3>
+    <p class="meta">${escapeHtml(chapterLabel(ch,book))} · paragraph ${(p.paragraphIndex||0)+1} of ${ch?.paragraphs?.length||0}</p>
+    ${sentences.length?`<blockquote>${escapeHtml(sentences.join(' '))}</blockquote>`:''}</div>
+    <div class="row recap-actions"><button id="recapResume" class="button">Resume</button><button id="recapChapterStart" class="ghost">Chapter start</button><button id="recapDismiss" class="ghost">Dismiss</button></div>
+  </section>`;
 }
 function bookCard(b,items){ const total=b.chapters.reduce((n,c)=>n+c.paragraphs.length,0); let before=0; for(let i=0;i<(b.progress?.chapterIndex||0);i++) before+=b.chapters[i]?.paragraphs.length||0; before+=b.progress?.paragraphIndex||0; const pct=b.progress?.completed===true?100:Math.max(0,Math.min(100,Math.round((before/Math.max(total,1))*100))); const count=items.filter(i=>i.bookId===b.id&&['note','question','continuity'].includes(i.type)).length;
   return `<article class="card book-card" data-id="${b.id}"><div><div class="eyebrow">${escapeHtml(b.version||'Manuscript')}</div><div class="book-title">${escapeHtml(b.title)}</div><p class="meta">${b.chapters.length} chapter${b.chapters.length===1?'':'s'} · ${count} note${count===1?'':'s'}</p></div><div class="stack"><div class="row between"><span class="meta">${pct}% listened</span><button data-delete="${b.id}" class="ghost tiny">Remove</button></div><div class="progress"><i style="width:${pct}%"></i></div><button class="button">Continue reading</button></div></article>`;
@@ -1089,9 +1154,9 @@ function progressSnapshot(){return {chapterIndex:state.chapterIndex,paragraphInd
 async function saveProgress(book,{snapshot=null,completed=null,updatePrefs=true}={}){
   if(!book)return;
   const pos=snapshot||progressSnapshot();
-  const wasCompleted=book.progress?.completed===true;
-  book.progress={chapterIndex:pos.chapterIndex,paragraphIndex:pos.paragraphIndex,charOffset:pos.charOffset||0,wordEnd:pos.wordEnd||0,completed:completed===null?wasCompleted:!!completed};
-  book.updatedAt=new Date().toISOString();
+  const wasCompleted=book.progress?.completed===true,now=new Date().toISOString();
+  book.progress={chapterIndex:pos.chapterIndex,paragraphIndex:pos.paragraphIndex,charOffset:pos.charOffset||0,wordEnd:pos.wordEnd||0,completed:completed===null?wasCompleted:!!completed,updatedAt:now};
+  book.updatedAt=now;
   await idbPut('books',book);
   if(updatePrefs)savePrefs({lastBookId:book.id,lastChapterIndex:pos.chapterIndex,lastParagraphIndex:pos.paragraphIndex,lastCharOffset:pos.charOffset||0,lastWordEnd:pos.wordEnd||0});
 }
