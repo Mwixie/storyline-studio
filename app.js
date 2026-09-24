@@ -1220,12 +1220,12 @@ async function importPastedText(text,title=''){
   }
   const chapters=splitChapters(paragraphs);
   const now=new Date().toISOString();
-  const book={id:uid(),title:bookTitle,fileName:'Pasted text',createdAt:now,updatedAt:now,chapters,progress:{chapterIndex:0,paragraphIndex:0,charOffset:0,wordEnd:0,completed:false},version:'Pasted manuscript'};
+  const book={id:uid(),title:bookTitle,fileName:'Pasted text',createdAt:now,updatedAt:now,chapters,progress:{chapterIndex:0,paragraphIndex:0,charOffset:0,wordEnd:0,completed:false},version:'Pasted manuscript',nameIndex:[],nameIndexHidden:[],nameIndexStatus:'pending'};
   await idbPut('books',book);
   state.bookId=book.id;state.chapterIndex=0;state.selectedParagraph=0;state.selectedCharOffset=0;state.selectedWordEnd=0;
   savePrefs({lastBookId:book.id});
   showToast(`Imported ${book.chapters.length} chapter${book.chapters.length===1?'':'s'} from pasted text`);
-  await navigate('reader');
+  await navigate('reader');queueNameIndexBuild(book);
 }
 function pastedFileFromTransfer(transfer){
   const files=[...(transfer?.files||[])];
@@ -1285,7 +1285,7 @@ async function importFile(file){
     const firstUseful=paragraphs.find(p=>p.length>3&&!/^chapter\b/i.test(p));
     if(/the plus[ -]one problem/i.test(title)||/^the plus[ -]one problem/i.test(firstUseful||''))title='The Plus-One Problem';
     const chapters=parsedChapters||splitChapters(paragraphs,sources),now=new Date().toISOString();
-    const book={id:uid(),title,fileName:file.name,createdAt:now,updatedAt:now,chapters,progress:{chapterIndex:0,paragraphIndex:0,charOffset:0,wordEnd:0,completed:false},version:'Imported manuscript',importDiagnostics};
+    const book={id:uid(),title,fileName:file.name,createdAt:now,updatedAt:now,chapters,progress:{chapterIndex:0,paragraphIndex:0,charOffset:0,wordEnd:0,completed:false},version:'Imported manuscript',importDiagnostics,nameIndex:[],nameIndexHidden:[],nameIndexStatus:'pending'};
 
     const existing=await idbGetAll('books'),revisionMatch=revisionCandidateForBook(book,existing);
     if(revisionMatch.book){
@@ -1299,7 +1299,7 @@ async function importFile(file){
     state.bookId=book.id;state.chapterIndex=0;state.selectedParagraph=0;state.selectedCharOffset=0;state.selectedWordEnd=0;
     savePrefs({lastBookId:book.id});
     showToast(revisionMatch.book?`Imported revision ${book.revisionIndex} · compare when ready`:`Imported ${book.chapters.length} chapter${book.chapters.length===1?'':'s'}`);
-    await navigate('reader');
+    await navigate('reader');queueNameIndexBuild(book);
     if(importDiagnostics)showImportReport(book);
   }catch(e){
     if(modal.open){modal.onclose=null;modal.close()}
@@ -2032,7 +2032,7 @@ async function renderReader(){
   const p=prefs();
   view.innerHTML=`
     <section class="reader-header"><div class="row between"><div><div class="eyebrow">${escapeHtml(book.title)}</div>${readerChapterTitle(ch)?`<h2 class="reader-title">${escapeHtml(readerChapterTitle(ch))}</h2>`:''}</div><button id="backLibrary" class="ghost tiny">Library</button></div>
-    <select id="chapterSelect" class="chapter-select">${book.chapters.map((c,i)=>`<option value="${i}" ${i===state.chapterIndex?'selected':''}>${escapeHtml(chapterLabel(c,book))} · ${readingMinutesLabel(chapterWordCount(c))}</option>`).join('')}</select>
+    <div class="reader-chapter-tools"><select id="chapterSelect" class="chapter-select">${book.chapters.map((c,i)=>`<option value="${i}" ${i===state.chapterIndex?'selected':''}>${escapeHtml(chapterLabel(c,book))} · ${readingMinutesLabel(chapterWordCount(c))}</option>`).join('')}</select><button id="pacingBtn" class="ghost tiny" type="button">Pacing</button></div>
     ${recapCardHtml(book)}
     ${handoffLandingCardHtml(book)}
     ${revisionPromptCardHtml(book)}
@@ -2116,6 +2116,7 @@ function wireReader(book,ch){
   readingPage?.addEventListener('wheel',suspendFollow,{passive:true});
   if(resumeFollow)resumeFollow.onclick=()=>resumeNarrationFollow();
   updateFollowControl();
+  const pacingBtn=$('#pacingBtn');if(pacingBtn)pacingBtn.onclick=()=>openPacingView(book,state.chapterIndex);
   const searchInput=$('#readerSearchInput'),searchBtn=$('#readerSearchBtn'),searchClear=$('#readerSearchClear');
   const runSearch=()=>{renderReaderSearchResults(book,searchInput?.value||'');searchClear?.classList.toggle('hidden',!String(searchInput?.value||'').trim());wireReaderSearchResults(book)};
   if(searchBtn)searchBtn.onclick=runSearch;
@@ -3045,6 +3046,7 @@ async function handleAction(act,book,ch){
   };
   if(act==='start'){ startSpeechFromSelection(); return} if(act==='queue'){navigate('queue');return}
   if(act==='handoff'){openHandoffSender(book);return}
+  if(act==='names'){openNameIndex(book);return}
   if(act==='pronunciations'){pronunciationManager(book,selectedReaderText());return}
   if(act==='bookmark'){await idbPut('items',{...base,id:uid(),type:'bookmark',note:''});showToast('Bookmarked');updateQueueBadge();return}
   if(act==='note') return promptItem('note','Add note','What did you notice?',base);
