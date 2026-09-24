@@ -12,7 +12,7 @@ const state = {
   pendingPassageReference:null, activeEngine:'device', readerSearchQuery:'',
   followNarrationSuspended:false, readerBook:null, recapBookId:null, selectedReaderPhrase:'',
   liveCharOffset:null, pendingHandoffContext:null, handoffScanStop:null,
-  sharedPronunciations:[], gentleStopPending:false
+  sharedPronunciations:[], gentleStopPending:false, pendingRevisionPrompt:null, revisionDiff:null
 };
 
 const PREF='storyline.prefs.v1';
@@ -305,6 +305,83 @@ function storylineEditionFingerprint(book){
     }
   }
   return portableFingerprint('storyline-edition|'+chapters.length+'|'+sample.join('|'));
+}
+
+function revisionParagraphHash(text=''){
+  return anchorHash(String(text).replace(/\s+/g,' ').trim());
+}
+function revisionChapterKey(ch,book){
+  return anchorNormalize(chapterLabel(ch,book));
+}
+function revisionCandidateForBook(book,books=[]){
+  const others=books.filter(b=>b?.id!==book.id);
+  const exact=others.filter(b=>storylineEditionFingerprint(b)===storylineEditionFingerprint(book));
+  const sameTitle=others.filter(b=>anchorNormalize(b.title)===anchorNormalize(book.title));
+  const first=book.chapters?.[0],last=book.chapters?.[book.chapters.length-1];
+  const structure=others.filter(b=>{
+    if(!b.chapters?.length||!book.chapters?.length)return false;
+    const countClose=Math.abs(b.chapters.length-book.chapters.length)<=Math.max(2,Math.ceil(book.chapters.length*.15));
+    return countClose&&revisionChapterKey(b.chapters[0],b)===revisionChapterKey(first,book)&&revisionChapterKey(b.chapters[b.chapters.length-1],b)===revisionChapterKey(last,book);
+  });
+  const candidates=exact.length?exact:sameTitle.length?sameTitle:structure;
+  candidates.sort((a,b)=>bookLastTouched(b)-bookLastTouched(a));
+  return {book:candidates[0]||null,exactEdition:!!exact.length,matchKind:exact.length?'edition':sameTitle.length?'title':structure.length?'structure':'none'};
+}
+function revisionChapterPairs(oldBook,newBook){
+  const used=new Set(),pairs=[];
+  for(let ni=0;ni<newBook.chapters.length;ni++){
+    const nch=newBook.chapters[ni],key=revisionChapterKey(nch,newBook);
+    let oi=oldBook.chapters.findIndex((ch,i)=>!used.has(i)&&revisionChapterKey(ch,oldBook)===key);
+    if(oi<0&&ni<oldBook.chapters.length&&!used.has(ni))oi=ni;
+    if(oi>=0)used.add(oi);
+    pairs.push({oldIndex:oi,newIndex:ni});
+  }
+  for(let oi=0;oi<oldBook.chapters.length;oi++)if(!used.has(oi))pairs.push({oldIndex:oi,newIndex:-1});
+  return pairs;
+}
+function lcsParagraphPairs(oldHashes,newHashes){
+  const n=oldHashes.length,m=newHashes.length,width=m+1,dp=new Uint32Array((n+1)*(m+1));
+  for(let i=n-1;i>=0;i--){
+    for(let j=m-1;j>=0;j--){
+      const idx=i*width+j;
+      dp[idx]=oldHashes[i]===newHashes[j]?1+dp[(i+1)*width+j+1]:Math.max(dp[(i+1)*width+j],dp[i*width+j+1]);
+    }
+  }
+  const pairs=[];let i=0,j=0;
+  while(i<n&&j<m){
+    if(oldHashes[i]===newHashes[j]){pairs.push([i,j]);i++;j++;continue}
+    if(dp[(i+1)*width+j]>=dp[i*width+j+1])i++;else j++;
+  }
+  return pairs;
+}
+function diffChapterParagraphs(oldCh,newCh){
+  const oldP=oldCh?.paragraphs||[],newP=newCh?.paragraphs||[];
+  const oh=oldP.map(revisionParagraphHash),nh=newP.map(revisionParagraphHash),matches=lcsParagraphPairs(oh,nh);
+  const changes=[];let oi=0,ni=0;
+  for(const pair of [...matches,[oldP.length,newP.length]]){
+    const mo=pair[0],mn=pair[1],oldGap=[],newGap=[];
+    while(oi<mo)oldGap.push(oi++);
+    while(ni<mn)newGap.push(ni++);
+    const paired=Math.min(oldGap.length,newGap.length);
+    for(let k=0;k<paired;k++)changes.push({kind:'changed',oldParagraphIndex:oldGap[k],newParagraphIndex:newGap[k],oldText:oldP[oldGap[k]],newText:newP[newGap[k]]});
+    for(let k=paired;k<oldGap.length;k++)changes.push({kind:'removed',oldParagraphIndex:oldGap[k],newParagraphIndex:null,oldText:oldP[oldGap[k]],newText:''});
+    for(let k=paired;k<newGap.length;k++)changes.push({kind:'added',oldParagraphIndex:null,newParagraphIndex:newGap[k],oldText:'',newText:newP[newGap[k]]});
+    if(mo<oldP.length&&mn<newP.length){oi=mo+1;ni=mn+1}
+  }
+  const max=Math.max(oldP.length,newP.length,1),matchRate=matches.length/max;
+  return {changes,matchRate,restructured:max>3&&matchRate<.5,unchanged:matches.length,oldCount:oldP.length,newCount:newP.length};
+}
+function diffManuscripts(oldBook,newBook){
+  const chapters=[],pairs=revisionChapterPairs(oldBook,newBook);
+  for(const pair of pairs){
+    const oldCh=pair.oldIndex>=0?oldBook.chapters[pair.oldIndex]:null,newCh=pair.newIndex>=0?newBook.chapters[pair.newIndex]:null;
+    let diff;
+    if(oldCh&&newCh)diff=diffChapterParagraphs(oldCh,newCh);
+    else if(newCh)diff={changes:newCh.paragraphs.map((t,i)=>({kind:'added',oldParagraphIndex:null,newParagraphIndex:i,oldText:'',newText:t})),matchRate:0,restructured:true,unchanged:0,oldCount:0,newCount:newCh.paragraphs.length};
+    else diff={changes:oldCh.paragraphs.map((t,i)=>({kind:'removed',oldParagraphIndex:i,newParagraphIndex:null,oldText:t,newText:''})),matchRate:0,restructured:true,unchanged:0,oldCount:oldCh.paragraphs.length,newCount:0};
+    if(diff.changes.length)chapters.push({...pair,title:newCh?chapterLabel(newCh,newBook):chapterLabel(oldCh,oldBook),...diff});
+  }
+  return {oldBookId:oldBook.id,newBookId:newBook.id,chapters,totalChanges:chapters.reduce((n,ch)=>n+ch.changes.length,0)};
 }
 function compactHandoffAnchor(anchor){
   if(!anchor)return null;
