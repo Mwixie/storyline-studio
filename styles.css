@@ -819,3 +819,45 @@ body{min-height:100dvh}.app-shell{min-height:100dvh;padding-bottom:86px}.topbar{
   .name-index-row{grid-template-columns:minmax(0,1fr) auto}
   .name-index-row [data-name-hide]{grid-column:1/-1}
 }
+
+
+/* Build 47: voice-note transcripts */
+.voice-transcript-capture{
+  display:grid;
+  gap:8px;
+  margin-top:10px;
+}
+.voice-transcript-live{
+  min-height:52px;
+  max-height:150px;
+  overflow:auto;
+  padding:10px 12px;
+  border:1px solid var(--line);
+  border-radius:10px;
+  background:rgba(255,255,255,.025);
+  line-height:1.5;
+}
+.voice-transcript-capture textarea,
+.voice-transcript-editor{
+  width:100%;
+  min-height:120px;
+}
+.voice-transcript-saved{
+  display:grid;
+  gap:5px;
+  padding:10px 12px;
+  border:1px solid var(--line);
+  border-radius:10px;
+  background:rgba(255,255,255,.025);
+  line-height:1.5;
+}
+.reader-search-section-label{
+  padding:8px 2px 5px;
+  font-size:.76rem;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+  opacity:.7;
+}
+.revision-search-result .reader-search-actions{
+  justify-content:flex-start;
+}

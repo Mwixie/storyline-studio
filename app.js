@@ -1581,8 +1581,7 @@ function revisionChecklistMarkdown(book,items,{preview=false}={}){
   const date=new Date().toISOString().slice(0,10);
   const matched=[],unmatched=[];
   for(const item of items){
-    const resolved=resolvePassageAnchor(book,item);
-    const row={item,resolved};
+    const resolved=resolvePassageAnchor(book,item),row={item,resolved};
     if(resolved?.unverified)unmatched.push(row);else matched.push(row);
   }
   const sorter=(a,b)=>(a.resolved?.chapterIndex??a.item.chapterIndex??0)-(b.resolved?.chapterIndex??b.item.chapterIndex??0)||(a.resolved?.paragraphIndex??a.item.paragraphIndex??0)-(b.resolved?.paragraphIndex??b.item.paragraphIndex??0)||new Date(a.item.createdAt)-new Date(b.item.createdAt);
@@ -1590,6 +1589,12 @@ function revisionChecklistMarkdown(book,items,{preview=false}={}){
   const questions=[...matched.filter(r=>r.item.type==='question'),...unmatched.filter(r=>r.item.type==='question')];
   const fixes=matched.filter(r=>r.item.type!=='question'),unmatchedFixes=unmatched.filter(r=>r.item.type!=='question');
   const lines=[`# Revision checklist — ${book.title} (${date}, ${items.length} item${items.length===1?'':'s'})`,''];
+  const detailText=item=>{
+    let detail=item.type==='voice'?(item.transcript||item.note||''):(item.note||'');
+    detail=String(detail).trim();
+    if(preview&&detail.length>300)detail=detail.slice(0,299)+'…';
+    return detail;
+  };
   let lastChapter=-1;
   for(const row of fixes){
     const {item,resolved}=row,ch=book.chapters[resolved.chapterIndex];
@@ -1597,18 +1602,17 @@ function revisionChecklistMarkdown(book,items,{preview=false}={}){
       if(lastChapter!==-1)lines.push('');
       lines.push(`## ${chapterLabel(ch,book)}`);lastChapter=resolved.chapterIndex;
     }
-    const [icon,label]=revisionTypeMeta(item.type);
-    const passage=excerpt(item.anchor?.selectedText||item.excerpt||'',140).replace(/\s+/g,' ');
-    let note=String(item.note||'').trim();if(preview&&note.length>300)note=note.slice(0,299)+'…';
-    const audio=item.type==='voice'&&item.durationSec?` · ${formatDuration(item.durationSec)}`:'';
-    lines.push(`- [ ] ${icon} ${label} · ¶${resolved.paragraphIndex+1}${audio} · "${passage}"${note?` — ${note}`:''} (added ${revisionDate(item.createdAt)})`);
+    const [icon,label]=revisionTypeMeta(item.type),passage=excerpt(item.anchor?.selectedText||item.excerpt||'',140).replace(/\s+/g,' ');
+    const detail=detailText(item),audio=item.type==='voice'&&item.durationSec?` · ${formatDuration(item.durationSec)}`:'';
+    const transcriptLabel=item.type==='voice'&&item.transcript?' · transcript':'';
+    lines.push(`- [ ] ${icon} ${label} · ¶${resolved.paragraphIndex+1}${audio}${transcriptLabel} · "${passage}"${detail?` — ${detail}`:''} (added ${revisionDate(item.createdAt)})`);
   }
   if(unmatchedFixes.length){
     lines.push('','## Unmatched items');
     for(const {item} of unmatchedFixes){
-      const [icon,label]=revisionTypeMeta(item.type),passage=excerpt(item.anchor?.selectedText||item.excerpt||'',140).replace(/\s+/g,' ');
-      let note=String(item.note||'').trim();if(preview&&note.length>300)note=note.slice(0,299)+'…';
-      lines.push(`- [ ] ${icon} ${label} · "${passage}"${note?` — ${note}`:''} (added ${revisionDate(item.createdAt)})`);
+      const [icon,label]=revisionTypeMeta(item.type),passage=excerpt(item.anchor?.selectedText||item.excerpt||'',140).replace(/\s+/g,' '),detail=detailText(item);
+      const audio=item.type==='voice'&&item.durationSec?` · ${formatDuration(item.durationSec)}`:'';
+      lines.push(`- [ ] ${icon} ${label}${audio} · "${passage}"${detail?` — ${detail}`:''} (added ${revisionDate(item.createdAt)})`);
     }
   }
   if(questions.length){
@@ -1704,21 +1708,50 @@ function searchBook(book,query,limit=400){
   return {query:q,results,truncated};
 }
 function searchResultHtml(result,index){
+  if(result.kind==='item'){
+    const label=result.itemType==='voice'?'Voice-note transcript':result.itemType==='question'?'Question':result.itemType==='continuity'?'Continuity flag':result.itemType==='bookmark'?'Bookmark':'Revision note';
+    return `<button type="button" class="reader-search-result revision-search-result" data-search-result="${index}">
+      <span class="reader-search-location">${escapeHtml(label)} · ${escapeHtml(result.chapterTitle)} · paragraph ${result.paragraphIndex+1}</span>
+      <span class="reader-search-snippet">${result.before?'…'+escapeHtml(result.before):''}<mark>${escapeHtml(result.match)}</mark>${result.after?escapeHtml(result.after)+'…':''}</span>
+      <span class="reader-search-actions"><span>Open saved item</span></span>
+    </button>`;
+  }
   return `<button type="button" class="reader-search-result" data-search-result="${index}">
     <span class="reader-search-location">${escapeHtml(result.chapterTitle)} · paragraph ${result.paragraphIndex+1}</span>
     <span class="reader-search-snippet">${result.before?'…'+escapeHtml(result.before):''}<mark>${escapeHtml(result.match)}</mark>${result.after?escapeHtml(result.after)+'…':''}</span>
     <span class="reader-search-actions"><span>Go to match</span><span data-search-play="${index}">▶ Play from here</span></span>
   </button>`;
 }
-function renderReaderSearchResults(book,query){
+async function searchRevisionItems(book,query,limit=120){
+  const q=String(query||'').trim();if(!q)return [];
+  const needle=q.toLocaleLowerCase(),items=(await idbGetAll('items')).filter(i=>i.bookId===book.id);
+  const results=[];
+  for(const item of items){
+    const fields=[];
+    if(item.transcript)fields.push({name:'transcript',text:String(item.transcript)});
+    if(item.note)fields.push({name:'note',text:String(item.note)});
+    for(const field of fields){
+      const hay=field.text.toLocaleLowerCase(),start=hay.indexOf(needle);if(start<0)continue;
+      const end=start+q.length;
+      results.push({kind:'item',itemId:item.id,itemType:item.type,field:field.name,chapterIndex:item.chapterIndex??0,paragraphIndex:item.paragraphIndex??0,chapterTitle:item.chapterTitle||'Chapter',start,end,before:field.text.slice(Math.max(0,start-90),start),match:field.text.slice(start,end),after:field.text.slice(end,Math.min(field.text.length,end+90))});
+      break;
+    }
+    if(results.length>=limit)break;
+  }
+  return results;
+}
+async function renderReaderSearchResults(book,query){
   const panel=$('#readerSearchResults'),status=$('#readerSearchStatus');if(!panel||!status)return;
   const found=searchBook(book,query);
   state.readerSearchQuery=found.query;
-  if(!found.query){panel.innerHTML='';panel.classList.add('hidden');status.textContent='';return}
-  status.textContent=found.results.length?(found.truncated?`Showing first ${found.results.length} matches`:`${found.results.length} match${found.results.length===1?'':'es'}`):'No matches';
-  panel.innerHTML=found.results.length?found.results.map(searchResultHtml).join(''):'<div class="reader-search-empty">No matches in this manuscript.</div>';
-  panel.classList.remove('hidden');
-  panel.dataset.searchResults=JSON.stringify(found.results);
+  if(!found.query){panel.innerHTML='';panel.classList.add('hidden');status.textContent='';panel.dataset.searchResults='[]';return}
+  const revision=await searchRevisionItems(book,found.query),manuscript=found.results.map(x=>({...x,kind:'manuscript'})),combined=[...manuscript,...revision];
+  const parts=[];
+  if(manuscript.length)parts.push(`<div class="reader-search-section-label">Manuscript · ${manuscript.length}${found.truncated?' shown':''}</div>`+manuscript.map((x,i)=>searchResultHtml(x,i)).join(''));
+  if(revision.length)parts.push(`<div class="reader-search-section-label">Revision notes · ${revision.length}</div>`+revision.map((x,i)=>searchResultHtml(x,manuscript.length+i)).join(''));
+  status.textContent=combined.length?`${combined.length} result${combined.length===1?'':'s'}${found.truncated?' · manuscript results truncated':''}`:'No matches';
+  panel.innerHTML=parts.join('')||'<div class="reader-search-empty">No matches in this manuscript or its revision notes.</div>';
+  panel.classList.remove('hidden');panel.dataset.searchResults=JSON.stringify(combined);
 }
 function wordCount(text=''){return (String(text).trim().match(/\S+/g)||[]).length}
 function chapterWordCount(ch){return (ch?.paragraphs||[]).reduce((n,p)=>n+wordCount(p),0)}
@@ -2126,11 +2159,11 @@ function wireReader(book,ch){
   updateFollowControl();
   const pacingBtn=$('#pacingBtn');if(pacingBtn)pacingBtn.onclick=()=>openPacingView(book,state.chapterIndex);
   const searchInput=$('#readerSearchInput'),searchBtn=$('#readerSearchBtn'),searchClear=$('#readerSearchClear');
-  const runSearch=()=>{renderReaderSearchResults(book,searchInput?.value||'');searchClear?.classList.toggle('hidden',!String(searchInput?.value||'').trim());wireReaderSearchResults(book)};
+  const runSearch=async()=>{await renderReaderSearchResults(book,searchInput?.value||'');searchClear?.classList.toggle('hidden',!String(searchInput?.value||'').trim());wireReaderSearchResults(book)};
   if(searchBtn)searchBtn.onclick=runSearch;
   if(searchInput)searchInput.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();runSearch()}else if(e.key==='Escape'){e.preventDefault();searchInput.value='';state.readerSearchQuery='';renderReaderSearchResults(book,'');searchClear?.classList.add('hidden')}};
   if(searchClear)searchClear.onclick=()=>{if(searchInput)searchInput.value='';state.readerSearchQuery='';renderReaderSearchResults(book,'');searchClear.classList.add('hidden');searchInput?.focus()};
-  if(state.readerSearchQuery){renderReaderSearchResults(book,state.readerSearchQuery);wireReaderSearchResults(book)}
+  if(state.readerSearchQuery){renderReaderSearchResults(book,state.readerSearchQuery).then(()=>wireReaderSearchResults(book))}
 
   $('#chapterSelect').onchange=async e=>{ stopAllSpeech(); state.chapterIndex=+e.target.value; state.selectedParagraph=0; state.selectedCharOffset=0; state.selectedWordEnd=0; await saveProgress(book); renderReader(); };
   $$('#readingPage p').forEach(p=>p.onclick=async e=>{
@@ -2216,25 +2249,32 @@ function wireReaderSearchResults(book){
   const results=readerSearchResultsFromPanel();
   $$('[data-search-result]').forEach(btn=>btn.onclick=async e=>{
     const index=Number(btn.dataset.searchResult),result=results[index];if(!result)return;
+    if(result.kind==='item'){
+      const item=await idbGet('items',result.itemId);if(!item){showToast('That revision item is no longer available.');return}
+      let resolved=resolvePassageAnchor(book,item);
+      if(resolved.unverified&&item.migrationUncertain&&item.migrationFallback){
+        const f=item.migrationFallback,ch=book.chapters[Math.max(0,Math.min(f.chapterIndex||0,book.chapters.length-1))];
+        const pi=Math.max(0,Math.min(f.paragraphIndex||0,Math.max(0,(ch?.paragraphs?.length||1)-1))),text=String(ch?.paragraphs?.[pi]||'');
+        const start=Math.max(0,Math.min(f.charStart||0,text.length)),end=Math.max(start,Math.min(f.charEnd||start,text.length));
+        resolved={chapterIndex:Math.max(0,Math.min(f.chapterIndex||0,book.chapters.length-1)),paragraphIndex:pi,start,end,score:item.migrationScore||0,moved:true,unverified:true,migrationFallback:true};
+      }
+      stopAllSpeech();state.chapterIndex=resolved.chapterIndex;state.selectedParagraph=resolved.paragraphIndex;
+      state.selectedCharOffset=resolved.start||0;state.selectedWordEnd=resolved.end||resolved.start||0;state.pendingPassageReference=resolved;
+      await saveProgress(book);await renderReader();showToast(result.field==='transcript'?'Opened voice-note transcript location':'Opened revision item');
+      return;
+    }
     const play=!!e.target.closest('[data-search-play]');
-    stopAllSpeech();
-    state.chapterIndex=result.chapterIndex;state.selectedParagraph=result.paragraphIndex;
+    stopAllSpeech();state.chapterIndex=result.chapterIndex;state.selectedParagraph=result.paragraphIndex;
     const targetText=book.chapters[result.chapterIndex]?.paragraphs?.[result.paragraphIndex]||'';
     if(play){
       const seg=sentenceAtOffset(targetText,result.start);
-      state.selectedCharOffset=seg?.start??result.start;
-      state.selectedWordEnd=seg?wordRangeAt(targetText,seg.start).end:result.end;
-      state.pendingPassageReference=null;
+      state.selectedCharOffset=seg?.start??result.start;state.selectedWordEnd=seg?wordRangeAt(targetText,seg.start).end:result.end;state.pendingPassageReference=null;
     }else{
       state.selectedCharOffset=result.start;state.selectedWordEnd=result.end;
       state.pendingPassageReference={chapterIndex:result.chapterIndex,paragraphIndex:result.paragraphIndex,start:result.start,end:result.end,moved:false};
     }
-    await saveProgress(book);
-    await renderReader();
-    if(play){
-      await new Promise(resolve=>requestAnimationFrame(resolve));
-      startSpeechFromSelection();
-    }
+    await saveProgress(book);await renderReader();
+    if(play){await new Promise(resolve=>requestAnimationFrame(resolve));startSpeechFromSelection()}
   });
 }
 async function selectParagraph(i,noScroll=false,preserveWord=false){ state.selectedParagraph=i; if(!preserveWord){state.selectedCharOffset=0;state.selectedWordEnd=0;} $$('#readingPage p').forEach(p=>p.classList.toggle('selected',+p.dataset.p===i)); $('#positionRange').value=i; $('#positionLabel').textContent=readerPositionLabel(book,state.chapterIndex,i,$('#readingPage').children.length); const book=await idbGet('books',state.bookId); await saveProgress(book); updateReadingTimeMeta(book); if(!noScroll) scrollSelected(); }
@@ -3069,34 +3109,89 @@ function promptItem(type,title,placeholder,base){
   setTimeout(()=>$('#itemText')?.focus(),50);
   $('#saveItem').onclick=async e=>{e.preventDefault();const note=$('#itemText').value.trim(); if(!note){showToast('Add a note first');return} await idbPut('items',{...base,id:uid(),type,note}); modal.close(); showToast(type==='question'?'Added to revision queue':'Saved'); updateQueueBadge();};
 }
-async function voiceNote(base){
-  const canRecord=!!(navigator.mediaDevices?.getUserMedia && window.MediaRecorder);
+async function voiceNote(base,existing=null){
+  const canRecord=!!(navigator.mediaDevices?.getUserMedia&&window.MediaRecorder);
+  const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
   let stream=null,recorder=null,chunks=[],audioBlob=null,previewUrl=null,recording=false,recordStartedAt=0,audioDurationSec=0,timer=null;
+  let recognition=null,recognitionWanted=false,recognitionFinal='',recognitionSessionFinal='',recognitionInterim='',transcriptPartial=false,generatedTranscript=String(existing?.transcript||''),transcriptEdited=!!existing?.transcriptEdited;
 
-  modalForm.innerHTML=`<h3>Voice note</h3>
+  modalForm.innerHTML=`<h3>${existing?'Re-record voice note':'Voice note'}</h3>
     <div class="source-chip">${escapeHtml(base.chapterTitle)} · paragraph ${base.paragraphIndex+1} · exact passage</div>
     <div class="excerpt passage-preview">${referenceExcerptHtml(base)}</div>
-    <div id="voiceRecordStatus" class="sub">${canRecord?'Record an audio note. It stays in this browser.':'Audio recording is not available in this browser.'}</div>
+    <div id="voiceRecordStatus" class="sub">${canRecord?'Record an audio note. Audio stays in this browser.':'Audio recording is not available in this browser.'}</div>
     <div id="recordTimer" class="record-timer">0:00</div>
     <audio id="voicePreview" class="voice-preview hidden" controls></audio>
-    <textarea id="voiceCaption" placeholder="Optional typed caption"></textarea>
+    <div class="voice-transcript-capture">
+      <div class="row between"><strong>Transcript</strong><span id="voiceTranscriptStatus" class="meta">${SR?'Live transcription starts with recording when available.':'Live transcription is unavailable on this browser. You can type a transcript manually.'}</span></div>
+      <div id="voiceTranscriptLive" class="voice-transcript-live hidden"></div>
+      <textarea id="voiceTranscript" placeholder="Live transcript appears here, or type your own transcript.">${escapeHtml(existing?.transcript||'')}</textarea>
+      <span class="meta">Live recognition may use the browser or device speech service and is not guaranteed offline. Audio recording does not depend on it.</span>
+    </div>
     <div class="voice-note-actions">
       <button value="cancel" class="button secondary">Cancel</button>
-      <button type="button" id="recordAudioBtn" class="ghost" ${canRecord?'':'disabled'}>● Record</button>
-      <button type="button" id="saveAudioNote" class="button">Save voice note</button>
+      <button type="button" id="recordAudioBtn" class="ghost" ${canRecord?'':'disabled'}>● ${existing?'Re-record':'Record'}</button>
+      <button type="button" id="saveAudioNote" class="button">${existing?'Save replacement':'Save voice note'}</button>
     </div>`;
   modal.showModal();
+
+  const transcriptEl=$('#voiceTranscript'),liveEl=$('#voiceTranscriptLive'),transcriptStatus=$('#voiceTranscriptStatus');
+  transcriptEl.addEventListener('input',()=>{if(!recording)transcriptEdited=transcriptEl.value.trim()!==generatedTranscript.trim()});
+
+  const transcriptPreview=()=>{
+    return [recognitionFinal.trim(),recognitionSessionFinal.trim(),recognitionInterim.trim()].filter(Boolean).join(' ').replace(/\s+/g,' ').trim();
+  };
+  const paintTranscript=()=>{
+    const text=transcriptPreview();
+    if(liveEl){liveEl.textContent=text||'Listening…';liveEl.classList.remove('hidden')}
+    if(transcriptEl)transcriptEl.value=text;
+  };
+  const stopRecognition=()=>{
+    recognitionWanted=false;
+    try{recognition?.stop?.()}catch{}
+  };
+  const startRecognition=()=>{
+    if(!SR||!recording||!recognitionWanted)return;
+    recognitionSessionFinal='';recognitionInterim='';
+    try{
+      const rec=new SR();recognition=rec;rec.continuous=true;rec.interimResults=true;rec.lang='en-US';
+      rec.onstart=()=>{if(transcriptStatus)transcriptStatus.textContent='Live transcript active'};
+      rec.onresult=e=>{
+        let interim='';
+        for(let i=e.resultIndex;i<e.results.length;i++){
+          const text=String(e.results[i]?.[0]?.transcript||'').trim();if(!text)continue;
+          if(e.results[i].isFinal)recognitionSessionFinal+=(recognitionSessionFinal?' ':'')+text;
+          else interim+=(interim?' ':'')+text;
+        }
+        recognitionInterim=interim;paintTranscript();
+      };
+      rec.onerror=e=>{
+        transcriptPartial=!!transcriptPreview();
+        if(transcriptStatus)transcriptStatus.textContent=`Transcript ${transcriptPartial?'partial':'unavailable'} · audio is still recording`;
+        if(e?.error==='not-allowed'||e?.error==='service-not-allowed')recognitionWanted=false;
+      };
+      rec.onend=()=>{
+        const finalPart=recognitionSessionFinal.trim();
+        if(finalPart)recognitionFinal=[recognitionFinal.trim(),finalPart].filter(Boolean).join(' ');
+        recognitionSessionFinal='';recognitionInterim='';paintTranscript();
+        if(recording&&recognitionWanted)setTimeout(startRecognition,180);
+      };
+      rec.start();
+    }catch{
+      transcriptPartial=!!transcriptPreview();recognitionWanted=false;
+      if(transcriptStatus)transcriptStatus.textContent='Live transcript unavailable · audio is still recording';
+    }
+  };
 
   const setPreview=blob=>{
     audioBlob=blob;
     if(previewUrl)URL.revokeObjectURL(previewUrl);
     previewUrl=URL.createObjectURL(audioBlob);
-    const a=$('#voicePreview'); a.src=previewUrl; a.classList.remove('hidden');
+    const a=$('#voicePreview');a.src=previewUrl;a.classList.remove('hidden');
   };
   const stopTimer=()=>{if(timer){clearInterval(timer);timer=null}};
   const cleanup=()=>{
-    stopTimer();
-    try{if(recorder&&recorder.state!=='inactive')recorder.stop()}catch{}
+    recognitionWanted=false;try{recognition?.abort?.()}catch{}
+    stopTimer();try{if(recorder&&recorder.state!=='inactive')recorder.stop()}catch{}
     try{stream?.getTracks().forEach(t=>t.stop())}catch{}
     if(previewUrl){URL.revokeObjectURL(previewUrl);previewUrl=null}
   };
@@ -3105,66 +3200,79 @@ async function voiceNote(base){
   const recordBtn=$('#recordAudioBtn');
   if(recordBtn)recordBtn.onclick=async()=>{
     if(recording){
+      stopRecognition();
       try{recorder.requestData()}catch{}
       setTimeout(()=>{try{if(recorder&&recorder.state!=='inactive')recorder.stop()}catch{}},100);
       return;
     }
     try{
       stream=await navigator.mediaDevices.getUserMedia({audio:true,video:false});
-      chunks=[]; audioBlob=null; audioDurationSec=0;
+      chunks=[];audioBlob=null;audioDurationSec=0;recognitionFinal='';recognitionSessionFinal='';recognitionInterim='';transcriptPartial=false;
+      transcriptEdited=false;generatedTranscript='';transcriptEl.value='';transcriptEl.disabled=true;if(liveEl){liveEl.textContent='Listening…';liveEl.classList.remove('hidden')}
       recorder=new MediaRecorder(stream);
       recorder.ondataavailable=e=>{if(e.data&&e.data.size>0)chunks.push(e.data)};
       recorder.onstart=()=>{
-        recording=true;recordStartedAt=Date.now();
-        recordBtn.textContent='■ Stop recording';
+        recording=true;recordStartedAt=Date.now();recordBtn.textContent='■ Stop recording';
         $('#voiceRecordStatus').textContent='Recording audio…';
-        const timerEl=$('#recordTimer');
-        timer=setInterval(()=>{if(timerEl)timerEl.textContent=formatDuration((Date.now()-recordStartedAt)/1000)},250);
+        const timerEl=$('#recordTimer');timer=setInterval(()=>{if(timerEl)timerEl.textContent=formatDuration((Date.now()-recordStartedAt)/1000)},250);
+        recognitionWanted=!!SR;
+        if(recognitionWanted)startRecognition();
+        else if(transcriptStatus)transcriptStatus.textContent='Transcript unavailable · audio is recording normally';
       };
       recorder.onstop=()=>{
-        recording=false;stopTimer();
+        recording=false;recognitionWanted=false;stopTimer();try{recognition?.stop?.()}catch{}
         audioDurationSec=recordStartedAt?Math.max(1,Math.round((Date.now()-recordStartedAt)/1000)):0;
-        recordBtn.textContent='● Record again';
-        try{stream?.getTracks().forEach(t=>t.stop())}catch{}
-        const type=recorder.mimeType||chunks.find(c=>c.type)?.type||'audio/mp4';
-        const blob=new Blob(chunks,{type});
-        if(!blob.size){
-          $('#voiceRecordStatus').textContent='No audio was captured. Please try again.';
-          showToast('No audio was captured.');
-          return;
-        }
-        setPreview(blob);
-        $('#voiceRecordStatus').textContent=`Recorded · ${formatDuration(audioDurationSec)}. Play it back before saving if you want.`;
+        recordBtn.textContent='● Record again';try{stream?.getTracks().forEach(t=>t.stop())}catch{}
+        const type=recorder.mimeType||chunks.find(x=>x.type)?.type||'audio/mp4',blob=new Blob(chunks,{type});
+        transcriptEl.disabled=false;
+        const live=transcriptPreview();if(live)transcriptEl.value=live;generatedTranscript=transcriptEl.value.trim();
+        if(liveEl)liveEl.classList.add('hidden');
+        if(transcriptStatus)transcriptStatus.textContent=generatedTranscript?(transcriptPartial?'Partial live transcript · review before saving':'Live transcript captured · editable before saving'):(SR?'No transcript captured · you can type one manually':'Type a transcript manually if useful');
+        if(!blob.size){$('#voiceRecordStatus').textContent='No audio was captured. Please try again.';showToast('No audio was captured.');return}
+        setPreview(blob);$('#voiceRecordStatus').textContent=`Recorded · ${formatDuration(audioDurationSec)}. Play it back before saving if you want.`;
       };
-      recorder.onerror=()=>{
-        recording=false;stopTimer();recordBtn.textContent='● Record again';
-        $('#voiceRecordStatus').textContent='Recording failed. Please try again.';
-      };
+      recorder.onerror=()=>{recording=false;recognitionWanted=false;stopRecognition();stopTimer();transcriptEl.disabled=false;recordBtn.textContent='● Record again';$('#voiceRecordStatus').textContent='Recording failed. Please try again.'};
       recorder.start(250);
-    }catch(e){
-      recording=false;stopTimer();
+    }catch{
+      recording=false;recognitionWanted=false;stopTimer();transcriptEl.disabled=false;
       $('#voiceRecordStatus').textContent='Microphone recording was not available.';
+      if(transcriptStatus)transcriptStatus.textContent='You can still type a transcript, but there is no audio recording to save.';
       showToast('Microphone recording was not available.');
     }
   };
 
   $('#saveAudioNote').onclick=async()=>{
     if(recording){showToast('Stop the recording before saving.');return}
-    if(!audioBlob){showToast('Record something first.');return}
-    const btn=$('#saveAudioNote'); btn.disabled=true; btn.textContent='Saving…';
+    if(!audioBlob){showToast(existing?'Re-record the voice note before replacing it.':'Record something first.');return}
+    const btn=$('#saveAudioNote');btn.disabled=true;btn.textContent='Saving…';
     try{
-      const audioData=await audioBlob.arrayBuffer();
-      const note=$('#voiceCaption').value.trim();
-      await idbPut('items',{...base,id:uid(),type:'voice',note,voice:true,audioData,audioType:audioBlob.type||'audio/mp4',durationSec:audioDurationSec});
-      modal.onclose=null; cleanup(); modal.close(); showToast('Voice note saved'); updateQueueBadge();
-    }catch(e){
-      btn.disabled=false;btn.textContent='Save voice note';
-      $('#voiceRecordStatus').textContent='The recording could not be saved. Please try again.';
-      showToast('Voice note could not be saved.');
+      const audioData=await audioBlob.arrayBuffer(),transcript=transcriptEl.value.trim();
+      const item={...(existing||{}),...base,id:existing?.id||uid(),type:'voice',note:existing?.note||'',voice:true,audioData,audioType:audioBlob.type||'audio/mp4',durationSec:audioDurationSec,transcript,transcriptEdited:!!transcript&&(transcriptEdited||transcript!==generatedTranscript),transcriptPartial:!!transcript&&transcriptPartial};
+      if(!item.createdAt)item.createdAt=new Date().toISOString();
+      await idbPut('items',item);
+      modal.onclose=null;cleanup();modal.close();showToast(existing?'Voice note re-recorded':'Voice note saved');updateQueueBadge();
+      if(state.route==='queue'||state.route==='notes'||state.route==='actioned')navigate(state.route);
+    }catch{
+      btn.disabled=false;btn.textContent=existing?'Save replacement':'Save voice note';
+      $('#voiceRecordStatus').textContent='The recording could not be saved. Please try again.';showToast('Voice note could not be saved.');
     }
   };
 }
-
+function editVoiceTranscript(item){
+  const original=String(item?.transcript||'');
+  modalForm.innerHTML=`<h3>${original?'Edit transcript':'Add transcript'}</h3>
+    <p class="sub">Editing this text does not change the saved audio.</p>
+    <textarea id="editVoiceTranscriptText" class="voice-transcript-editor" autofocus>${escapeHtml(original)}</textarea>
+    <div class="row between"><button value="cancel" class="ghost">Cancel</button><button type="button" id="saveVoiceTranscriptEdit" class="button">Save transcript</button></div>`;
+  if(!modal.open)modal.showModal();
+  $('#saveVoiceTranscriptEdit').onclick=async()=>{
+    const transcript=$('#editVoiceTranscriptText').value.trim();
+    item.transcript=transcript;item.transcriptEdited=transcript!==original;item.transcriptPartial=false;
+    await idbPut('items',item);modal.close();showToast(transcript?'Transcript saved':'Transcript cleared');
+    if(['queue','notes','actioned'].includes(state.route))navigate(state.route);
+  };
+  requestAnimationFrame(()=>$('#editVoiceTranscriptText')?.focus());
+}
 async function renderNotes(){ const books=await idbGetAll('books'); const bookMap=Object.fromEntries(books.map(b=>[b.id,b])); const items=(await idbGetAll('items')).filter(i=>['note','bookmark','voice'].includes(i.type)).sort((a,b)=>new Date(b.createdAt)-new Date(a.createdAt));
   view.innerHTML=`<section class="hero"><div class="eyebrow">Listening memory</div><h1>Notes & bookmarks</h1><p class="sub">Everything you caught while listening, still attached to where you heard it.</p></section>${items.length?`<div class="list">${items.map(i=>itemHtml(i,bookMap)).join('')}</div>`:`<div class="empty card">No notes yet. This is suspiciously peaceful.</div>`}`; wireItemButtons(items); }
 function stopReviewAudio(){
@@ -3323,6 +3431,7 @@ async function renderFlagReview(){
       ${resolved.unverified?'<div class="review-warning">Storyline could not fully verify this anchor. Playback uses the best available location while the original saved excerpt remains below.</div>':''}
       <div class="excerpt passage-reference-preview">${referenceExcerptHtml(item)}</div>
       ${item.note?`<div class="note-text">${escapeHtml(item.note)}</div>`:''}
+      ${item.type==='voice'&&item.transcript?`<div class="voice-transcript-saved"><strong>Transcript</strong><div>${escapeHtml(item.transcript)}</div></div>`:''}
       <div class="flag-review-controls">
         <button id="reviewPlayPassage" class="button">▶ Play passage</button>
         <button id="reviewReadNote" class="ghost">${item.type==='voice'?'▶ Play my voice note':'🗣 Read my note'}</button>
@@ -3398,19 +3507,22 @@ function itemHtml(i,bookMap,queue=false,actioned=false){
     <div><strong>${escapeHtml(bookMap[i.bookId]?.title||i.bookTitle||'Manuscript')}</strong><div class="source-chip">${escapeHtml((i.chapterTitle==='Beginning'||i.chapterTitle==='Front matter')?(bookMap[i.bookId]?.title||i.bookTitle||'Manuscript'):(i.chapterTitle||'Chapter'))} · paragraph ${(i.paragraphIndex??0)+1}${i.anchor?' · anchored':''}${i.migrationUncertain?' · location not verified':''}</div></div>
     <div class="excerpt passage-reference-preview">${referenceExcerptHtml(i)}</div>
     ${i.note?`<div class="note-text">${escapeHtml(i.note)}</div>`:''}
+    ${i.type==='voice'&&i.transcript?`<div class="voice-transcript-saved"><div class="row between"><strong>Transcript</strong><span class="meta">${i.transcriptEdited?'edited':i.transcriptPartial?'partial':'live'}</span></div><div>${escapeHtml(i.transcript)}</div></div>`:''}
     ${hasAudio?`<audio class="saved-voice-note" controls data-audio-item="${i.id}"></audio>`:''}
     <div class="row">
       <button data-open-item="${i.id}" class="ghost tiny">Open passage</button>
+      ${i.type==='voice'?`<button data-edit-transcript="${i.id}" class="ghost tiny">${i.transcript?'Edit transcript':'Add transcript'}</button>${!i.transcript?`<button data-rerecord-transcript="${i.id}" class="ghost tiny">Re-record with transcript</button>`:''}`:''}
       ${queue?`<button data-copy="${i.id}" class="ghost tiny">Copy for ChatGPT</button><button data-done="${i.id}" class="ghost tiny">${actioned?'Reopen':'Mark done'}</button>`:''}
       <button data-delete-item="${i.id}" class="ghost tiny danger-ghost">Delete</button>
     </div>
   </article>`;
 }
 function chatPacket(i){
+  const transcript=i.type==='voice'&&i.transcript?`\nTranscript: ${i.transcript}`:'';
   const audioNote=i.type==='voice'?'\nAudio: Voice-note audio is stored in Storyline and is not included in clipboard text.':'';
   const a=i.anchor;
   const reference=a?`\nAnchor: ${a.chapterTitle||i.chapterTitle}, paragraph ${(a.paragraphIndex??i.paragraphIndex??0)+1}, ${a.precision||'passage'} reference\nSelected passage: ${a.selectedText||i.excerpt||''}\nContext before: ${a.prefixContext||''}\nContext after: ${a.suffixContext||''}`:`\nPassage: ${i.excerpt||''}`;
-  return `Storyline Studio revision item\n\nBook: ${i.bookTitle}\nLocation when captured: ${i.chapterTitle}, paragraph ${(i.paragraphIndex||0)+1}\nType: ${i.type}\nCreated: ${formatItemTime(i.createdAt)}${reference}\n\nMy note/question:\n${i.note||''}${audioNote}\n\nPlease answer using the manuscript context I provide, and do not revise the manuscript unless I explicitly ask.`;
+  return `Storyline Studio revision item\n\nBook: ${i.bookTitle}\nLocation when captured: ${i.chapterTitle}, paragraph ${(i.paragraphIndex||0)+1}\nType: ${i.type}\nCreated: ${formatItemTime(i.createdAt)}${reference}\n\nMy note/question:\n${i.note||''}${transcript}${audioNote}\n\nPlease answer using the manuscript context I provide, and do not revise the manuscript unless I explicitly ask.`;
 }
 function fallbackCopyText(text){
   const ta=document.createElement('textarea');
@@ -3505,6 +3617,14 @@ function wireItemButtons(visibleItems=[]){
     i.lastResolved={bookId:book.id,chapterIndex:resolved.chapterIndex,paragraphIndex:resolved.paragraphIndex,charStart:resolved.start||0,charEnd:resolved.end||0,score:resolved.score||0,moved:!!resolved.moved,unverified:!!resolved.unverified,resolvedAt:new Date().toISOString()};
     await idbPut('items',i);
     savePrefs({lastBookId:state.bookId});await saveProgress(book);navigate('reader');
+  });
+  $$('[data-edit-transcript]').forEach(b=>b.onclick=async()=>{
+    const item=await idbGet('items',b.dataset.editTranscript);if(item)editVoiceTranscript(item);
+  });
+  $$('[data-rerecord-transcript]').forEach(b=>b.onclick=async()=>{
+    const item=await idbGet('items',b.dataset.rerecordTranscript);if(!item)return;
+    const base={bookId:item.bookId,bookTitle:item.bookTitle,chapterIndex:item.chapterIndex,chapterTitle:item.chapterTitle,paragraphIndex:item.paragraphIndex,charOffset:item.charOffset||0,wordEnd:item.wordEnd||0,anchor:item.anchor,excerpt:item.excerpt,createdAt:item.createdAt,status:item.status||'open',completedAt:item.completedAt||null};
+    voiceNote(base,item);
   });
   $$('[data-delete-item]').forEach(b=>b.onclick=async()=>{
     const i=await idbGet('items',b.dataset.deleteItem); if(!i)return;
