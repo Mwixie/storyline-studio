@@ -11,7 +11,8 @@ const state = {
   sleepTimerId:null, sleepIntervalId:null, sleepDeadline:null, sleepMinutes:0, wakeLock:null, chapterTransitionNotice:'',
   pendingPassageReference:null, activeEngine:'device', readerSearchQuery:'',
   followNarrationSuspended:false, readerBook:null, recapBookId:null, selectedReaderPhrase:'',
-  liveCharOffset:null, pendingHandoffContext:null, handoffScanStop:null
+  liveCharOffset:null, pendingHandoffContext:null, handoffScanStop:null,
+  sharedPronunciations:[], gentleStopPending:false
 };
 
 const PREF='storyline.prefs.v1';
@@ -124,8 +125,14 @@ function dialogueRanges(source,start=0,end=source.length){
   if(dialogueStart!==null)push(dialogueStart,b,'narration');else push(cursor,b,'narration');
   return ranges.length?ranges:[{start:a,end:b,kind:'narration'}];
 }
+function effectivePronunciations(book){
+  const local=Array.isArray(book?.pronunciations)?book.pronunciations:[];
+  const overrides=new Set(local.map(x=>String(x.match||'').trim().toLowerCase()).filter(Boolean));
+  const shared=(state.sharedPronunciations||[]).filter(x=>!overrides.has(String(x.match||'').trim().toLowerCase()));
+  return [...local,...shared];
+}
 function speechPiecesForRange(source,start,end,book,settings={}){
-  const pronunciations=book?.pronunciations||[];
+  const pronunciations=effectivePronunciations(book);
   const ranges=settings.dialogueEnabled?dialogueRanges(source,start,end):[{start,end,kind:'narration'}];
   return ranges.map(range=>{
     const transformed=transformSpeechText(source.slice(range.start,range.end),pronunciations,range.start);
@@ -585,9 +592,11 @@ function highlightRange(paragraphIndex,start,end){
 
 
 async function openDB(){
-  return new Promise((res,rej)=>{ const r=indexedDB.open(dbName,1); r.onupgradeneeded=()=>{
-    const d=r.result; if(!d.objectStoreNames.contains('books')) d.createObjectStore('books',{keyPath:'id'});
-    if(!d.objectStoreNames.contains('items')){ const s=d.createObjectStore('items',{keyPath:'id'}); s.createIndex('bookId','bookId'); s.createIndex('type','type'); }
+  return new Promise((res,rej)=>{ const r=indexedDB.open(dbName,2); r.onupgradeneeded=()=>{
+    const d=r.result;
+    if(!d.objectStoreNames.contains('books'))d.createObjectStore('books',{keyPath:'id'});
+    if(!d.objectStoreNames.contains('items')){const s=d.createObjectStore('items',{keyPath:'id'});s.createIndex('bookId','bookId');s.createIndex('type','type')}
+    if(!d.objectStoreNames.contains('meta'))d.createObjectStore('meta',{keyPath:'key'});
   }; r.onsuccess=()=>{db=r.result;res(db)}; r.onerror=()=>rej(r.error); });
 }
 function store(name,mode='readonly'){return db.transaction(name,mode).objectStore(name)}
@@ -596,20 +605,31 @@ function idbGet(name,id){return new Promise((res,rej)=>{const r=store(name).get(
 function idbPut(name,obj){return new Promise((res,rej)=>{const r=store(name,'readwrite').put(obj);r.onsuccess=()=>res(obj);r.onerror=()=>rej(r.error)})}
 function idbDelete(name,id){return new Promise((res,rej)=>{const r=store(name,'readwrite').delete(id);r.onsuccess=()=>res();r.onerror=()=>rej(r.error)})}
 function idbClear(name){return new Promise((res,rej)=>{const r=store(name,'readwrite').clear();r.onsuccess=()=>res();r.onerror=()=>rej(r.error)})}
-function replaceLibraryAtomically(books,items){
+async function loadSharedPronunciations(){
+  const row=await idbGet('meta','sharedPronunciations');
+  state.sharedPronunciations=Array.isArray(row?.value)?row.value:[];
+  return state.sharedPronunciations;
+}
+async function saveSharedPronunciations(list){
+  state.sharedPronunciations=[...list];
+  await idbPut('meta',{key:'sharedPronunciations',value:state.sharedPronunciations,updatedAt:new Date().toISOString()});
+  return state.sharedPronunciations;
+}
+function replaceLibraryAtomically(books,items,meta=[]){
   return new Promise((res,rej)=>{
     let tx;
     try{
-      tx=db.transaction(['books','items'],'readwrite');
-      const booksStore=tx.objectStore('books'),itemsStore=tx.objectStore('items');
+      tx=db.transaction(['books','items','meta'],'readwrite');
+      const booksStore=tx.objectStore('books'),itemsStore=tx.objectStore('items'),metaStore=tx.objectStore('meta');
       let settled=false;
       tx.oncomplete=()=>{if(!settled){settled=true;res()}};
       tx.onabort=()=>{if(!settled){settled=true;rej(tx.error||new Error('Restore transaction was rolled back.'))}};
       tx.onerror=()=>{};
       try{
-        booksStore.clear();itemsStore.clear();
+        booksStore.clear();itemsStore.clear();metaStore.clear();
         for(const book of books)booksStore.put(book);
         for(const item of items)itemsStore.put(item);
+        for(const row of meta)metaStore.put(row);
       }catch(e){
         try{tx.abort()}catch{}
         if(!settled){settled=true;rej(e)}
@@ -620,7 +640,6 @@ function replaceLibraryAtomically(books,items){
     }
   });
 }
-
 function splitChapters(paragraphs,sources=null){
   const chapters=[]; let current={title:'Front matter', paragraphs:[],synthetic:true,sourceRefs:[]};
   const heading=/^(chapter\s+(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen|twenty|[a-z-]+)|prologue|epilogue)\b/i;
