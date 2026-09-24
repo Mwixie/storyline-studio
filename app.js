@@ -394,20 +394,134 @@ async function parseEpub(file){
   if(!all.length)throw new Error('No readable text was found in this EPUB.');
   return {paragraphs:all,chapters:chapters.length?chapters:null};
 }
+function pdfMedian(values){
+  const nums=values.filter(Number.isFinite).sort((a,b)=>a-b);
+  if(!nums.length)return 0;
+  const m=Math.floor(nums.length/2);
+  return nums.length%2?nums[m]:(nums[m-1]+nums[m])/2;
+}
+function pdfHeadingLike(text){
+  const t=String(text||'').trim();
+  return /^(?:chapter\s+(?:\d+|[ivxlcdm]+|[a-z][a-z -]*|one|two|three|four|five|six|seven|eight|nine|ten)|prologue|epilogue|part\s+(?:\d+|[ivxlcdm]+|[a-z][a-z -]*))\b/i.test(t)&&t.length<=120;
+}
+function pdfPageNumberLike(text){
+  const t=String(text||'').trim();
+  return /^(?:page\s*)?\d+(?:\s*(?:of|\/)\s*\d+)?$/i.test(t)||/^[ivxlcdm]{1,8}$/i.test(t);
+}
+function pdfLineSignature(text){
+  return anchorNormalize(text).replace(/\d+/g,'#').replace(/\s+/g,' ').trim();
+}
+function pdfCleanLineText(items){
+  const sorted=[...items].sort((a,b)=>a.x-b.x);
+  let out='';
+  for(const item of sorted){
+    const part=String(item.text||'').replace(/\s+/g,' ').trim();
+    if(!part)continue;
+    if(!out){out=part;continue}
+    const prev=out.slice(-1),first=part[0];
+    const noSpaceBefore=/[,.;:!?%)\]}”’]/.test(first);
+    const noSpaceAfter=/[(\[{“‘]/.test(prev);
+    out+=(noSpaceBefore||noSpaceAfter?'':' ')+part;
+  }
+  return out.replace(/\s+([,.;:!?%)\]}”’])/g,'$1').replace(/([(\[{“‘])\s+/g,'$1').replace(/\s+/g,' ').trim();
+}
+function pdfGroupPageLines(content,pageNo){
+  const raw=content.items.map(item=>{
+    const text=String(item.str||'').trim();
+    const tr=item.transform||[];
+    const x=Number(tr[4]||0),y=Number(tr[5]||0);
+    const height=Math.abs(Number(item.height||tr[3]||tr[0]||10))||10;
+    const width=Math.abs(Number(item.width||0));
+    return text?{text,x,y,height,width}:null;
+  }).filter(Boolean).sort((a,b)=>Math.abs(b.y-a.y)>2?b.y-a.y:a.x-b.x);
+  if(!raw.length)return [];
+  const medianHeight=pdfMedian(raw.map(x=>x.height))||10;
+  const tolerance=Math.max(1.5,medianHeight*.32);
+  const lines=[];
+  for(const item of raw){
+    let line=lines.find(l=>Math.abs(l.y-item.y)<=tolerance);
+    if(!line){line={pageNo,y:item.y,items:[],xStart:item.x,xEnd:item.x+item.width,height:item.height};lines.push(line)}
+    line.items.push(item);
+    line.xStart=Math.min(line.xStart,item.x);
+    line.xEnd=Math.max(line.xEnd,item.x+item.width);
+    line.height=Math.max(line.height,item.height);
+  }
+  return lines.sort((a,b)=>b.y-a.y||a.xStart-b.xStart).map(line=>({...line,text:pdfCleanLineText(line.items)})).filter(x=>x.text);
+}
+function pdfRepeatedMarginSignatures(pages){
+  const counts=new Map();
+  for(const lines of pages){
+    const candidates=[...lines.slice(0,2),...lines.slice(-2)];
+    const seen=new Set();
+    for(const line of candidates){
+      if(!line?.text||line.text.length>120||pdfPageNumberLike(line.text))continue;
+      const sig=pdfLineSignature(line.text);if(!sig||seen.has(sig))continue;
+      seen.add(sig);counts.set(sig,(counts.get(sig)||0)+1);
+    }
+  }
+  const threshold=Math.max(2,Math.ceil(pages.length*.5));
+  return new Set([...counts].filter(([,count])=>count>=threshold).map(([sig])=>sig));
+}
+function pdfJoinLinesToParagraphs(pages){
+  const repeated=pdfRepeatedMarginSignatures(pages);
+  const all=[];
+  for(const lines of pages){
+    const usable=lines.filter(line=>!pdfPageNumberLike(line.text)&&!repeated.has(pdfLineSignature(line.text)));
+    if(!usable.length)continue;
+    const gaps=[];
+    for(let i=0;i<usable.length-1;i++){
+      const gap=usable[i].y-usable[i+1].y;
+      if(gap>0&&gap<100)gaps.push(gap);
+    }
+    const normalGap=pdfMedian(gaps)||pdfMedian(usable.map(x=>x.height))||12;
+    const starts=usable.filter(x=>!pdfHeadingLike(x.text)).map(x=>x.xStart).filter(Number.isFinite).sort((a,b)=>a-b);
+    const leftEdge=starts.length?starts[Math.floor((starts.length-1)*.2)]:0;
+    usable.forEach((line,index)=>all.push({...line,normalGap,leftEdge,pageBreak:index===0&&all.length>0}));
+  }
+
+  const paras=[];let current='';
+  const flush=()=>{const text=current.replace(/\s+/g,' ').trim();if(text)paras.push(text);current=''};
+  for(let i=0;i<all.length;i++){
+    const line=all[i],prev=all[i-1],text=line.text.trim();
+    if(!text)continue;
+    if(pdfHeadingLike(text)){flush();paras.push(text);continue}
+
+    let newParagraph=!current;
+    if(current&&prev){
+      const samePage=prev.pageNo===line.pageNo;
+      const gap=samePage?prev.y-line.y:line.normalGap;
+      const largeGap=samePage&&gap>Math.max(line.normalGap*1.48,line.height*1.55);
+      const indented=line.xStart>=line.leftEdge+Math.max(7,line.height*.55);
+      const prevWasHeading=pdfHeadingLike(prev.text);
+      newParagraph=largeGap||indented||prevWasHeading;
+      if(line.pageBreak&&!indented&&!largeGap&&!prevWasHeading)newParagraph=false;
+    }
+    if(newParagraph&&current)flush();
+
+    if(!current){current=text;continue}
+    const hyphenated=/[A-Za-zÀ-ÖØ-öø-ÿ]-$/.test(current)&&/^[a-zà-öø-ÿ]/.test(text);
+    if(hyphenated)current=current.slice(0,-1)+text;
+    else current+=' '+text;
+  }
+  flush();
+  return paras.filter(Boolean);
+}
 async function parsePdf(file){
   if(!window.pdfjsLib)throw new Error('PDF support has not finished loading. Check your connection and try again.');
   const pdf=await pdfjsLib.getDocument({data:new Uint8Array(await file.arrayBuffer())}).promise;
-  const paras=[];
+  const pages=[];let characterCount=0;
   for(let pageNo=1;pageNo<=pdf.numPages;pageNo++){
     const page=await pdf.getPage(pageNo),content=await page.getTextContent();
-    let line='';
-    for(const item of content.items){
-      const t=(item.str||'').trim();if(t)line+=(line?' ':'')+t;
-      if(item.hasEOL&&line.trim()){paras.push(line.replace(/\s+/g,' ').trim());line=''}
-    }
-    if(line.trim())paras.push(line.replace(/\s+/g,' ').trim());
+    const lines=pdfGroupPageLines(content,pageNo);
+    characterCount+=lines.reduce((n,line)=>n+line.text.length,0);
+    pages.push(lines);
   }
-  return paras.filter(Boolean);
+  if(characterCount<Math.max(20,pdf.numPages*8)){
+    throw new Error('This PDF appears to be scanned or image-based and does not contain enough selectable text. Storyline needs OCR before it can read this PDF.');
+  }
+  const paras=pdfJoinLinesToParagraphs(pages);
+  if(!paras.length)throw new Error('No readable manuscript text was reconstructed from this PDF.');
+  return paras;
 }
 async function importPastedText(text,title=''){
   const source=String(text||'').replace(/\r/g,'').trim();
