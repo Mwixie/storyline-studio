@@ -112,8 +112,8 @@ function dialogueRanges(source,start=0,end=source.length){
     if(ch==='“'){isQuote=true;type='curly';if(dialogueStart!==null)continue}
     else if(ch==='”'){isQuote=true;type='curly-close'}
     else if(ch==='"'){isQuote=true;type='double'}
-    else if(ch==="'"||ch==='’'){
-      if(/[A-Za-z]/.test(prev)&&/[A-Za-z]/.test(next))continue;
+    else if(ch==="'"||ch==='’'||ch==='‘'){
+      if(ch!=='‘'&&/[A-Za-z]/.test(prev)&&/[A-Za-z]/.test(next))continue;
       isQuote=true;type='single';
     }
     if(!isQuote)continue;
