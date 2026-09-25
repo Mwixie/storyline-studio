@@ -2394,13 +2394,6 @@ function loadVoices(){
 }
 function completeGentleSleepStop(token=null){
   if(!state.gentleStopPending)return false;
-  state.gentleStopPending=false;
-  showToast('Sleep timer ended — stopped at a sentence break.');
-  finishSpeech(token);
-  return true;
-}
-function completeGentleSleepStop(token=null){
-  if(!state.gentleStopPending)return false;
   const review=state.route==='review';
   state.gentleStopPending=false;
   showToast('Sleep timer ended — stopped at a sentence break.');
@@ -3324,6 +3317,17 @@ async function startFlagReview(){
 function reviewItemLabel(item){
   return item.type==='question'?'Ask ChatGPT':item.type==='continuity'?'Continuity':item.type==='bookmark'?'Bookmark':item.type==='voice'?'Voice note':'Note';
 }
+function reviewItemHasNarration(item){
+  if(!item)return false;
+  if(item.type==='voice')return !!(item.audioData||item.audioBlob||String(item.transcript||item.note||'').trim());
+  return !!String(item.note||'').trim();
+}
+function reviewNarrationLabel(item){
+  if(item?.type!=='voice')return '🗣 Read my note';
+  if(item.audioData||item.audioBlob)return '▶ Play my voice note';
+  if(String(item.transcript||'').trim())return '🗣 Read transcript';
+  return '🗣 Read my note';
+}
 async function prepareReviewEntry(){
   const session=state.reviewSession;if(!session)return null;
   while(session.index<session.entries.length){
@@ -3422,6 +3426,7 @@ async function renderFlagReview(){
     return;
   }
   const {entry,item,book,resolved}=current,ch=book.chapters[resolved.chapterIndex],total=session.entries.length,index=session.index;
+  const hasReviewNarration=reviewItemHasNarration(item),reviewNarrationText=reviewNarrationLabel(item);
   view.innerHTML=`<section class="flag-review-shell">
     <div class="row between flag-review-top"><div><div class="eyebrow">Review my flags</div><h1>${index+1} of ${total}</h1></div><button id="reviewExit" class="ghost">Exit</button></div>
     <div class="flag-review-progress"><i style="width:${Math.round(((index+1)/Math.max(total,1))*100)}%"></i></div>
@@ -3434,7 +3439,7 @@ async function renderFlagReview(){
       ${item.type==='voice'&&item.transcript?`<div class="voice-transcript-saved"><strong>Transcript</strong><div>${escapeHtml(item.transcript)}</div></div>`:''}
       <div class="flag-review-controls">
         <button id="reviewPlayPassage" class="button">▶ Play passage</button>
-        <button id="reviewReadNote" class="ghost">${item.type==='voice'?'▶ Play my voice note':'🗣 Read my note'}</button>
+        ${hasReviewNarration?`<button id="reviewReadNote" class="ghost">${reviewNarrationText}</button>`:''}
         <button id="reviewReplay" class="ghost">⟳ Replay passage</button>
       </div>
       <div class="flag-review-decisions"><button id="reviewDone" class="button">✓ Done</button><button id="reviewSkip" class="ghost">Skip →</button></div>
@@ -3448,14 +3453,14 @@ async function renderFlagReview(){
   $('#reviewExit').onclick=exitFlagReview;
   $('#reviewPlayPassage').onclick=()=>playReviewPassage(current);
   $('#reviewReplay').onclick=()=>playReviewPassage(current);
-  $('#reviewReadNote').onclick=()=>playReviewNote(current);
+  const reviewReadNote=$('#reviewReadNote');if(reviewReadNote)reviewReadNote.onclick=()=>playReviewNote(current);
   $('#reviewDone').onclick=()=>advanceFlagReview(true);
   $('#reviewSkip').onclick=()=>advanceFlagReview(false);
   $('#reviewOrderSelect').onchange=async e=>{savePrefs({flagReviewOrder:e.target.value});state.reviewSession=await buildFlagReviewSession(e.target.value);await renderFlagReview()};
   const reviewSleep=$('#reviewSleepTimer');if(reviewSleep){if(state.sleepMinutes)reviewSleep.value=String(state.sleepMinutes);reviewSleep.onchange=e=>setSleepTimer(+e.target.value)}
   if(!entry.autoplayed){
     entry.autoplayed=true;
-    requestAnimationFrame(()=>playReviewPassage(current,{thenNote:true}));
+    requestAnimationFrame(()=>playReviewPassage(current,{thenNote:hasReviewNarration}));
   }
 }
 async function renderQueue(){
