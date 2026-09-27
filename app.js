@@ -17,7 +17,7 @@ const state = {
 };
 
 const PREF='storyline.prefs.v1';
-const WEB_READER_PROXY=''; // Build 50: populated with the published Storyline reader-service URL.
+const WEB_READER_PROXY='https://embarrassed-few-devices--MwilaS.replit.app';
 const dbName='storyline-studio';
 let db;
 const savedAudioObjectUrls=new Set();
