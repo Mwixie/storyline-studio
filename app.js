@@ -1172,7 +1172,7 @@ function pdfRepeatedMarginSignatures(pages){
       const text=String(line?.text||'').trim();
       if(!text||text.length>80||pdfPageNumberLike(text)||pdfHeadingLike(text))continue;
       const words=text.split(/\s+/).filter(Boolean);
-      const looksLikeProse=words.length>8||/[.!?]["”’']?$/.test(text)||/^["“‘]/.test(text);
+      const looksLikeProse=words.length>8||/[.!?,;:]["”’']?$/.test(text)||/^["“‘]/.test(text)||/^(?:dear|my dear)\b/i.test(text);
       if(looksLikeProse)continue;
       const sig=pdfLineSignature(text);if(!sig||seen.has(sig))continue;
       seen.add(sig);counts.set(sig,(counts.get(sig)||0)+1);
@@ -2929,7 +2929,7 @@ async function mediaMoveParagraph(delta){
     if(pi>0)pi--;
     else if(ci>0){ci--;pi=Math.max(0,(book.chapters[ci].paragraphs?.length||1)-1)}
   }
-  stopAllSpeech();
+  stopAllSpeech({preserveSleep:true});
   state.chapterIndex=ci;state.selectedParagraph=pi;
   state.selectedCharOffset=0;state.selectedWordEnd=0;
   await saveProgress(book);
