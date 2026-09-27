@@ -1808,7 +1808,10 @@ async function fetchWebReaderViaProxy(rawUrl){
   try{response=await fetch(endpoint,{method:'GET',credentials:'omit',headers:{Accept:'application/json'}})}
   catch{throw new Error('The Storyline reader service could not be reached.')}
   let data={};try{data=await response.json()}catch{}
-  if(!response.ok||data?.ok===false)throw new Error(data?.error||('The reader service returned '+response.status+'.'));
+  if(!response.ok||data?.ok===false){
+    if(response.status===404)throw new Error("The reader service isn't set up yet (it returned 404).");
+    throw new Error(data?.error||('The reader service returned '+response.status+'.'));
+  }
   let paragraphs=Array.isArray(data.paragraphs)?data.paragraphs.map(t=>String(t||'').replace(/\s+/g,' ').trim()).filter(Boolean):[];
   const notices=[];
   if(paragraphs.length>=5000){if(paragraphs.length>5000)paragraphs=paragraphs.slice(0,5000);notices.push('This chapter is very long — showing the first 5000 paragraphs.')}
