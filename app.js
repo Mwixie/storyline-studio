@@ -22,6 +22,12 @@ const WEB_READER_PROXY='https://storyline-reader-service.lovable.app';
 const dbName='storyline-studio';
 let db;
 const savedAudioObjectUrls=new Set();
+modalForm?.addEventListener('keydown',e=>{
+  if(e.key!=='Enter'||e.shiftKey||e.ctrlKey||e.metaKey||e.altKey)return;
+  const target=e.target;
+  if(target instanceof HTMLTextAreaElement)return;
+  if(target instanceof HTMLInputElement){e.preventDefault();}
+});
 function revokeSavedAudioObjectUrls(){
   for(const url of savedAudioObjectUrls){try{URL.revokeObjectURL(url)}catch{}}
   savedAudioObjectUrls.clear();
@@ -1380,11 +1386,16 @@ function setNav(route){
   document.body.classList.remove('mobile-tools-open');
   const tools=$('#readerNavTools'); if(tools)tools.classList.toggle('hidden',route!=='reader');
 }
-async function navigate(route){
+async function navigate(route,{fromHistory=false,replaceHistory=false}={}){
   if(route==='reader'&&!state.bookId){ const books=await idbGetAll('books'); if(books[0]) state.bookId=books[0].id; else route='library'; }
   stopReviewAudio();revokeSavedAudioObjectUrls();
   state.route=route; setNav(route); stopAllSpeech();
   if(route==='library') await renderLibrary(); if(route==='reader') await renderReader(); if(route==='notes') await renderNotes(); if(route==='queue') await renderQueue(); if(route==='actioned') await renderActioned(); if(route==='review') await renderFlagReview(); updateQueueBadge();
+  if(!fromHistory){
+    const nextState={...(history.state||{}),storylineRoute:route};
+    if(replaceHistory||!history.state?.storylineRoute)history.replaceState(nextState,'',location.href);
+    else if(history.state?.storylineRoute!==route)history.pushState(nextState,'',location.href);
+  }
 }
 
 function arrayBufferToBase64(buffer){
@@ -1413,10 +1424,11 @@ async function exportBackup(){
     const books=await idbGetAll('books'),rawItems=await idbGetAll('items'),meta=await idbGetAll('meta');
     const items=[];for(const item of rawItems)items.push(await backupItem(item));
     const payload={app:'Storyline Studio',schemaVersion:2,exportedAt:new Date().toISOString(),books,items,meta,preferences:prefs()};
-    const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
+    const blob=new Blob([JSON.stringify(payload)],{type:'application/json'});
+    if(blob.size>20*1024*1024&&!confirm(`This backup is about ${Math.round(blob.size/1024/1024)} MB, mostly because voice-note audio is stored inside it. Export anyway?`))return;
     const url=URL.createObjectURL(blob),a=document.createElement('a');
-    const date=new Date().toISOString().slice(0,10);
-    a.href=url;a.download=`storyline-backup-${date}.json`;document.body.appendChild(a);a.click();a.remove();
+    const stamp=new Date().toISOString().replace(/[:.]/g,'-');
+    a.href=url;a.download=`storyline-backup-${stamp}.json`;document.body.appendChild(a);a.click();a.remove();
     setTimeout(()=>URL.revokeObjectURL(url),1000);
     showToast('Storyline backup exported');
   }catch(e){showToast(e.message||'Backup could not be exported')}
@@ -1428,6 +1440,10 @@ async function restoreBackup(file){
     if(data?.app!=='Storyline Studio'||!Array.isArray(data.books)||!Array.isArray(data.items))throw new Error('This is not a valid Storyline backup.');
     if(Number(data.schemaVersion||0)>2)throw new Error('This backup was created by a newer Storyline version.');
     if(data.books.some(book=>!book||!book.id)||data.items.some(item=>!item||!item.id))throw new Error('This backup contains records without valid IDs.');
+    const invalidBook=data.books.find(book=>!Array.isArray(book.chapters)||!book.chapters.length||book.chapters.some(ch=>!ch||!Array.isArray(ch.paragraphs)));
+    if(invalidBook)throw new Error('This backup contains a manuscript with an invalid chapter structure.');
+    const invalidItem=data.items.find(item=>typeof item.type!=='string'||typeof item.bookId!=='string');
+    if(invalidItem)throw new Error('This backup contains an invalid revision item.');
     const bookIds=new Set(data.books.map(book=>book.id)),itemIds=new Set(data.items.map(item=>item.id));
     if(bookIds.size!==data.books.length||itemIds.size!==data.items.length)throw new Error('This backup contains duplicate record IDs.');
     const items=data.items.map(item=>{
@@ -1630,7 +1646,7 @@ async function processHandoffFromLocation(){
   const code=extractHandoffCode(location.href);if(!code)return false;
   try{
     const clean=location.pathname+location.search;
-    history.replaceState(null,'',clean);
+    history.replaceState({...(history.state||{}),storylineRoute:state.route},'',clean);
   }catch{}
   return processHandoffValue(code);
 }
@@ -2537,6 +2553,16 @@ async function renderReader(){
   });
 }
 
+function positionSelectionPronunciation(button){
+  if(!button)return;
+  const selection=window.getSelection?.();if(!selection||selection.isCollapsed||!selection.rangeCount)return;
+  const rect=selection.getRangeAt(0).getBoundingClientRect();if(!rect||(!rect.width&&!rect.height))return;
+  const width=Math.min(360,Math.max(180,button.offsetWidth||220));
+  const left=Math.max(10,Math.min(window.innerWidth-width-10,rect.left+(rect.width-width)/2));
+  const preferredTop=rect.top-(button.offsetHeight||36)-10;
+  const top=preferredTop>8?preferredTop:Math.min(window.innerHeight-(button.offsetHeight||36)-8,rect.bottom+10);
+  button.style.left=left+'px';button.style.top=top+'px';
+}
 function wireReader(book,ch){
   $('#backLibrary').onclick=()=>navigate('library');
   const readingPage=$('#readingPage'),resumeFollow=$('#resumeFollowBtn'),selectionPronunciation=$('#selectionPronunciationBtn');
@@ -2544,7 +2570,7 @@ function wireReader(book,ch){
     const text=selectedReaderText();
     if(text){
       state.selectedReaderPhrase=text;
-      if(selectionPronunciation){selectionPronunciation.textContent=`Say “${excerpt(text,34)}” as…`;selectionPronunciation.classList.remove('hidden')}
+      if(selectionPronunciation){selectionPronunciation.textContent=`Say “${excerpt(text,34)}” as…`;selectionPronunciation.classList.remove('hidden');requestAnimationFrame(()=>positionSelectionPronunciation(selectionPronunciation))}
     }
   },0)};
   readingPage?.addEventListener('mouseup',cacheReaderSelection);
@@ -2583,7 +2609,7 @@ function wireReader(book,ch){
     const selection=window.getSelection?.();
     if(selection&&!selection.isCollapsed&&selection.toString().trim()){
       state.selectedReaderPhrase=selection.toString().trim();
-      if(selectionPronunciation){selectionPronunciation.textContent=`Say “${excerpt(state.selectedReaderPhrase,34)}” as…`;selectionPronunciation.classList.remove('hidden')}
+      if(selectionPronunciation){selectionPronunciation.textContent=`Say “${excerpt(state.selectedReaderPhrase,34)}” as…`;selectionPronunciation.classList.remove('hidden');requestAnimationFrame(()=>positionSelectionPronunciation(selectionPronunciation))}
       return;
     }
     selectionPronunciation?.classList.add('hidden');
@@ -2722,13 +2748,15 @@ function resumeNarrationFollow(){
 }
 function progressSnapshot(){return {chapterIndex:state.chapterIndex,paragraphIndex:state.selectedParagraph,charOffset:state.selectedCharOffset||0,wordEnd:state.selectedWordEnd||0}}
 async function saveProgress(book,{snapshot=null,completed=null,updatePrefs=true}={}){
-  if(!book)return;
+  if(!book)return false;
   const pos=snapshot||progressSnapshot();
   const wasCompleted=book.progress?.completed===true,now=new Date().toISOString();
   book.progress={chapterIndex:pos.chapterIndex,paragraphIndex:pos.paragraphIndex,charOffset:pos.charOffset||0,wordEnd:pos.wordEnd||0,completed:completed===null?wasCompleted:!!completed,updatedAt:now};
   book.updatedAt=now;
-  await idbPut('books',book);
+  try{await idbPut('books',book)}
+  catch(e){storageWriteError(e);return false}
   if(updatePrefs)savePrefs({lastBookId:book.id,lastChapterIndex:pos.chapterIndex,lastParagraphIndex:pos.paragraphIndex,lastCharOffset:pos.charOffset||0,lastWordEnd:pos.wordEnd||0});
+  return true;
 }
 function persistReadingProgress(){
   const bookId=state.bookId,snapshot=progressSnapshot();
@@ -2944,6 +2972,7 @@ function dialogueSamanthaVoice(){
 async function speakBoundedRange(book,chapterIndex,paragraphIndex,start=0,end=null,{onDone=null,movePosition=false,preserveSleep=true}={}){
   const ch=book?.chapters?.[chapterIndex],text=String(ch?.paragraphs?.[paragraphIndex]||'');
   if(!text){showToast('There is no passage to play.');return false}
+  if(state.gentleStopPending){clearSleepTimer();showToast('Sleep timer ended');return false}
   const a=Math.max(0,Math.min(Number(start)||0,text.length)),b=Math.max(a,Math.min(end===null?text.length:Number(end)||a,text.length));
   if(b<=a){showToast('There is no passage to play.');return false}
   stopAllSpeech({preserveSleep});
@@ -3754,6 +3783,19 @@ async function voiceNote(base,existing=null){
     }
   };
 }
+function editTextRevisionItem(item){
+  if(!item||!['note','question','continuity'].includes(item.type))return;
+  const label=item.type==='question'?'Ask ChatGPT':item.type==='continuity'?'Continuity note':'Note';
+  modalForm.innerHTML=`<h3>Edit ${label}</h3><p class="sub">The original created time and passage anchor stay unchanged.</p><textarea id="editRevisionItemText" autofocus>${escapeHtml(item.note||'')}</textarea><div class="row between"><button value="cancel" class="ghost">Cancel</button><button type="button" id="saveRevisionItemEdit" class="button">Save changes</button></div>`;
+  modal.showModal();
+  $('#saveRevisionItemEdit').onclick=async()=>{
+    const note=$('#editRevisionItemText').value.trim();
+    if(!note){showToast('Add some text before saving.');return}
+    item.note=note;item.editedAt=new Date().toISOString();
+    await idbPut('items',item);modal.close();showToast('Revision item updated');await navigate(state.route);
+  };
+  requestAnimationFrame(()=>$('#editRevisionItemText')?.focus());
+}
 function editVoiceTranscript(item){
   const original=String(item?.transcript||'');
   modalForm.innerHTML=`<h3>${original?'Edit transcript':'Add transcript'}</h3>
@@ -3870,7 +3912,7 @@ async function speakReviewText(text,book,onDone=null){
   const u=new SpeechSynthesisUtterance(spoken),v=mainSamanthaVoice();state.activeUtterance=u;
   u.rate=Number(p.rate||1.05);u.pitch=1;u.volume=1;if(v){u.voice=v;u.lang=v.lang||'en-US'}else u.lang='en-US';
   u.onend=()=>{if(token!==state.playbackToken||state.activeUtterance!==u)return;state.activeUtterance=null;finish()};
-  u.onerror=e=>{if(token!==state.playbackToken||state.activeUtterance!==u)return;state.activeUtterance=null;if(e.error==='canceled'||e.error==='interrupted')return;finishSpeech(token,{preserveSleep:true});showToast('Samantha could not read this note.')};
+  u.onerror=e=>{if(token!==state.playbackToken||state.activeUtterance!==u)return;state.activeUtterance=null;if(e.error==='canceled')return;if(e.error==='interrupted'){handleSpeechInterrupted(token,'Samantha was interrupted');return}finishSpeech(token,{preserveSleep:true});showToast('Samantha could not read this note.')};
   speechSynthesis.resume();speechSynthesis.speak(u);return true;
 }
 async function playReviewVoiceNote(item,onDone=null){
@@ -4019,6 +4061,7 @@ function itemHtml(i,bookMap,queue=false,actioned=false){
     ${hasAudio?`<audio class="saved-voice-note" controls data-audio-item="${i.id}"></audio>`:''}
     <div class="row">
       <button data-open-item="${i.id}" class="ghost tiny">Open passage</button>
+      ${['note','question','continuity'].includes(i.type)?`<button data-edit-item="${i.id}" class="ghost tiny">Edit</button>`:''}
       ${i.type==='voice'?`<button data-edit-transcript="${i.id}" class="ghost tiny">${i.transcript?'Edit transcript':'Add transcript'}</button>${!i.transcript?`<button data-rerecord-transcript="${i.id}" class="ghost tiny">Re-record with transcript</button>`:''}`:''}
       ${queue?`<button data-copy="${i.id}" class="ghost tiny">Copy for ChatGPT</button><button data-done="${i.id}" class="ghost tiny">${actioned?'Reopen':'Mark done'}</button>`:''}
       <button data-delete-item="${i.id}" class="ghost tiny danger-ghost">Delete</button>
@@ -4126,7 +4169,8 @@ function wireItemButtons(visibleItems=[]){
     await idbPut('items',i);
     savePrefs({lastBookId:state.bookId});await saveProgress(book);navigate('reader');
   });
-  $$('[data-edit-transcript]').forEach(b=>b.onclick=async()=>{
+  $('[data-edit-item]').forEach(b=>b.onclick=async()=>{const item=await idbGet('items',b.dataset.editItem);if(item)editTextRevisionItem(item)});
+  $('[data-edit-transcript]').forEach(b=>b.onclick=async()=>{
     const item=await idbGet('items',b.dataset.editTranscript);if(item)editVoiceTranscript(item);
   });
   $$('[data-rerecord-transcript]').forEach(b=>b.onclick=async()=>{
@@ -4150,7 +4194,7 @@ function wireItemButtons(visibleItems=[]){
   $$('[data-copy]').forEach(b=>b.onclick=()=>{const i=visibleMap.get(b.dataset.copy);if(i)copyItemsForChat([i]);else showToast('That revision item is no longer available.')});
 }
 
-$$('[data-nav]').forEach(b=>b.addEventListener('click',()=>navigate(b.dataset.nav)));
+$('[data-nav]').forEach(b=>b.addEventListener('click',()=>{if(b.dataset.nav===state.route)return;navigate(b.dataset.nav)}));
 $$('[data-reader-act]').forEach(b=>b.addEventListener('click',async()=>{
   if(state.route!=='reader'||!state.bookId)return;
   document.body.classList.remove('mobile-tools-open');
@@ -4176,8 +4220,27 @@ window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();state.defer
 $('#installBtn').onclick=async()=>{if(state.deferredPrompt){state.deferredPrompt.prompt();await state.deferredPrompt.userChoice;state.deferredPrompt=null;$('#installBtn').classList.add('hidden')}};
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&state.isSpeaking){requestWakeLock();checkSpeechWatchdog(true)}});
 window.addEventListener('hashchange',()=>{if(db&&extractHandoffCode(location.href))processHandoffFromLocation()});
-// Do not cancel speech merely because iOS backgrounds the installed app.
-if('serviceWorker' in navigator) window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
+window.addEventListener('popstate',e=>{
+  if(!db)return;
+  const route=e.state?.storylineRoute;
+  if(route&&['library','reader','notes','queue','actioned','review'].includes(route)&&route!==state.route)navigate(route,{fromHistory:true});
+});
+// Do not auto-reload while narration is active. Offer an explicit update control instead.
+function showUpdateAvailable(){
+  const btn=$('#updateBtn');if(btn){btn.classList.remove('hidden');btn.onclick=()=>location.reload()}
+}
+if('serviceWorker' in navigator) window.addEventListener('load',async()=>{
+  try{
+    const hadController=!!navigator.serviceWorker.controller;
+    const reg=await navigator.serviceWorker.register('./sw.js');
+    if(reg.waiting&&hadController)showUpdateAvailable();
+    reg.addEventListener('updatefound',()=>{
+      const worker=reg.installing;if(!worker)return;
+      worker.addEventListener('statechange',()=>{if(worker.state==='installed'&&navigator.serviceWorker.controller)showUpdateAvailable()});
+    });
+    navigator.serviceWorker.addEventListener('controllerchange',()=>{if(hadController)showUpdateAvailable()});
+  }catch{}
+});
 
-openDB().then(async()=>{ await loadSharedPronunciations(); await migrateLegacyPassageAnchors(); const p=prefs(); state.bookId=p.lastBookId||null; if(state.bookId){ const b=await idbGet('books',state.bookId); if(b){ state.chapterIndex=b.progress?.chapterIndex ?? p.lastChapterIndex ?? 0; state.selectedParagraph=b.progress?.paragraphIndex ?? p.lastParagraphIndex ?? 0; state.selectedCharOffset=b.progress?.charOffset ?? p.lastCharOffset ?? 0; state.selectedWordEnd=b.progress?.wordEnd ?? p.lastWordEnd ?? 0; } } await navigate('library'); await processHandoffFromLocation(); }).catch(e=>{view.innerHTML=`<div class="empty">Storyline could not start: ${escapeHtml(e.message)}</div>`});
+openDB().then(async()=>{ await loadSharedPronunciations(); await migrateLegacyPassageAnchors(); const p=prefs(); state.bookId=p.lastBookId||null; if(state.bookId){ const b=await idbGet('books',state.bookId); if(b){ state.chapterIndex=b.progress?.chapterIndex ?? p.lastChapterIndex ?? 0; state.selectedParagraph=b.progress?.paragraphIndex ?? p.lastParagraphIndex ?? 0; state.selectedCharOffset=b.progress?.charOffset ?? p.lastCharOffset ?? 0; state.selectedWordEnd=b.progress?.wordEnd ?? p.lastWordEnd ?? 0; } } await navigate('library',{replaceHistory:true}); await processHandoffFromLocation(); }).catch(e=>{view.innerHTML=`<div class="empty">Storyline could not start: ${escapeHtml(e.message)}</div>`});
 })();
