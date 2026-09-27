@@ -1823,6 +1823,8 @@ async function fetchWebReaderViaProxy(rawUrl){
     const counts=Number.isFinite(sourceP)&&Number.isFinite(returnedP)&&sourceP>0?` Returned ${returnedP} of ${sourceP} detected source paragraphs.`:'';
     const reason=data.truncationReason?` ${String(data.truncationReason)}`:'';
     notices.push('The reader service detected that this page may be incomplete.'+counts+reason);
+  }else if(data?.truncated==null&&paragraphs.length<=3&&paragraphs.join(' ').length>1000&&!/(?:chapter|chap|episode|part)[-_\/ ]?\d+/i.test(new URL(data.url||url).pathname)){
+    notices.push('The reader service returned unusually little text for this page. The extraction may be incomplete; compare with the original source.');
   }
   if(paragraphs.join(' ').length<200)throw new Error('The reader service reached the page, but could not identify enough story text to read.');
   return {url:data.url||url,title:String(data.title||'Online story'),storyTitle:String(data.storyTitle||data.title||'Online story'),paragraphs,nextUrl:data.nextUrl||null,prevUrl:data.prevUrl||null,chapterLinks,notices,viaReaderService:true,serviceExtraction:{truncated:!!data.truncated,sourceParagraphCount:Number(data.sourceParagraphCount)||null,returnedParagraphCount:Number(data.returnedParagraphCount)||paragraphs.length,sourceCharacterCount:Number(data.sourceCharacterCount)||null,returnedCharacterCount:Number(data.returnedCharacterCount)||paragraphs.join(' ').length,truncationReason:data.truncationReason||null}};
