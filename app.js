@@ -4220,6 +4220,7 @@ fileInput.addEventListener('change',e=>{importFile(e.target.files[0]);e.target.v
 window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();state.deferredPrompt=e;$('#installBtn').classList.remove('hidden')});
 $('#installBtn').onclick=async()=>{if(state.deferredPrompt){state.deferredPrompt.prompt();await state.deferredPrompt.userChoice;state.deferredPrompt=null;$('#installBtn').classList.add('hidden')}};
 document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&state.isSpeaking){requestWakeLock();checkSpeechWatchdog(true)}});
+window.addEventListener('pagehide',()=>{if(state.isSpeaking){speechResumeOffset();persistReadingProgress()}});
 window.addEventListener('hashchange',()=>{if(db&&extractHandoffCode(location.href))processHandoffFromLocation()});
 window.addEventListener('popstate',e=>{
   if(!db)return;
