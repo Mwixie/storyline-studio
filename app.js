@@ -1694,8 +1694,9 @@ function webReaderStoryTitle(doc,chapterTitle){
   title=title.replace(/\s*[|–—-]\s*(read online|chapter\s*\d+.*)$/i,'').trim();
   return title||ch||'Online story';
 }
+
 function webReaderRoot(doc){
-  const selectors=['article','main','[role="main"]','#chapter-content','.chapter-content','.chapter-body','.entry-content','.post-content','.reading-content','.reader-content','.story-content','.fiction-content','.text-left'];
+  const selectors=['article','main','[role="main"]','#chapter-content','.chapter-content','.chapter-body','.entry-content','.post-content','.reading-content','.reader-content','.story-content','.fiction-content','.text-left','[class*="chapter-content"]','[id*="chapter-content"]'];
   const seen=new Set(),candidates=[];
   for(const sel of selectors){
     for(const el of doc.querySelectorAll(sel)){
@@ -1704,50 +1705,101 @@ function webReaderRoot(doc){
       if(text.length<300)continue;
       const links=[...el.querySelectorAll('a')].reduce((n,a)=>n+(a.textContent||'').trim().length,0);
       const paras=el.querySelectorAll('p,blockquote').length;
-      candidates.push({el,score:text.length-(links*2)+(paras*80)});
+      const chrome=el.closest('nav,header,footer,aside,.sidebar,.menu,.navigation,.comments,.related,.recommend')?1800:0;
+      candidates.push({el,score:text.length-(links*2)+(paras*80)-chrome});
     }
   }
+  if(!candidates.length&&doc.body)candidates.push({el:doc.body,score:(doc.body.innerText||doc.body.textContent||'').length});
   candidates.sort((a,b)=>b.score-a.score);
   return candidates[0]?.el||doc.body;
 }
+function cleanWebReaderLine(text=''){
+  return String(text).replace(/\u00a0/g,' ').replace(/[ \t]+/g,' ').replace(/\s*\n\s*/g,' ').trim();
+}
 function webReaderParagraphs(doc){
-  const root=webReaderRoot(doc)?.cloneNode(true);if(!root)return [];
+  const source=webReaderRoot(doc);if(!source)return {paragraphs:[],truncated:false};
+  const root=source.cloneNode(true);
   root.querySelectorAll('script,style,noscript,svg,canvas,form,nav,header,footer,aside,button,input,select,textarea,.comments,.comment,.sidebar,.menu,.navigation,.nav,.share,.social,.ads,.advertisement,.related,.recommend').forEach(el=>el.remove());
-  let paras=[...root.querySelectorAll('p,blockquote')].map(el=>(el.innerText||el.textContent||'').replace(/\s+/g,' ').trim()).filter(t=>t.length>1);
-  paras=paras.filter(t=>!(/^(previous|next|table of contents|contents|share|subscribe|log in|sign in)\b/i.test(t)&&t.length<100));
-  if(paras.join(' ').length<300){
-    const text=(root.innerText||root.textContent||'').replace(/\r/g,'').trim();
-    paras=text.split(/\n\s*\n+/).map(t=>t.replace(/\s+/g,' ').trim()).filter(t=>t.length>20);
-  }
-  return paras.slice(0,5000);
+  const boilerplate=/^(previous|next|table of contents|contents|share|subscribe|log in|sign in|continue reading|related|recommended)\b/i;
+  const candidates=[];
+  const pBlocks=[...root.querySelectorAll('p,blockquote')].map(el=>cleanWebReaderLine(el.innerText||el.textContent||'')).filter(t=>t.length>1&&!boilerplate.test(t));
+  if(pBlocks.length)candidates.push({kind:'paragraphs',items:pBlocks,score:pBlocks.join(' ').length+(pBlocks.length*30)});
+  const leafBlocks=[...root.querySelectorAll('div,section')].filter(el=>{
+    if(el.querySelector('p,blockquote'))return false;
+    const text=cleanWebReaderLine(el.innerText||el.textContent||'');
+    if(text.length<40||boilerplate.test(text))return false;
+    const childText=[...el.children].reduce((n,x)=>n+cleanWebReaderLine(x.innerText||x.textContent||'').length,0);
+    return !el.children.length||childText<=text.length*1.6;
+  }).map(el=>cleanWebReaderLine(el.innerText||el.textContent||'')).filter(Boolean);
+  if(leafBlocks.length)candidates.push({kind:'blocks',items:leafBlocks,score:leafBlocks.join(' ').length+(leafBlocks.length*20)});
+  const raw=(root.innerText||root.textContent||'').replace(/\r/g,'').trim();
+  const rawBlocks=raw.split(/\n\s*\n+|\n(?=\S)/).map(cleanWebReaderLine).filter(t=>t.length>20&&!boilerplate.test(t));
+  if(rawBlocks.length)candidates.push({kind:'raw',items:rawBlocks,score:rawBlocks.join(' ').length});
+  candidates.sort((a,b)=>b.score-a.score);
+  let paragraphs=(candidates[0]?.items||[]).filter(Boolean);
+  const truncated=paragraphs.length>5000;
+  if(truncated)paragraphs=paragraphs.slice(0,5000);
+  return {paragraphs,truncated};
 }
 function absoluteWebHref(anchor,baseUrl){
   const raw=anchor?.getAttribute?.('href');if(!raw||raw.startsWith('#')||/^javascript:/i.test(raw))return null;
   try{const u=new URL(raw,baseUrl);if(!/^https?:$/.test(u.protocol))return null;u.hash='';return u.toString()}catch{return null}
 }
+function webReaderChapterHint(anchor,href=''){
+  const text=(anchor?.textContent||'').replace(/\s+/g,' ').trim();
+  const title=String(anchor?.getAttribute?.('title')||'');
+  const aria=String(anchor?.getAttribute?.('aria-label')||'');
+  const value=[text,title,aria,href].join(' ');
+  return /(?:^|[\s/_-])(chapter|chap|ch|part|episode|section)(?:[\s/_-]|\d|$)/i.test(value)||/\/(?:\d{1,6})(?:[/?#._-]|$)/.test(href)||/\b\d{1,5}\b/.test(text);
+}
 function webReaderNavLink(doc,baseUrl,direction){
-  const rel=doc.querySelector('a[rel~="'+direction+'"]');const relUrl=absoluteWebHref(rel,baseUrl);if(relUrl)return relUrl;
-  const patterns=direction==='next'?[/next\s*(chapter|part)?/i,/continue\s*(reading)?/i,/^(›|»|→)$/]:[/(previous|prev)\s*(chapter|part)?/i,/^(‹|«|←)$/];
+  const base=new URL(baseUrl),accept=a=>{
+    const href=absoluteWebHref(a,baseUrl);if(!href)return null;
+    try{if(new URL(href).hostname!==base.hostname)return null}catch{return null}
+    return href;
+  };
+  const rel=doc.querySelector('a[rel~="'+direction+'"]');
+  const relUrl=accept(rel);if(relUrl&&webReaderChapterHint(rel,relUrl))return relUrl;
+  const strict=direction==='next'?[/next\s*(chapter|part|episode|section)\b/i]:[/(previous|prev)\s*(chapter|part|episode|section)\b/i];
+  const generic=direction==='next'?[/^next\s*$/i,/continue\s*(reading)?/i,/^(›|»|→)+$/]:[/^prev(ious)?\s*$/i,/^(‹|«|←)+$/];
   for(const a of doc.querySelectorAll('a[href]')){
-    const text=(a.textContent||'').replace(/\s+/g,' ').trim();
-    if(patterns.some(re=>re.test(text))){const href=absoluteWebHref(a,baseUrl);if(href)return href}
+    const text=(a.textContent||'').replace(/\s+/g,' ').trim(),href=accept(a);if(!href)continue;
+    if(strict.some(re=>re.test(text)))return href;
+    if(generic.some(re=>re.test(text))&&webReaderChapterHint(a,href))return href;
   }
   return null;
 }
 function webReaderChapterLinks(doc,baseUrl){
   const baseHost=new URL(baseUrl).hostname,seen=new Set(),links=[];
-  const chapterish=/\b(chapter|chap\.?|ch\.?|part|episode|prologue|epilogue)\s*(?:\d+|[ivxlcdm]+|one|two|three|four|five|six|seven|eight|nine|ten)?\b/i;
-  for(const a of doc.querySelectorAll('a[href]')){
-    const label=(a.textContent||'').replace(/\s+/g,' ').trim();
-    if(!label||label.length>140||!chapterish.test(label))continue;
-    const href=absoluteWebHref(a,baseUrl);if(!href)continue;
-    let u;try{u=new URL(href)}catch{continue}
-    if(u.hostname!==baseHost)continue;
-    const key=comparableWebUrl(href);if(seen.has(key))continue;seen.add(key);
-    links.push({title:label,url:href});
-    if(links.length>=300)break;
+  const collect=(anchors,{allowTitles=false}={})=>{
+    for(const a of anchors){
+      const label=(a.textContent||'').replace(/\s+/g,' ').trim();
+      if(!label||label.length>160)continue;
+      const href=absoluteWebHref(a,baseUrl);if(!href)continue;
+      let u;try{u=new URL(href)}catch{continue}
+      if(u.hostname!==baseHost)continue;
+      if(!allowTitles&&!webReaderChapterHint(a,href))continue;
+      const key=comparableWebUrl(href);if(seen.has(key))continue;seen.add(key);
+      links.push({title:label,url:href});
+      if(links.length>=300)break;
+    }
+  };
+  const tocSelectors=['.chapter-list','#chapter-list','.chapters','#chapters','.toc','#toc','.table-of-contents','#table-of-contents','[class*="chapter-list"]','[id*="chapter-list"]','[class*="table-of-contents"]','[id*="table-of-contents"]'];
+  const containers=[];for(const sel of tocSelectors)for(const el of doc.querySelectorAll(sel))if(!containers.includes(el))containers.push(el);
+  const tocAnchors=containers.flatMap(el=>[...el.querySelectorAll('a[href]')]);
+  collect(tocAnchors);
+  if(!links.length){
+    const sameHostToc=tocAnchors.filter(a=>{const href=absoluteWebHref(a,baseUrl);try{return href&&new URL(href).hostname===baseHost}catch{return false}});
+    if(sameHostToc.length>=2)collect(sameHostToc,{allowTitles:true});
   }
-  return links;
+  if(!links.length)collect([...doc.querySelectorAll('a[href]')]);
+  return {links,truncated:links.length>=300};
+}
+function webReaderAccessWall(doc){
+  const text=(doc.body?.innerText||doc.body?.textContent||'').replace(/\s+/g,' ').toLowerCase();
+  if(/\b(sign in|log in|login)\b/.test(text)&&/\b(to continue|to read|account|required)\b/.test(text))return 'login';
+  if(/\b(subscribe|subscription|premium|members only|paywall)\b/.test(text)&&/\b(read|continue|unlock|access)\b/.test(text))return 'paywall';
+  return '';
 }
 async function fetchWebReaderViaProxy(rawUrl){
   if(!WEB_READER_PROXY)throw new Error('This website blocks direct reading and the Storyline reader service is not connected yet.');
@@ -1757,17 +1809,13 @@ async function fetchWebReaderViaProxy(rawUrl){
   catch{throw new Error('The Storyline reader service could not be reached.')}
   let data={};try{data=await response.json()}catch{}
   if(!response.ok||data?.ok===false)throw new Error(data?.error||('The reader service returned '+response.status+'.'));
-  const paragraphs=Array.isArray(data.paragraphs)?data.paragraphs.map(t=>String(t||'').replace(/\s+/g,' ').trim()).filter(Boolean):[];
+  let paragraphs=Array.isArray(data.paragraphs)?data.paragraphs.map(t=>String(t||'').replace(/\s+/g,' ').trim()).filter(Boolean):[];
+  const notices=[];
+  if(paragraphs.length>5000){paragraphs=paragraphs.slice(0,5000);notices.push('This chapter is very long — showing the first 5000 paragraphs.')}
+  let chapterLinks=Array.isArray(data.chapterLinks)?data.chapterLinks.filter(x=>x?.url).map(x=>({title:String(x.title||'Chapter'),url:String(x.url)})):[];
+  if(chapterLinks.length>300){chapterLinks=chapterLinks.slice(0,300);notices.push('Chapter list truncated at 300 entries.')}
   if(paragraphs.join(' ').length<200)throw new Error('The reader service reached the page, but could not identify enough story text to read.');
-  return {
-    url:data.url||url,
-    title:String(data.title||'Online story'),
-    storyTitle:String(data.storyTitle||data.title||'Online story'),
-    paragraphs,
-    nextUrl:data.nextUrl||null,
-    prevUrl:data.prevUrl||null,
-    chapterLinks:Array.isArray(data.chapterLinks)?data.chapterLinks.filter(x=>x?.url).map(x=>({title:String(x.title||'Chapter'),url:String(x.url)})):[]
-  };
+  return {url:data.url||url,title:String(data.title||'Online story'),storyTitle:String(data.storyTitle||data.title||'Online story'),paragraphs,nextUrl:data.nextUrl||null,prevUrl:data.prevUrl||null,chapterLinks,notices,viaReaderService:true};
 }
 async function fetchWebReaderChapter(rawUrl){
   const url=normalizeWebReaderUrl(rawUrl);
@@ -1782,56 +1830,69 @@ async function fetchWebReaderChapter(rawUrl){
     const type=(response.headers.get('content-type')||'').toLowerCase();
     const body=await response.text();
     if(type.includes('text/plain')){
-      const paragraphs=body.split(/\n\s*\n+/).map(t=>t.replace(/\s+/g,' ').trim()).filter(t=>t.length>1);
+      let paragraphs=body.split(/\n\s*\n+/).map(t=>t.replace(/\s+/g,' ').trim()).filter(t=>t.length>1),notices=[];
+      if(paragraphs.length>5000){paragraphs=paragraphs.slice(0,5000);notices.push('This chapter is very long — showing the first 5000 paragraphs.')}
       if(!paragraphs.length)throw new Error('Storyline could not find readable text on this page.');
-      return {url:response.url||url,title:'Online story',storyTitle:'Online story',paragraphs,nextUrl:null,prevUrl:null,chapterLinks:[]};
+      return {url:response.url||url,title:'Online story',storyTitle:'Online story',paragraphs,nextUrl:null,prevUrl:null,chapterLinks:[],notices};
     }
-    const doc=new DOMParser().parseFromString(body,'text/html');
-    const paragraphs=webReaderParagraphs(doc);
-    if(paragraphs.join(' ').length<200)throw new Error('Storyline opened the page, but could not identify enough story text to read.');
-    const title=webReaderTitleText(doc),storyTitle=webReaderStoryTitle(doc,title);
-    return {url:response.url||url,title,storyTitle,paragraphs,nextUrl:webReaderNavLink(doc,response.url||url,'next'),prevUrl:webReaderNavLink(doc,response.url||url,'prev'),chapterLinks:webReaderChapterLinks(doc,response.url||url)};
+    const doc=new DOMParser().parseFromString(body,'text/html'),wall=webReaderAccessWall(doc);
+    const extracted=webReaderParagraphs(doc),paragraphs=extracted.paragraphs;
+    if(paragraphs.join(' ').length<200){
+      if(wall==='login')throw new Error('This page looks like a login wall.');
+      if(wall==='paywall')throw new Error('This page looks like a subscription or paywall page.');
+      throw new Error('Storyline opened the page, but could not identify enough story text to read.');
+    }
+    const title=webReaderTitleText(doc),storyTitle=webReaderStoryTitle(doc,title),chapters=webReaderChapterLinks(doc,response.url||url),notices=[];
+    if(extracted.truncated)notices.push('This chapter is very long — showing the first 5000 paragraphs.');
+    if(chapters.truncated)notices.push('Chapter list truncated at 300 entries.');
+    return {url:response.url||url,title,storyTitle,paragraphs,nextUrl:webReaderNavLink(doc,response.url||url,'next'),prevUrl:webReaderNavLink(doc,response.url||url,'prev'),chapterLinks:chapters.links,notices};
   }catch(e){
-    if(WEB_READER_PROXY)return fetchWebReaderViaProxy(url);
+    if(WEB_READER_PROXY&&!/login wall|paywall/i.test(e.message||''))return fetchWebReaderViaProxy(url);
     throw e;
   }
 }
 function webReaderChapterRecord(title,url,loaded=false,paragraphs=[]){
-  return {title:title||'Chapter',sourceUrl:url,loaded:!!loaded,paragraphs:Array.isArray(paragraphs)?paragraphs:[],webReader:true,synthetic:false};
+  return {title:title||'Chapter',sourceUrl:url,loaded:!!loaded,paragraphs:Array.isArray(paragraphs)?paragraphs:[],webReader:true,synthetic:false,stale:false,prefetchFailed:false};
 }
 function mergeWebReaderChapterMap(book,page,currentIndex){
   const currentUrl=page.url||book.chapters[currentIndex]?.sourceUrl;
-  let chapters=book.chapters||[];
-  if(page.chapterLinks?.length>=2){
-    const map=page.chapterLinks.map(x=>webReaderChapterRecord(x.title,x.url,false,[]));
-    let ci=map.findIndex(ch=>sameWebReaderUrl(ch.sourceUrl,currentUrl));
-    if(ci<0){ci=Math.max(0,Math.min(currentIndex,map.length));map.splice(ci,0,webReaderChapterRecord(page.title,currentUrl,true,page.paragraphs))}
-    else map[ci]={...map[ci],title:page.title||map[ci].title,loaded:true,paragraphs:page.paragraphs,nextUrl:page.nextUrl||null,prevUrl:page.prevUrl||null};
-    for(const existing of chapters){
-      const mi=map.findIndex(ch=>sameWebReaderUrl(ch.sourceUrl,existing.sourceUrl));
-      if(mi>=0&&existing.loaded)map[mi]={...map[mi],...existing,sourceUrl:map[mi].sourceUrl,title:existing.title||map[mi].title};
+  const chapters=[...(book.chapters||[])];
+  if(!book.webImportUrl)book.webImportUrl=book.webSourceUrl||currentUrl;
+  const foundCurrent=chapters.findIndex(ch=>sameWebReaderUrl(ch.sourceUrl,currentUrl));
+  let ci=foundCurrent;
+  if(Array.isArray(page.chapterLinks)&&page.chapterLinks.length>=2){
+    const seen=new Set(page.chapterLinks.map(x=>comparableWebUrl(x.url)));
+    for(const ch of chapters)if(ch.sourceUrl)ch.stale=!seen.has(comparableWebUrl(ch.sourceUrl));
+    for(const link of page.chapterLinks){
+      const existing=chapters.find(ch=>sameWebReaderUrl(ch.sourceUrl,link.url));
+      if(existing){existing.title=existing.title&&existing.loaded?existing.title:(link.title||existing.title);existing.stale=false;continue}
+      chapters.push(webReaderChapterRecord(link.title,link.url,false,[]));
     }
-    chapters=map;currentIndex=ci;
-  }else{
-    const idx=chapters.findIndex(ch=>sameWebReaderUrl(ch.sourceUrl,currentUrl));
-    if(idx>=0){chapters[idx]={...chapters[idx],title:page.title||chapters[idx].title,loaded:true,paragraphs:page.paragraphs,nextUrl:page.nextUrl||null,prevUrl:page.prevUrl||null};currentIndex=idx}
-    else{chapters.splice(Math.max(0,Math.min(currentIndex,chapters.length)),0,webReaderChapterRecord(page.title,currentUrl,true,page.paragraphs))}
-    const active=chapters[currentIndex];
-    if(page.prevUrl&&!chapters.some(ch=>sameWebReaderUrl(ch.sourceUrl,page.prevUrl)))chapters.splice(currentIndex,0,webReaderChapterRecord('Previous chapter',page.prevUrl,false,[])),currentIndex++;
-    if(page.nextUrl&&!chapters.some(ch=>sameWebReaderUrl(ch.sourceUrl,page.nextUrl)))chapters.splice(currentIndex+1,0,webReaderChapterRecord('Next chapter',page.nextUrl,false,[]));
-    active.nextUrl=page.nextUrl||active.nextUrl||null;active.prevUrl=page.prevUrl||active.prevUrl||null;
   }
+  if(ci<0){
+    const record=webReaderChapterRecord(page.title,currentUrl,true,page.paragraphs);
+    record.unplaced=true;record.notices=page.notices||[];record.viaReaderService=!!page.viaReaderService;
+    chapters.push(record);ci=chapters.length-1;
+  }else{
+    chapters[ci]={...chapters[ci],title:page.title||chapters[ci].title,loaded:true,paragraphs:page.paragraphs,nextUrl:page.nextUrl||null,prevUrl:page.prevUrl||null,stale:false,unplaced:false,prefetchFailed:false,notices:page.notices||[],viaReaderService:!!page.viaReaderService};
+  }
+  const active=chapters[ci];
+  if(page.prevUrl&&!chapters.some(ch=>sameWebReaderUrl(ch.sourceUrl,page.prevUrl)))chapters.push(webReaderChapterRecord('Previous chapter',page.prevUrl,false,[]));
+  if(page.nextUrl&&!chapters.some(ch=>sameWebReaderUrl(ch.sourceUrl,page.nextUrl)))chapters.push(webReaderChapterRecord('Next chapter',page.nextUrl,false,[]));
+  active.nextUrl=page.nextUrl||active.nextUrl||null;active.prevUrl=page.prevUrl||active.prevUrl||null;
   book.chapters=chapters;book.updatedAt=new Date().toISOString();book.webSourceUrl=currentUrl;book.webSourceHost=webReaderHost(currentUrl);
-  return {book,currentIndex};
+  return {book,currentIndex:ci};
 }
-async function ensureWebReaderChapter(book,index,{syncState=true}={}){
+async function ensureWebReaderChapter(book,index,{syncState=true,force=false}={}){
   if(!book?.webReader)return book;
   let i=Math.max(0,Math.min(Number(index)||0,book.chapters.length-1)),chapter=book.chapters[i];
-  if(chapter?.loaded&&chapter.paragraphs?.length)return book;
+  if(!force&&chapter?.loaded&&chapter.paragraphs?.length)return book;
   if(!chapter?.sourceUrl)throw new Error('This web chapter does not have a source link.');
-  const page=await fetchWebReaderChapter(chapter.sourceUrl);
+  const targetUrl=chapter.sourceUrl,page=await fetchWebReaderChapter(targetUrl);
   const merged=mergeWebReaderChapterMap(book,page,i);book=merged.book;
-  if(syncState&&merged.currentIndex!==i&&state.bookId===book.id)state.chapterIndex=merged.currentIndex;
+  let resolvedIndex=book.chapters.findIndex(ch=>sameWebReaderUrl(ch.sourceUrl,targetUrl));if(resolvedIndex<0)resolvedIndex=merged.currentIndex;
+  if(book.chapters[resolvedIndex])book.chapters[resolvedIndex].prefetchFailed=false;
+  if(syncState&&resolvedIndex!==i&&state.bookId===book.id)state.chapterIndex=resolvedIndex;
   await idbPut('books',book);return book;
 }
 async function extendWebReaderNext(book,index){
@@ -1839,19 +1900,29 @@ async function extendWebReaderNext(book,index){
   const current=book.chapters[index];if(!current)return book;
   const nextUrl=current.nextUrl;
   if(nextUrl&&!book.chapters.some(ch=>sameWebReaderUrl(ch.sourceUrl,nextUrl))){
-    book.chapters.splice(index+1,0,webReaderChapterRecord('Next chapter',nextUrl,false,[]));
+    book.chapters.push(webReaderChapterRecord('Next chapter',nextUrl,false,[]));
     book.updatedAt=new Date().toISOString();await idbPut('books',book);
   }
   return book;
 }
 async function prefetchWebReaderNext(book,index){
   if(!book?.webReader||!navigator.onLine)return;
+  let targetIndex=index+1,targetUrl=null;
   try{
     let fresh=await idbGet('books',book.id);if(!fresh)return;
     fresh=await extendWebReaderNext(fresh,index);
-    const next=fresh.chapters[index+1];if(next&&!next.loaded&&next.sourceUrl)await ensureWebReaderChapter(fresh,index+1,{syncState:false});
-  }catch{}
+    const current=fresh.chapters[index],candidate=current?.nextUrl?fresh.chapters.find(ch=>sameWebReaderUrl(ch.sourceUrl,current.nextUrl)):fresh.chapters[index+1];
+    if(!candidate)return;targetUrl=candidate.sourceUrl;targetIndex=fresh.chapters.indexOf(candidate);
+    if(!candidate.loaded&&candidate.sourceUrl)await ensureWebReaderChapter(fresh,targetIndex,{syncState:false});
+  }catch{
+    try{
+      const fresh=await idbGet('books',book.id);if(!fresh)return;
+      const idx=targetUrl?fresh.chapters.findIndex(ch=>sameWebReaderUrl(ch.sourceUrl,targetUrl)):targetIndex;
+      if(idx>=0&&fresh.chapters[idx]){fresh.chapters[idx].prefetchFailed=true;fresh.updatedAt=new Date().toISOString();await idbPut('books',fresh)}
+    }catch{}
+  }
 }
+
 function webReaderCard(book){
   const p=book.progress||{},ci=Math.max(0,Math.min(p.chapterIndex||0,Math.max(0,book.chapters.length-1))),ch=book.chapters[ci]||{};
   const loaded=book.chapters.filter(x=>x.loaded&&x.paragraphs?.length).length;
