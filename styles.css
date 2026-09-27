@@ -509,9 +509,12 @@ body{min-height:100dvh}.app-shell{min-height:100dvh;padding-bottom:86px}.topbar{
 .dialogue-note{grid-column:1/-1;line-height:1.4}
 
 .selection-pronunciation{
-  margin:8px auto 0;
+  position:fixed;
+  z-index:1800;
+  margin:0;
   display:block;
-  max-width:min(92%,420px);
+  max-width:min(92vw,420px);
+  box-shadow:0 10px 30px rgba(0,0,0,.35);
 }
 .selection-pronunciation.hidden{display:none}
 
@@ -922,3 +925,24 @@ body{min-height:100dvh}.app-shell{min-height:100dvh;padding-bottom:86px}.topbar{
 .web-reader-sourcebar button{
   flex:0 0 auto;
 }
+
+
+/* Build 55: modal feedback and floating selection aid */
+.modal-toast{
+  position:sticky;
+  bottom:0;
+  z-index:4;
+  justify-self:center;
+  max-width:100%;
+  background:#efe1bb;
+  color:#1b1615;
+  padding:9px 13px;
+  border-radius:12px;
+  font-weight:700;
+  font-size:12px;
+  opacity:0;
+  transform:translateY(8px);
+  pointer-events:none;
+  transition:.2s;
+}
+.modal-toast.show{opacity:1;transform:translateY(0)}
