@@ -17,7 +17,7 @@ const state = {
 };
 
 const PREF='storyline.prefs.v1';
-const WEB_READER_PROXY='https://embarrassed-few-devices--MwilaS.replit.app';
+const WEB_READER_PROXY='https://storyline-reader-service.lovable.app';
 const dbName='storyline-studio';
 let db;
 const savedAudioObjectUrls=new Set();
