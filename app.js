@@ -927,13 +927,37 @@ async function parseOdt(file){
   const zip=await JSZip.loadAsync(await file.arrayBuffer());
   const doc=zip.file('content.xml');if(!doc)throw new Error('This ODT does not contain readable document text.');
   const xml=await doc.async('string'),dom=new DOMParser().parseFromString(xml,'application/xml');
-  return [...dom.getElementsByTagNameNS('*','body')[0]?.getElementsByTagNameNS('*','p')||[]]
-    .map(p=>(p.textContent||'').replace(/\s+/g,' ').trim()).filter(Boolean);
+  const body=dom.getElementsByTagNameNS('*','body')[0];if(!body)return [];
+  return [...body.getElementsByTagName('*')]
+    .filter(n=>['p','h'].includes(String(n.localName||'').toLowerCase()))
+    .map(n=>(n.textContent||'').replace(/\s+/g,' ').trim()).filter(Boolean);
 }
 function zipResolve(base,relative){
   const stack=(base?base.split('/'):[]);for(const part of String(relative||'').split('/')){
     if(!part||part==='.')continue;if(part==='..')stack.pop();else stack.push(part);
   }return stack.join('/');
+}
+function epubBlocks(html){
+  const dom=new DOMParser().parseFromString(html,'text/html');
+  dom.querySelectorAll('script,style,noscript,svg,nav').forEach(n=>n.remove());
+  const nodes=[...dom.body.querySelectorAll('h1,h2,h3,h4,h5,h6,p,blockquote,li')];
+  return nodes.map(n=>{
+    const clone=n.cloneNode(true);
+    clone.querySelectorAll('h1,h2,h3,h4,h5,h6,p,blockquote,li').forEach(child=>child.remove());
+    return {tag:String(n.tagName||'').toLowerCase(),text:(clone.textContent||'').replace(/\s+/g,' ').trim()};
+  }).filter(x=>x.text);
+}
+function chaptersFromEpubBlocks(blocks){
+  const chapters=[];let current={title:'Front matter',paragraphs:[],synthetic:true};
+  for(const block of blocks){
+    const isHeading=/^h[1-6]$/.test(block.tag);
+    if(isHeading){
+      if(current.paragraphs.length)chapters.push(current);
+      current={title:block.text,paragraphs:[],synthetic:false};
+    }else current.paragraphs.push(block.text);
+  }
+  if(current.paragraphs.length)chapters.push(current);
+  return chapters;
 }
 async function parseEpub(file){
   const zip=await JSZip.loadAsync(await file.arrayBuffer());
@@ -946,17 +970,29 @@ async function parseEpub(file){
   const base=opfPath.includes('/')?opfPath.slice(0,opfPath.lastIndexOf('/')):'';
   const manifest=new Map([...odom.getElementsByTagNameNS('*','item')].map(n=>[n.getAttribute('id'),n.getAttribute('href')]));
   const spine=[...odom.getElementsByTagNameNS('*','itemref')].map(n=>n.getAttribute('idref')).filter(Boolean);
-  const chapters=[];const all=[];
+  const spineDocs=[],all=[];
   for(const id of spine){
     const href=manifest.get(id);if(!href)continue;
     const entry=zip.file(zipResolve(base,href.split('#')[0]));if(!entry)continue;
-    const paras=htmlParagraphs(await entry.async('string'));if(!paras.length)continue;
-    all.push(...paras);
-    const heading=paras.find(x=>/^(chapter\b|prologue\b|epilogue\b|part\b)/i.test(x))||paras[0];
-    const body=paras[0]===heading?paras.slice(1):paras;
-    if(body.length)chapters.push({title:heading||`Section ${chapters.length+1}`,paragraphs:body,synthetic:false});
+    const blocks=epubBlocks(await entry.async('string'));if(!blocks.length)continue;
+    const paras=blocks.map(x=>x.text);all.push(...paras);spineDocs.push({href,blocks,paras});
   }
   if(!all.length)throw new Error('No readable text was found in this EPUB.');
+
+  if(spineDocs.length===1){
+    const structural=chaptersFromEpubBlocks(spineDocs[0].blocks);
+    const meaningful=structural.filter(ch=>ch.paragraphs.length);
+    if(meaningful.length>1||meaningful.some(ch=>!ch.synthetic))return {paragraphs:all,chapters:meaningful};
+    return {paragraphs:all,chapters:splitChapters(all)};
+  }
+
+  const chapters=[];
+  for(const doc of spineDocs){
+    const structural=chaptersFromEpubBlocks(doc.blocks).filter(ch=>ch.paragraphs.length);
+    if(structural.length>1){chapters.push(...structural);continue}
+    const only=structural[0],explicitHeading=doc.blocks.find(b=>/^h[1-6]$/.test(b.tag));
+    chapters.push({title:explicitHeading?.text||only?.title||`Section ${chapters.length+1}`,paragraphs:only?.paragraphs?.length?only.paragraphs:doc.paras,synthetic:!explicitHeading});
+  }
   return {paragraphs:all,chapters:chapters.length?chapters:null};
 }
 function ensureTesseractLibrary(){
@@ -1075,11 +1111,11 @@ function pdfMedian(values){
 }
 function pdfHeadingLike(text){
   const t=String(text||'').trim();
-  return /^(?:chapter\s+(?:\d+|[ivxlcdm]+|[a-z][a-z -]*|one|two|three|four|five|six|seven|eight|nine|ten)|prologue|epilogue|part\s+(?:\d+|[ivxlcdm]+|[a-z][a-z -]*))\b/i.test(t)&&t.length<=120;
+  return (/^(?:chapter\s+(?:\d+|[ivxlcdm]+|[a-z][a-z -]*|one|two|three|four|five|six|seven|eight|nine|ten)|prologue|epilogue|part\s+(?:\d+|[ivxlcdm]+|[a-z][a-z -]*))\b/i.test(t)||/^[ivxlcdm]{1,8}$/i.test(t))&&t.length<=120;
 }
 function pdfPageNumberLike(text){
   const t=String(text||'').trim();
-  return /^(?:page\s*)?\d+(?:\s*(?:of|\/)\s*\d+)?$/i.test(t)||/^[ivxlcdm]{1,8}$/i.test(t);
+  return /^(?:page\s*)?\d+(?:\s*(?:of|\/)\s*\d+)?$/i.test(t);
 }
 function pdfLineSignature(text){
   return anchorNormalize(text).replace(/\d+/g,'#').replace(/\s+/g,' ').trim();
@@ -1127,8 +1163,12 @@ function pdfRepeatedMarginSignatures(pages){
     const candidates=[...lines.slice(0,2),...lines.slice(-2)];
     const seen=new Set();
     for(const line of candidates){
-      if(!line?.text||line.text.length>120||pdfPageNumberLike(line.text))continue;
-      const sig=pdfLineSignature(line.text);if(!sig||seen.has(sig))continue;
+      const text=String(line?.text||'').trim();
+      if(!text||text.length>80||pdfPageNumberLike(text)||pdfHeadingLike(text))continue;
+      const words=text.split(/\s+/).filter(Boolean);
+      const looksLikeProse=words.length>8||/[.!?]["”’']?$/.test(text)||/^["“‘]/.test(text);
+      if(looksLikeProse)continue;
+      const sig=pdfLineSignature(text);if(!sig||seen.has(sig))continue;
       seen.add(sig);counts.set(sig,(counts.get(sig)||0)+1);
     }
   }
@@ -1309,8 +1349,6 @@ async function importFile(file){
     if(!paragraphs?.length)throw new Error('No manuscript text was found.');
 
     let title=file.name.replace(/\.(docx|epub|pdf|odt|html?|md|markdown|txt)$/i,'').replace(/[_-]+/g,' ').trim();
-    const firstUseful=paragraphs.find(p=>p.length>3&&!/^chapter\b/i.test(p));
-    if(/the plus[ -]one problem/i.test(title)||/^the plus[ -]one problem/i.test(firstUseful||''))title='The Plus-One Problem';
     const chapters=parsedChapters||splitChapters(paragraphs,sources),now=new Date().toISOString();
     const book={id:uid(),title,fileName:file.name,createdAt:now,updatedAt:now,chapters,progress:{chapterIndex:0,paragraphIndex:0,charOffset:0,wordEnd:0,completed:false},version:'Imported manuscript',importDiagnostics,nameIndex:[],nameIndexHidden:[],nameIndexStatus:'pending'};
 
