@@ -2878,14 +2878,33 @@ function startSpeech(fromSelected=true,{preserveFollow=false}={}){
 
   const continueChapter=async()=>{
     if(token!==state.playbackToken||!state.isSpeaking)return;
-    const fresh=await idbGet('books',state.bookId);
+    let fresh=await idbGet('books',state.bookId);
     if(token!==state.playbackToken||!state.isSpeaking)return;
     if(!fresh){finishSpeech(token);return}
     state.readerBook=fresh;
-    if(state.chapterIndex>=fresh.chapters.length-1){await saveProgress(fresh,{completed:true});finishSpeech(token);return}
+    const currentIndex=state.chapterIndex;
     if(prefs().autoAdvance===false){finishSpeech(token);return}
-    const completedLabel=chapterLabel(fresh.chapters[state.chapterIndex],fresh);
-    state.chapterIndex++;state.selectedParagraph=0;state.selectedCharOffset=0;state.selectedWordEnd=0;state.speakingParagraph=null;
+    let nextIndex=currentIndex+1;
+    if(fresh.webReader){
+      try{
+        fresh=await extendWebReaderNext(fresh,currentIndex);
+        let target=fresh.chapters[nextIndex];
+        if(!target){await saveProgress(fresh,{completed:true});finishSpeech(token);return}
+        const targetUrl=target.sourceUrl;
+        if(!target.loaded||!target.paragraphs?.length)fresh=await ensureWebReaderChapter(fresh,nextIndex,{syncState:false});
+        if(targetUrl){const moved=fresh.chapters.findIndex(ch=>sameWebReaderUrl(ch.sourceUrl,targetUrl));if(moved>=0)nextIndex=moved}
+      }catch(e){
+        finishSpeech(token);
+        showToast((e.message||'The next web chapter could not load.')+' Open the chapter list to try again.');
+        return;
+      }
+    }else if(currentIndex>=fresh.chapters.length-1){
+      await saveProgress(fresh,{completed:true});finishSpeech(token);return;
+    }
+    if(nextIndex>=fresh.chapters.length){await saveProgress(fresh,{completed:true});finishSpeech(token);return}
+    state.readerBook=fresh;
+    const completedLabel=chapterLabel(fresh.chapters[currentIndex],fresh);
+    state.chapterIndex=nextIndex;state.selectedParagraph=0;state.selectedCharOffset=0;state.selectedWordEnd=0;state.speakingParagraph=null;
     await saveProgress(fresh);
     if(token!==state.playbackToken||!state.isSpeaking)return;
     const notice=`${completedLabel} complete · continuing to ${chapterLabel(fresh.chapters[state.chapterIndex],fresh)}…`;
@@ -3104,14 +3123,33 @@ async function startLocalSpeech(fromSelected=true,{preserveFollow=false}={}){
 
   const continueLocalChapter=async()=>{
     if(token!==state.playbackToken||!state.isSpeaking)return;
-    const fresh=await idbGet('books',state.bookId);
+    let fresh=await idbGet('books',state.bookId);
     if(token!==state.playbackToken||!state.isSpeaking)return;
     if(!fresh){finishSpeech(token);return}
     state.readerBook=fresh;
-    if(state.chapterIndex>=fresh.chapters.length-1){await saveProgress(fresh,{completed:true});finishSpeech(token);return}
+    const currentIndex=state.chapterIndex;
     if(prefs().autoAdvance===false){finishSpeech(token);return}
-    const completedLabel=chapterLabel(fresh.chapters[state.chapterIndex],fresh);
-    state.chapterIndex++;state.selectedParagraph=0;state.selectedCharOffset=0;state.selectedWordEnd=0;state.speakingParagraph=null;
+    let nextIndex=currentIndex+1;
+    if(fresh.webReader){
+      try{
+        fresh=await extendWebReaderNext(fresh,currentIndex);
+        let target=fresh.chapters[nextIndex];
+        if(!target){await saveProgress(fresh,{completed:true});finishSpeech(token);return}
+        const targetUrl=target.sourceUrl;
+        if(!target.loaded||!target.paragraphs?.length)fresh=await ensureWebReaderChapter(fresh,nextIndex,{syncState:false});
+        if(targetUrl){const moved=fresh.chapters.findIndex(ch=>sameWebReaderUrl(ch.sourceUrl,targetUrl));if(moved>=0)nextIndex=moved}
+      }catch(e){
+        finishSpeech(token);
+        showToast((e.message||'The next web chapter could not load.')+' Open the chapter list to try again.');
+        return;
+      }
+    }else if(currentIndex>=fresh.chapters.length-1){
+      await saveProgress(fresh,{completed:true});finishSpeech(token);return;
+    }
+    if(nextIndex>=fresh.chapters.length){await saveProgress(fresh,{completed:true});finishSpeech(token);return}
+    state.readerBook=fresh;
+    const completedLabel=chapterLabel(fresh.chapters[currentIndex],fresh);
+    state.chapterIndex=nextIndex;state.selectedParagraph=0;state.selectedCharOffset=0;state.selectedWordEnd=0;state.speakingParagraph=null;
     await saveProgress(fresh);
     if(token!==state.playbackToken||!state.isSpeaking)return;
     const notice=`${completedLabel} complete · continuing to ${chapterLabel(fresh.chapters[state.chapterIndex],fresh)}…`;
