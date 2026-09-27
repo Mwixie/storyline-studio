@@ -1,0 +1,6 @@
+{
+  "functions": {
+    "api/read.js": { "maxDuration": 15 },
+    "api/health.js": { "maxDuration": 5 }
+  }
+}
