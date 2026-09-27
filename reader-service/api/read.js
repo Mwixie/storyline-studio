@@ -199,9 +199,9 @@ function extractWithCounts(html='') {
 }
 function metaContent(html,key){
   const q=key.replace(/[.*+?^$()|[\]\\{}]/g,'\\$&');
-  const a=new RegExp('<meta[^>]+(?:property|name)\\s*=\\s*["\\']'+q+'["\\'][^>]*content\\s*=\\s*["\\']([^"\\']+)["\\']','i').exec(html);
+  const a=new RegExp("<meta[^>]+(?:property|name)\\s*=\\s*[\"']"+q+"[\"'][^>]*content\\s*=\\s*[\"']([^\"']+)[\"']","i").exec(html);
   if(a)return decodeEntities(a[1]).trim();
-  const b=new RegExp('<meta[^>]+content\\s*=\\s*["\\']([^"\\']+)["\\'][^>]*(?:property|name)\\s*=\\s*["\\']'+q+'["\\']','i').exec(html);
+  const b=new RegExp("<meta[^>]+content\\s*=\\s*[\"']([^\"']+)[\"'][^>]*(?:property|name)\\s*=\\s*[\"']"+q+"[\"']","i").exec(html);
   return b?decodeEntities(b[1]).trim():'';
 }
 function pageTitle(html,finalUrl){
