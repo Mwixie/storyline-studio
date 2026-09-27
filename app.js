@@ -55,11 +55,18 @@ function dialogueRateOptions(selected){
 }
 function regexEscape(s=''){return String(s).replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}
 function pronunciationRegex(entry){
-  const raw=String(entry?.match||'').trim();
+  const raw=String(entry?.match||'').normalize('NFKC').trim();
   if(!raw)return null;
-  const escaped=regexEscape(raw);
-  const simple=/^[A-Za-z0-9 ]+$/.test(raw);
-  return new RegExp(simple?`\\b${escaped}\\b`:escaped,'gi');
+  const chars=[...raw],wordChar=/[\\p{L}\\p{N}_]/u;
+  const body=chars.map(ch=>{
+    if(/[’‘']/.test(ch))return "['’‘]";
+    if(/[-–—]/.test(ch))return '[-–—]';
+    if(/\\s/u.test(ch))return '\\s+';
+    return regexEscape(ch);
+  }).join('');
+  const left=wordChar.test(chars[0]||'')?'(?<![\\p{L}\\p{N}_])':'';
+  const right=wordChar.test(chars[chars.length-1]||'')?'(?![\\p{L}\\p{N}_])':'';
+  try{return new RegExp(left+body+right,'giu')}catch{return new RegExp(regexEscape(raw),'gi')}
 }
 function pronunciationMatches(source,entries=[]){
   const matches=[];
@@ -217,6 +224,8 @@ async function pronunciationManager(book,prefill='',scope='book'){
   const saveEntry=async(existingId=null)=>{
     const match=$('#pronMatch').value.trim(),replacement=$('#pronReplacement').value.trim();
     if(!match||!replacement){showToast('Add both the written form and how it should sound.');return}
+    const normalizedMatch=match.normalize('NFKC').trim().toLocaleLowerCase(),normalizedReplacement=replacement.normalize('NFKC').trim().toLocaleLowerCase();
+    if(normalizedMatch===normalizedReplacement){showToast('The spoken form is the same as the written form.');return}
     const next=currentList();
     if(!existingId&&next.length>=200){showToast(`This ${isShared?'shared list':'book'} already has 200 pronunciations.`);return}
     const duplicate=next.find(x=>x.id!==existingId&&String(x.match||'').toLowerCase()===match.toLowerCase());
