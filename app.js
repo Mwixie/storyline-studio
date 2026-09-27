@@ -1721,19 +1721,20 @@ function webReaderParagraphs(doc){
   const root=source.cloneNode(true);
   root.querySelectorAll('script,style,noscript,svg,canvas,form,nav,header,footer,aside,button,input,select,textarea,.comments,.comment,.sidebar,.menu,.navigation,.nav,.share,.social,.ads,.advertisement,.related,.recommend').forEach(el=>el.remove());
   const boilerplate=/^(previous|next|table of contents|contents|share|subscribe|log in|sign in|continue reading|related|recommended)\b/i;
+  const isBoilerplate=t=>String(t||'').length<=120&&boilerplate.test(String(t||''));
   const candidates=[];
-  const pBlocks=[...root.querySelectorAll('p,blockquote')].map(el=>cleanWebReaderLine(el.innerText||el.textContent||'')).filter(t=>t.length>1&&!boilerplate.test(t));
+  const pBlocks=[...root.querySelectorAll('p,blockquote')].map(el=>cleanWebReaderLine(el.innerText||el.textContent||'')).filter(t=>t.length>1&&!isBoilerplate(t));
   if(pBlocks.length)candidates.push({kind:'paragraphs',items:pBlocks,score:pBlocks.join(' ').length+(pBlocks.length*30)});
   const leafBlocks=[...root.querySelectorAll('div,section')].filter(el=>{
     if(el.querySelector('p,blockquote'))return false;
     const text=cleanWebReaderLine(el.innerText||el.textContent||'');
-    if(text.length<40||boilerplate.test(text))return false;
+    if(text.length<40||isBoilerplate(text))return false;
     const childText=[...el.children].reduce((n,x)=>n+cleanWebReaderLine(x.innerText||x.textContent||'').length,0);
     return !el.children.length||childText<=text.length*1.6;
   }).map(el=>cleanWebReaderLine(el.innerText||el.textContent||'')).filter(Boolean);
   if(leafBlocks.length)candidates.push({kind:'blocks',items:leafBlocks,score:leafBlocks.join(' ').length+(leafBlocks.length*20)});
   const raw=(root.innerText||root.textContent||'').replace(/\r/g,'').trim();
-  const rawBlocks=raw.split(/\n\s*\n+|\n(?=\S)/).map(cleanWebReaderLine).filter(t=>t.length>20&&!boilerplate.test(t));
+  const rawBlocks=raw.split(/\n\s*\n+|\n(?=\S)/).map(cleanWebReaderLine).filter(t=>t.length>20&&!isBoilerplate(t));
   if(rawBlocks.length)candidates.push({kind:'raw',items:rawBlocks,score:rawBlocks.join(' ').length});
   candidates.sort((a,b)=>b.score-a.score);
   let paragraphs=(candidates[0]?.items||[]).filter(Boolean);
@@ -1817,8 +1818,14 @@ async function fetchWebReaderViaProxy(rawUrl){
   if(paragraphs.length>=5000){if(paragraphs.length>5000)paragraphs=paragraphs.slice(0,5000);notices.push('This chapter is very long — showing the first 5000 paragraphs.')}
   let chapterLinks=Array.isArray(data.chapterLinks)?data.chapterLinks.filter(x=>x?.url).map(x=>({title:String(x.title||'Chapter'),url:String(x.url)})):[];
   if(chapterLinks.length>=300){if(chapterLinks.length>300)chapterLinks=chapterLinks.slice(0,300);notices.push('Chapter list truncated at 300 entries.')}
+  if(data?.truncated===true){
+    const sourceP=Number(data.sourceParagraphCount),returnedP=Number(data.returnedParagraphCount);
+    const counts=Number.isFinite(sourceP)&&Number.isFinite(returnedP)&&sourceP>0?` Returned ${returnedP} of ${sourceP} detected source paragraphs.`:'';
+    const reason=data.truncationReason?` ${String(data.truncationReason)}`:'';
+    notices.push('The reader service detected that this page may be incomplete.'+counts+reason);
+  }
   if(paragraphs.join(' ').length<200)throw new Error('The reader service reached the page, but could not identify enough story text to read.');
-  return {url:data.url||url,title:String(data.title||'Online story'),storyTitle:String(data.storyTitle||data.title||'Online story'),paragraphs,nextUrl:data.nextUrl||null,prevUrl:data.prevUrl||null,chapterLinks,notices,viaReaderService:true};
+  return {url:data.url||url,title:String(data.title||'Online story'),storyTitle:String(data.storyTitle||data.title||'Online story'),paragraphs,nextUrl:data.nextUrl||null,prevUrl:data.prevUrl||null,chapterLinks,notices,viaReaderService:true,serviceExtraction:{truncated:!!data.truncated,sourceParagraphCount:Number(data.sourceParagraphCount)||null,returnedParagraphCount:Number(data.returnedParagraphCount)||paragraphs.length,sourceCharacterCount:Number(data.sourceCharacterCount)||null,returnedCharacterCount:Number(data.returnedCharacterCount)||paragraphs.join(' ').length,truncationReason:data.truncationReason||null}};
 }
 async function fetchWebReaderChapter(rawUrl){
   const url=normalizeWebReaderUrl(rawUrl);
