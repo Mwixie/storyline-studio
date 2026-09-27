@@ -315,7 +315,7 @@ function revisionChapterKey(ch,book){
   return anchorNormalize(chapterLabel(ch,book));
 }
 function revisionCandidateForBook(book,books=[]){
-  const others=books.filter(b=>b?.id!==book.id);
+  const others=books.filter(b=>b?.id!==book.id&&!b?.webReader);
   const exact=others.filter(b=>storylineEditionFingerprint(b)===storylineEditionFingerprint(book));
   const sameTitle=others.filter(b=>anchorNormalize(b.title)===anchorNormalize(book.title));
   const candidates=exact.length?exact:sameTitle;
@@ -1651,6 +1651,203 @@ async function openRevisionChecklist(book){
   };
   render();
 }
+
+function normalizeWebReaderUrl(raw){
+  const value=String(raw||'').trim();
+  if(!value)throw new Error('Paste a story or chapter link first.');
+  let url;
+  try{url=new URL(value)}catch{throw new Error('That does not look like a complete web address.')}
+  if(!/^https?:$/.test(url.protocol))throw new Error('Storyline can read http and https story links only.');
+  url.hash='';
+  return url.toString();
+}
+function comparableWebUrl(raw){
+  try{
+    const u=new URL(raw);u.hash='';
+    if(u.pathname.length>1)u.pathname=u.pathname.replace(/\/+$/,'');
+    ['utm_source','utm_medium','utm_campaign','utm_term','utm_content','fbclid','gclid'].forEach(k=>u.searchParams.delete(k));
+    return u.toString();
+  }catch{return String(raw||'')}
+}
+function sameWebReaderUrl(a,b){return comparableWebUrl(a)===comparableWebUrl(b)}
+function webReaderHost(url){try{return new URL(url).hostname.replace(/^www\./,'')}catch{return 'web'}}
+function webReaderTitleText(doc){
+  return String(doc.querySelector('meta[property="og:title"]')?.content||doc.querySelector('h1')?.textContent||doc.title||'Online story').replace(/\s+/g,' ').trim();
+}
+function webReaderStoryTitle(doc,chapterTitle){
+  const explicit=doc.querySelector('.story-title,.novel-title,.book-title,[itemprop="isPartOf"] [itemprop="name"],a[rel="up"]')?.textContent?.trim();
+  if(explicit&&explicit.length<180)return explicit.replace(/\s+/g,' ');
+  let title=String(doc.title||chapterTitle||'Online story').replace(/\s+/g,' ').trim();
+  const ch=String(chapterTitle||'').trim();
+  if(ch&&title.toLowerCase().includes(ch.toLowerCase()))title=title.replace(new RegExp(regexEscape(ch),'i'),'').replace(/^[\s|:\-–—·]+|[\s|:\-–—·]+$/g,'').trim();
+  title=title.replace(/\s*[|–—-]\s*(read online|chapter\s*\d+.*)$/i,'').trim();
+  return title||ch||'Online story';
+}
+function webReaderRoot(doc){
+  const selectors=['article','main','[role="main"]','#chapter-content','.chapter-content','.chapter-body','.entry-content','.post-content','.reading-content','.reader-content','.story-content','.fiction-content','.text-left'];
+  const seen=new Set(),candidates=[];
+  for(const sel of selectors){
+    for(const el of doc.querySelectorAll(sel)){
+      if(seen.has(el))continue;seen.add(el);
+      const text=(el.innerText||el.textContent||'').replace(/\s+/g,' ').trim();
+      if(text.length<300)continue;
+      const links=[...el.querySelectorAll('a')].reduce((n,a)=>n+(a.textContent||'').trim().length,0);
+      const paras=el.querySelectorAll('p,blockquote').length;
+      candidates.push({el,score:text.length-(links*2)+(paras*80)});
+    }
+  }
+  candidates.sort((a,b)=>b.score-a.score);
+  return candidates[0]?.el||doc.body;
+}
+function webReaderParagraphs(doc){
+  const root=webReaderRoot(doc)?.cloneNode(true);if(!root)return [];
+  root.querySelectorAll('script,style,noscript,svg,canvas,form,nav,header,footer,aside,button,input,select,textarea,.comments,.comment,.sidebar,.menu,.navigation,.nav,.share,.social,.ads,.advertisement,.related,.recommend').forEach(el=>el.remove());
+  let paras=[...root.querySelectorAll('p,blockquote')].map(el=>(el.innerText||el.textContent||'').replace(/\s+/g,' ').trim()).filter(t=>t.length>1);
+  paras=paras.filter(t=>!(/^(previous|next|table of contents|contents|share|subscribe|log in|sign in)\b/i.test(t)&&t.length<100));
+  if(paras.join(' ').length<300){
+    const text=(root.innerText||root.textContent||'').replace(/\r/g,'').trim();
+    paras=text.split(/\n\s*\n+/).map(t=>t.replace(/\s+/g,' ').trim()).filter(t=>t.length>20);
+  }
+  return paras.slice(0,5000);
+}
+function absoluteWebHref(anchor,baseUrl){
+  const raw=anchor?.getAttribute?.('href');if(!raw||raw.startsWith('#')||/^javascript:/i.test(raw))return null;
+  try{const u=new URL(raw,baseUrl);if(!/^https?:$/.test(u.protocol))return null;u.hash='';return u.toString()}catch{return null}
+}
+function webReaderNavLink(doc,baseUrl,direction){
+  const rel=doc.querySelector('a[rel~="'+direction+'"]');const relUrl=absoluteWebHref(rel,baseUrl);if(relUrl)return relUrl;
+  const patterns=direction==='next'?[/next\s*(chapter|part)?/i,/continue\s*(reading)?/i,/^(›|»|→)$/]:[/(previous|prev)\s*(chapter|part)?/i,/^(‹|«|←)$/];
+  for(const a of doc.querySelectorAll('a[href]')){
+    const text=(a.textContent||'').replace(/\s+/g,' ').trim();
+    if(patterns.some(re=>re.test(text))){const href=absoluteWebHref(a,baseUrl);if(href)return href}
+  }
+  return null;
+}
+function webReaderChapterLinks(doc,baseUrl){
+  const baseHost=new URL(baseUrl).hostname,seen=new Set(),links=[];
+  const chapterish=/\b(chapter|chap\.?|ch\.?|part|episode|prologue|epilogue)\s*(?:\d+|[ivxlcdm]+|one|two|three|four|five|six|seven|eight|nine|ten)?\b/i;
+  for(const a of doc.querySelectorAll('a[href]')){
+    const label=(a.textContent||'').replace(/\s+/g,' ').trim();
+    if(!label||label.length>140||!chapterish.test(label))continue;
+    const href=absoluteWebHref(a,baseUrl);if(!href)continue;
+    let u;try{u=new URL(href)}catch{continue}
+    if(u.hostname!==baseHost)continue;
+    const key=comparableWebUrl(href);if(seen.has(key))continue;seen.add(key);
+    links.push({title:label,url:href});
+    if(links.length>=300)break;
+  }
+  return links;
+}
+async function fetchWebReaderChapter(rawUrl){
+  const url=normalizeWebReaderUrl(rawUrl);
+  let response;
+  try{response=await fetch(url,{method:'GET',credentials:'omit',redirect:'follow',headers:{Accept:'text/html,text/plain;q=0.9,*/*;q=0.8'}})}
+  catch{throw new Error('This website did not allow Storyline to read the page directly. You can still open it in Safari, but this site blocks browser-to-browser reading.')}
+  if(!response.ok)throw new Error('The story page returned '+response.status+' '+(response.statusText||'')+'.');
+  const type=(response.headers.get('content-type')||'').toLowerCase();
+  const body=await response.text();
+  if(type.includes('text/plain')){
+    const paragraphs=body.split(/\n\s*\n+/).map(t=>t.replace(/\s+/g,' ').trim()).filter(t=>t.length>1);
+    if(!paragraphs.length)throw new Error('Storyline could not find readable text on this page.');
+    return {url:response.url||url,title:'Online story',storyTitle:'Online story',paragraphs,nextUrl:null,prevUrl:null,chapterLinks:[]};
+  }
+  const doc=new DOMParser().parseFromString(body,'text/html');
+  const paragraphs=webReaderParagraphs(doc);
+  if(paragraphs.join(' ').length<200)throw new Error('Storyline opened the page, but could not identify enough story text to read.');
+  const title=webReaderTitleText(doc),storyTitle=webReaderStoryTitle(doc,title);
+  return {url:response.url||url,title,storyTitle,paragraphs,nextUrl:webReaderNavLink(doc,response.url||url,'next'),prevUrl:webReaderNavLink(doc,response.url||url,'prev'),chapterLinks:webReaderChapterLinks(doc,response.url||url)};
+}
+function webReaderChapterRecord(title,url,loaded=false,paragraphs=[]){
+  return {title:title||'Chapter',sourceUrl:url,loaded:!!loaded,paragraphs:Array.isArray(paragraphs)?paragraphs:[],webReader:true,synthetic:false};
+}
+function mergeWebReaderChapterMap(book,page,currentIndex){
+  const currentUrl=page.url||book.chapters[currentIndex]?.sourceUrl;
+  let chapters=book.chapters||[];
+  if(page.chapterLinks?.length>=2){
+    const map=page.chapterLinks.map(x=>webReaderChapterRecord(x.title,x.url,false,[]));
+    let ci=map.findIndex(ch=>sameWebReaderUrl(ch.sourceUrl,currentUrl));
+    if(ci<0){ci=Math.max(0,Math.min(currentIndex,map.length));map.splice(ci,0,webReaderChapterRecord(page.title,currentUrl,true,page.paragraphs))}
+    else map[ci]={...map[ci],title:page.title||map[ci].title,loaded:true,paragraphs:page.paragraphs,nextUrl:page.nextUrl||null,prevUrl:page.prevUrl||null};
+    for(const existing of chapters){
+      const mi=map.findIndex(ch=>sameWebReaderUrl(ch.sourceUrl,existing.sourceUrl));
+      if(mi>=0&&existing.loaded)map[mi]={...map[mi],...existing,sourceUrl:map[mi].sourceUrl,title:existing.title||map[mi].title};
+    }
+    chapters=map;currentIndex=ci;
+  }else{
+    const idx=chapters.findIndex(ch=>sameWebReaderUrl(ch.sourceUrl,currentUrl));
+    if(idx>=0){chapters[idx]={...chapters[idx],title:page.title||chapters[idx].title,loaded:true,paragraphs:page.paragraphs,nextUrl:page.nextUrl||null,prevUrl:page.prevUrl||null};currentIndex=idx}
+    else{chapters.splice(Math.max(0,Math.min(currentIndex,chapters.length)),0,webReaderChapterRecord(page.title,currentUrl,true,page.paragraphs))}
+    const active=chapters[currentIndex];
+    if(page.prevUrl&&!chapters.some(ch=>sameWebReaderUrl(ch.sourceUrl,page.prevUrl)))chapters.splice(currentIndex,0,webReaderChapterRecord('Previous chapter',page.prevUrl,false,[])),currentIndex++;
+    if(page.nextUrl&&!chapters.some(ch=>sameWebReaderUrl(ch.sourceUrl,page.nextUrl)))chapters.splice(currentIndex+1,0,webReaderChapterRecord('Next chapter',page.nextUrl,false,[]));
+    active.nextUrl=page.nextUrl||active.nextUrl||null;active.prevUrl=page.prevUrl||active.prevUrl||null;
+  }
+  book.chapters=chapters;book.updatedAt=new Date().toISOString();book.webSourceUrl=currentUrl;book.webSourceHost=webReaderHost(currentUrl);
+  return {book,currentIndex};
+}
+async function ensureWebReaderChapter(book,index){
+  if(!book?.webReader)return book;
+  let i=Math.max(0,Math.min(Number(index)||0,book.chapters.length-1)),chapter=book.chapters[i];
+  if(chapter?.loaded&&chapter.paragraphs?.length)return book;
+  if(!chapter?.sourceUrl)throw new Error('This web chapter does not have a source link.');
+  const page=await fetchWebReaderChapter(chapter.sourceUrl);
+  const merged=mergeWebReaderChapterMap(book,page,i);book=merged.book;
+  if(merged.currentIndex!==i&&state.bookId===book.id)state.chapterIndex=merged.currentIndex;
+  await idbPut('books',book);return book;
+}
+async function extendWebReaderNext(book,index){
+  if(!book?.webReader)return book;
+  const current=book.chapters[index];if(!current)return book;
+  const nextUrl=current.nextUrl;
+  if(nextUrl&&!book.chapters.some(ch=>sameWebReaderUrl(ch.sourceUrl,nextUrl))){
+    book.chapters.splice(index+1,0,webReaderChapterRecord('Next chapter',nextUrl,false,[]));
+    book.updatedAt=new Date().toISOString();await idbPut('books',book);
+  }
+  return book;
+}
+async function prefetchWebReaderNext(book,index){
+  if(!book?.webReader||!navigator.onLine)return;
+  try{
+    let fresh=await idbGet('books',book.id);if(!fresh)return;
+    fresh=await extendWebReaderNext(fresh,index);
+    const next=fresh.chapters[index+1];if(next&&!next.loaded&&next.sourceUrl)await ensureWebReaderChapter(fresh,index+1);
+  }catch{}
+}
+function webReaderCard(book){
+  const p=book.progress||{},ci=Math.max(0,Math.min(p.chapterIndex||0,Math.max(0,book.chapters.length-1))),ch=book.chapters[ci]||{};
+  const loaded=book.chapters.filter(x=>x.loaded&&x.paragraphs?.length).length;
+  return '<article class="card web-story-card" data-web-book="'+escapeHtml(book.id)+'"><div><div class="eyebrow">Web Reader · '+escapeHtml(book.webSourceHost||webReaderHost(ch.sourceUrl||book.webSourceUrl))+'</div><div class="book-title">'+escapeHtml(book.title)+'</div><p class="meta">'+escapeHtml(chapterLabel(ch,book))+' · '+loaded+' chapter'+(loaded===1?'':'s')+' cached for reading</p></div><div class="row between"><button class="button" data-web-open="'+escapeHtml(book.id)+'">Continue reading</button><button class="ghost tiny" data-web-remove="'+escapeHtml(book.id)+'">Remove</button></div></article>';
+}
+function openWebReaderImport(){
+  modalForm.innerHTML='<h3>Read from web</h3><p class="sub">Paste a public story or chapter link. Storyline will try to find the story text and chapter navigation. This is read-only and stays separate from your manuscript tools.</p><input id="webReaderUrlInput" class="select" type="url" inputmode="url" autocomplete="url" placeholder="https://example.com/story/chapter-1" /><div id="webReaderImportStatus" class="meta"></div><div class="row between"><button value="cancel" class="ghost">Cancel</button><button type="button" id="webReaderStartBtn" class="button">Open in Storyline</button></div>';
+  if(!modal.open)modal.showModal();
+  const input=$('#webReaderUrlInput'),button=$('#webReaderStartBtn'),status=$('#webReaderImportStatus');
+  const run=async()=>{
+    button.disabled=true;button.textContent='Opening…';status.textContent='Finding the chapter text and chapter links…';
+    try{await startWebReaderFromUrl(input.value);modal.close()}
+    catch(e){status.textContent=e.message||'Storyline could not open this story.';button.disabled=false;button.textContent='Open in Storyline'}
+  };
+  button.onclick=run;input.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();run()}};
+  requestAnimationFrame(()=>input.focus());
+}
+async function startWebReaderFromUrl(raw){
+  const url=normalizeWebReaderUrl(raw),all=await idbGetAll('books');
+  const existing=all.find(b=>b.webReader&&(b.chapters||[]).some(ch=>sameWebReaderUrl(ch.sourceUrl,url)));
+  if(existing){
+    const index=Math.max(0,existing.chapters.findIndex(ch=>sameWebReaderUrl(ch.sourceUrl,url)));
+    state.bookId=existing.id;state.chapterIndex=index;state.selectedParagraph=0;state.selectedCharOffset=0;state.selectedWordEnd=0;state.recapBookId=null;
+    savePrefs({lastBookId:existing.id});await ensureWebReaderChapter(existing,index);await navigate('reader');return;
+  }
+  const page=await fetchWebReaderChapter(url),now=new Date().toISOString();
+  let chapters=page.chapterLinks?.length>=2?page.chapterLinks.map(x=>webReaderChapterRecord(x.title,x.url,false,[])):[webReaderChapterRecord(page.title,page.url,true,page.paragraphs)];
+  let index=chapters.findIndex(ch=>sameWebReaderUrl(ch.sourceUrl,page.url));if(index<0){index=0;chapters.unshift(webReaderChapterRecord(page.title,page.url,true,page.paragraphs))}
+  chapters[index]={...chapters[index],title:page.title||chapters[index].title,loaded:true,paragraphs:page.paragraphs,nextUrl:page.nextUrl||null,prevUrl:page.prevUrl||null};
+  const book={id:uid(),title:page.storyTitle||page.title||'Online story',webReader:true,readOnly:true,webSourceUrl:page.url,webSourceHost:webReaderHost(page.url),createdAt:now,updatedAt:now,chapters,progress:{chapterIndex:index,paragraphIndex:0,charOffset:0,wordEnd:0,completed:false},version:'Web Reader',pronunciations:[],nameIndex:[],nameIndexHidden:[]};
+  const merged=mergeWebReaderChapterMap(book,page,index);index=merged.currentIndex;
+  await idbPut('books',book);state.bookId=book.id;state.chapterIndex=index;state.selectedParagraph=0;state.selectedCharOffset=0;state.selectedWordEnd=0;state.recapBookId=null;state.readerSearchQuery='';
+  savePrefs({lastBookId:book.id});await navigate('reader');
+}
+
 async function renderLibrary(){
   const books=(await idbGetAll('books')).sort((a,b)=>new Date(b.updatedAt)-new Date(a.updatedAt));
   const items=await idbGetAll('items');
