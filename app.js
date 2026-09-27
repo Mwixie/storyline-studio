@@ -3007,6 +3007,7 @@ async function speakBoundedRange(book,chapterIndex,paragraphIndex,start=0,end=nu
       const id=meSpeak.speak(piece.text,{amplitude:100,speed,volume:1,pitch,voice:'en-us',variant:localVoiceVariant()},success=>{
         if(token!==state.playbackToken)return;state.localSpeakingId=null;
         if(!success){finishSpeech(token,{preserveSleep});return}
+        if(state.gentleStopPending){completeGentleSleepStop(token);return}
         next();
       });
       if(!id){showToast('The local voice could not play this passage.');finishSpeech(token,{preserveSleep});return}
@@ -3027,7 +3028,7 @@ async function speakBoundedRange(book,chapterIndex,paragraphIndex,start=0,end=nu
     if(v){u.voice=v;u.lang=v.lang||'en-US'}else u.lang='en-US';
     u.onstart=()=>{if(token!==state.playbackToken||state.activeUtterance!==u)return;armSpeechWatchdog(piece.text,u.rate)};
     u.onboundary=e=>{if(token!==state.playbackToken||state.activeUtterance!==u)return;const rel=Number(e.charIndex);if(Number.isFinite(rel)){state.liveCharOffset=piece.mapIndex(rel);armSpeechWatchdog(piece.text.slice(Math.max(0,rel)),u.rate)}};
-    u.onend=()=>{if(token!==state.playbackToken||state.activeUtterance!==u)return;state.activeUtterance=null;state.speechWatchdogDeadline=0;next()};
+    u.onend=()=>{if(token!==state.playbackToken||state.activeUtterance!==u)return;state.activeUtterance=null;state.speechWatchdogDeadline=0;if(state.gentleStopPending){completeGentleSleepStop(token);return}next()};
     u.onerror=e=>{if(token!==state.playbackToken||state.activeUtterance!==u)return;state.activeUtterance=null;if(e.error==='canceled')return;if(e.error==='interrupted'){handleSpeechInterrupted(token,'Samantha was interrupted');return}showToast('Samantha could not play this passage.');finishSpeech(token,{preserveSleep})};
     speechSynthesis.resume();speechSynthesis.speak(u);
   };
