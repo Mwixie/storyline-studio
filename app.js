@@ -1811,9 +1811,9 @@ async function fetchWebReaderViaProxy(rawUrl){
   if(!response.ok||data?.ok===false)throw new Error(data?.error||('The reader service returned '+response.status+'.'));
   let paragraphs=Array.isArray(data.paragraphs)?data.paragraphs.map(t=>String(t||'').replace(/\s+/g,' ').trim()).filter(Boolean):[];
   const notices=[];
-  if(paragraphs.length>5000){paragraphs=paragraphs.slice(0,5000);notices.push('This chapter is very long — showing the first 5000 paragraphs.')}
+  if(paragraphs.length>=5000){if(paragraphs.length>5000)paragraphs=paragraphs.slice(0,5000);notices.push('This chapter is very long — showing the first 5000 paragraphs.')}
   let chapterLinks=Array.isArray(data.chapterLinks)?data.chapterLinks.filter(x=>x?.url).map(x=>({title:String(x.title||'Chapter'),url:String(x.url)})):[];
-  if(chapterLinks.length>300){chapterLinks=chapterLinks.slice(0,300);notices.push('Chapter list truncated at 300 entries.')}
+  if(chapterLinks.length>=300){if(chapterLinks.length>300)chapterLinks=chapterLinks.slice(0,300);notices.push('Chapter list truncated at 300 entries.')}
   if(paragraphs.join(' ').length<200)throw new Error('The reader service reached the page, but could not identify enough story text to read.');
   return {url:data.url||url,title:String(data.title||'Online story'),storyTitle:String(data.storyTitle||data.title||'Online story'),paragraphs,nextUrl:data.nextUrl||null,prevUrl:data.prevUrl||null,chapterLinks,notices,viaReaderService:true};
 }
