@@ -1313,6 +1313,7 @@ async function updateQueueBadge(){ const items=await idbGetAll('items'); const o
 function setNav(route){
   $$('.nav-item[data-nav]').forEach(b=>b.classList.toggle('active',b.dataset.nav===route));
   document.body.classList.toggle('reader-route',route==='reader');
+  document.body.classList.remove('web-reader-mode');
   document.body.classList.remove('mobile-tools-open');
   const tools=$('#readerNavTools'); if(tools)tools.classList.toggle('hidden',route!=='reader');
 }
@@ -1785,14 +1786,14 @@ function mergeWebReaderChapterMap(book,page,currentIndex){
   book.chapters=chapters;book.updatedAt=new Date().toISOString();book.webSourceUrl=currentUrl;book.webSourceHost=webReaderHost(currentUrl);
   return {book,currentIndex};
 }
-async function ensureWebReaderChapter(book,index){
+async function ensureWebReaderChapter(book,index,{syncState=true}={}){
   if(!book?.webReader)return book;
   let i=Math.max(0,Math.min(Number(index)||0,book.chapters.length-1)),chapter=book.chapters[i];
   if(chapter?.loaded&&chapter.paragraphs?.length)return book;
   if(!chapter?.sourceUrl)throw new Error('This web chapter does not have a source link.');
   const page=await fetchWebReaderChapter(chapter.sourceUrl);
   const merged=mergeWebReaderChapterMap(book,page,i);book=merged.book;
-  if(merged.currentIndex!==i&&state.bookId===book.id)state.chapterIndex=merged.currentIndex;
+  if(syncState&&merged.currentIndex!==i&&state.bookId===book.id)state.chapterIndex=merged.currentIndex;
   await idbPut('books',book);return book;
 }
 async function extendWebReaderNext(book,index){
@@ -1810,7 +1811,7 @@ async function prefetchWebReaderNext(book,index){
   try{
     let fresh=await idbGet('books',book.id);if(!fresh)return;
     fresh=await extendWebReaderNext(fresh,index);
-    const next=fresh.chapters[index+1];if(next&&!next.loaded&&next.sourceUrl)await ensureWebReaderChapter(fresh,index+1);
+    const next=fresh.chapters[index+1];if(next&&!next.loaded&&next.sourceUrl)await ensureWebReaderChapter(fresh,index+1,{syncState:false});
   }catch{}
 }
 function webReaderCard(book){
@@ -1849,16 +1850,20 @@ async function startWebReaderFromUrl(raw){
 }
 
 async function renderLibrary(){
-  const books=(await idbGetAll('books')).sort((a,b)=>new Date(b.updatedAt)-new Date(a.updatedAt));
+  const allBooks=(await idbGetAll('books')).sort((a,b)=>new Date(b.updatedAt)-new Date(a.updatedAt));
+  const books=allBooks.filter(b=>!b.webReader),webBooks=allBooks.filter(b=>b.webReader);
   const items=await idbGetAll('items');
   view.innerHTML=`
-    <section class="hero"><div class="eyebrow">Your private listening desk</div><h1>Read with your ears.<br>Revise with receipts.</h1><p class="sub">Your manuscript stays in this browser. Storyline remembers where you stopped and keeps every note tied to its exact passage.</p><div class="row hero-actions"><button id="receiveHandoffBtn" class="ghost">Receive handoff</button></div></section>
+    <section class="hero"><div class="eyebrow">Your private listening desk</div><h1>Read with your ears.<br>Revise with receipts.</h1><p class="sub">Your manuscript stays in this browser. Storyline remembers where you stopped and keeps every note tied to its exact passage.</p><div class="row hero-actions"><button id="receiveHandoffBtn" class="ghost">Receive handoff</button><button id="readFromWebBtn" class="button">Read from web</button></div></section>
+    ${webBooks.length?`<section class="web-reader-library"><div class="row between"><div><div class="eyebrow">Read-only</div><h2 class="section-title web-reader-title">Web Reader</h2></div><button id="addWebStoryBtn" class="ghost tiny">Open another link</button></div><div class="grid books">${webBooks.map(webReaderCard).join('')}</div></section>`:''}
     <section id="importZone" class="import-zone" tabindex="0"><strong>${books.length?'Add another manuscript':'Bring in a manuscript'}</strong><p class="sub">DOCX, EPUB, PDF, ODT, Markdown, HTML, TXT, or pasted text. Chapter headings are detected automatically.</p><div class="row import-actions"><button id="importBtn" class="button">Choose manuscript</button><button id="pasteImportBtn" class="ghost">Paste text or file</button></div><div class="privacy">You can also drag/drop or paste a copied manuscript file here. Everything stays local to this browser.</div></section>
     <section class="backup-card card"><div><div class="eyebrow">Data safety</div><h2>Backup & restore</h2><p class="sub">Export manuscripts, reading positions, Queue and Actioned items, preferences, and saved voice-note audio.</p></div><div class="row backup-actions"><button id="exportBackupBtn" class="ghost">Export backup</button><button id="restoreBackupBtn" class="ghost">Restore backup</button><input id="restoreBackupInput" type="file" accept="application/json,.json" hidden /></div></section>
-    ${books.length?`<h2 class="section-title">My manuscripts</h2><div class="grid books">${books.map(b=>bookCard(b,items)).join('')}</div>`:`<div class="empty">Your library is waiting for its first book.</div>`}
+    ${books.length?`<h2 class="section-title">My manuscripts</h2><div class="grid books">${books.map(b=>bookCard(b,items)).join('')}</div>`:`<div class="empty">Your manuscript library is waiting for its first book.</div>`}
   `;
   $('#importBtn').onclick=()=>fileInput.click();
   $('#pasteImportBtn').onclick=()=>openPasteImport();
+  $('#readFromWebBtn').onclick=openWebReaderImport;
+  const addWeb=$('#addWebStoryBtn');if(addWeb)addWeb.onclick=openWebReaderImport;
   const receiveHandoff=$('#receiveHandoffBtn');if(receiveHandoff)receiveHandoff.onclick=()=>openHandoffReceiver();
   const importZone=$('#importZone');
   importZone.onpaste=async e=>{
@@ -1878,6 +1883,8 @@ async function renderLibrary(){
   $$('.book-card').forEach(c=>c.onclick=async e=>{ if(e.target.closest('[data-delete],[data-export-revisions]')) return; state.bookId=c.dataset.id; state.recapBookId=state.bookId; state.selectedReaderPhrase=''; savePrefs({lastBookId:state.bookId}); const b=await idbGet('books',state.bookId); state.chapterIndex=b.progress?.chapterIndex||0; state.selectedParagraph=b.progress?.paragraphIndex||0; state.selectedCharOffset=b.progress?.charOffset||0; state.selectedWordEnd=b.progress?.wordEnd||0; navigate('reader'); });
   $$('[data-delete]').forEach(btn=>btn.onclick=async e=>{e.stopPropagation();const id=btn.dataset.delete; if(confirm('Remove this manuscript and its saved notes from this device?')){await idbDelete('books',id); const all=await idbGetAll('items'); for(const i of all.filter(x=>x.bookId===id)) await idbDelete('items',i.id); if(state.bookId===id) state.bookId=null; renderLibrary(); updateQueueBadge();}});
   $$('[data-export-revisions]').forEach(btn=>btn.onclick=async e=>{e.stopPropagation();const book=await idbGet('books',btn.dataset.exportRevisions);if(book)openRevisionChecklist(book)});
+  $$('[data-web-open]').forEach(btn=>btn.onclick=async e=>{e.stopPropagation();const b=await idbGet('books',btn.dataset.webOpen);if(!b)return;state.bookId=b.id;state.recapBookId=null;state.selectedReaderPhrase='';state.chapterIndex=b.progress?.chapterIndex||0;state.selectedParagraph=b.progress?.paragraphIndex||0;state.selectedCharOffset=b.progress?.charOffset||0;state.selectedWordEnd=b.progress?.wordEnd||0;savePrefs({lastBookId:b.id});navigate('reader')});
+  $$('[data-web-remove]').forEach(btn=>btn.onclick=async e=>{e.stopPropagation();if(!confirm('Remove this web-reading session from Storyline?'))return;await idbDelete('books',btn.dataset.webRemove);if(state.bookId===btn.dataset.webRemove)state.bookId=null;renderLibrary()});
 }
 function chapterLabel(ch,book){ return (ch?.synthetic||ch?.title==='Beginning'||ch?.title==='Front matter')?(book?.title||'Manuscript'):(ch?.title||'Manuscript'); }
 function readerChapterTitle(ch){ return (ch?.synthetic||ch?.title==='Beginning'||ch?.title==='Front matter')?'':(ch?.title||''); }
@@ -2264,19 +2271,28 @@ function bookCard(b,items){
 }
 
 async function renderReader(){
-  const book=await idbGet('books',state.bookId); if(!book){navigate('library');return}
+  let book=await idbGet('books',state.bookId); if(!book){navigate('library');return}
+  state.chapterIndex=Math.max(0,Math.min(state.chapterIndex,book.chapters.length-1));
+  if(book.webReader){
+    document.body.classList.add('web-reader-mode');
+    try{book=await ensureWebReaderChapter(book,state.chapterIndex)}catch(e){
+      view.innerHTML=`<section class="card web-reader-error"><div class="eyebrow">Web Reader</div><h1>Could not load this chapter</h1><p class="sub">${escapeHtml(e.message||'This website blocked Storyline from reading the page.')}</p><div class="row"><button id="webReaderRetry" class="button">Try again</button><button id="backLibrary" class="ghost">Library</button></div></section>`;
+      $('#webReaderRetry').onclick=()=>renderReader();$('#backLibrary').onclick=()=>navigate('library');return;
+    }
+  }else document.body.classList.remove('web-reader-mode');
   state.readerBook=book;
-  state.chapterIndex=Math.max(0,Math.min(state.chapterIndex,book.chapters.length-1)); const ch=book.chapters[state.chapterIndex]; state.selectedParagraph=Math.max(0,Math.min(state.selectedParagraph,ch.paragraphs.length-1));
-  const p=prefs();
+  state.chapterIndex=Math.max(0,Math.min(state.chapterIndex,book.chapters.length-1)); const ch=book.chapters[state.chapterIndex]; state.selectedParagraph=Math.max(0,Math.min(state.selectedParagraph,Math.max(0,ch.paragraphs.length-1)));
+  const p=prefs(),isWeb=!!book.webReader;
   view.innerHTML=`
-    <section class="reader-header"><div class="row between"><div><div class="eyebrow">${escapeHtml(book.title)}</div>${readerChapterTitle(ch)?`<h2 class="reader-title">${escapeHtml(readerChapterTitle(ch))}</h2>`:''}</div><button id="backLibrary" class="ghost tiny">Library</button></div>
-    <div class="reader-chapter-tools"><select id="chapterSelect" class="chapter-select">${book.chapters.map((c,i)=>`<option value="${i}" ${i===state.chapterIndex?'selected':''}>${escapeHtml(chapterLabel(c,book))} · ${readingMinutesLabel(chapterWordCount(c))}</option>`).join('')}</select><button id="pacingBtn" class="ghost tiny" type="button">Pacing</button></div>
-    ${recapCardHtml(book)}
-    ${handoffLandingCardHtml(book)}
-    ${revisionPromptCardHtml(book)}
+    <section class="reader-header"><div class="row between"><div><div class="eyebrow">${isWeb?'Web Reader · '+escapeHtml(book.webSourceHost||'online'):escapeHtml(book.title)}</div>${isWeb?`<div class="book-title web-reader-book-title">${escapeHtml(book.title)}</div>`:''}${readerChapterTitle(ch)?`<h2 class="reader-title">${escapeHtml(readerChapterTitle(ch))}</h2>`:''}</div><button id="backLibrary" class="ghost tiny">Library</button></div>
+    ${isWeb?`<div class="web-reader-sourcebar"><span class="pill">Read-only</span><span class="meta">Reading from the original public page</span><button id="openWebSourceBtn" class="ghost tiny">Open source ↗</button></div>`:''}
+    <div class="reader-chapter-tools"><select id="chapterSelect" class="chapter-select">${book.chapters.map((c,i)=>`<option value="${i}" ${i===state.chapterIndex?'selected':''}>${escapeHtml(chapterLabel(c,book))}${c.loaded===false?' · load when opened':' · '+readingMinutesLabel(chapterWordCount(c))}</option>`).join('')}</select>${isWeb?'':`<button id="pacingBtn" class="ghost tiny" type="button">Pacing</button>`}</div>
+    ${isWeb?'':recapCardHtml(book)}
+    ${isWeb?'':handoffLandingCardHtml(book)}
+    ${isWeb?'':revisionPromptCardHtml(book)}
     <div class="reader-search">
-      <div class="reader-search-row"><input id="readerSearchInput" class="select reader-search-input" type="search" value="${escapeHtml(state.readerSearchQuery)}" placeholder="Search this manuscript…" aria-label="Search this manuscript" /><button id="readerSearchBtn" class="ghost">Search</button><button id="readerSearchClear" class="ghost tiny ${state.readerSearchQuery?'':'hidden'}" aria-label="Clear search">Clear</button></div>
-      <div class="row between"><span id="readerSearchStatus" class="meta"></span><span class="meta">Word or phrase · all chapters</span></div>
+      <div class="reader-search-row"><input id="readerSearchInput" class="select reader-search-input" type="search" value="${escapeHtml(state.readerSearchQuery)}" placeholder="${isWeb?'Search loaded chapters…':'Search this manuscript…'}" aria-label="${isWeb?'Search loaded chapters':'Search this manuscript'}" /><button id="readerSearchBtn" class="ghost">Search</button><button id="readerSearchClear" class="ghost tiny ${state.readerSearchQuery?'':'hidden'}" aria-label="Clear search">Clear</button></div>
+      <div class="row between"><span id="readerSearchStatus" class="meta"></span><span class="meta">${isWeb?'Loaded chapters only':'Word or phrase · all chapters'}</span></div>
       <div id="readerSearchResults" class="reader-search-results hidden"></div>
     </div></section>
     <article id="readingPage" class="reading-page" aria-label="Manuscript text">${ch.paragraphs.map((t,i)=>`<p data-p="${i}" class="${i===state.selectedParagraph?'selected':''}">${escapeHtml(t)}</p>`).join('')}</article>
@@ -2316,7 +2332,7 @@ async function renderReader(){
         </div>
       </details>
     </section>`;
-  wireReader(book,ch); loadVoices(); requestAnimationFrame(()=>{
+  wireReader(book,ch); loadVoices(); if(isWeb)prefetchWebReaderNext(book,state.chapterIndex); requestAnimationFrame(()=>{
     if(state.sleepDeadline){const sleep=$('#sleepTimerSelect');if(sleep)sleep.value=String(state.sleepMinutes||0);updateSleepTimerStatus()}
     updateReadingTimeMeta(book);
     const ref=state.pendingPassageReference;
@@ -2355,6 +2371,7 @@ function wireReader(book,ch){
   if(resumeFollow)resumeFollow.onclick=()=>resumeNarrationFollow();
   updateFollowControl();
   const pacingBtn=$('#pacingBtn');if(pacingBtn)pacingBtn.onclick=()=>openPacingView(book,state.chapterIndex);
+  const openWebSource=$('#openWebSourceBtn');if(openWebSource)openWebSource.onclick=()=>{const url=book.chapters[state.chapterIndex]?.sourceUrl||book.webSourceUrl;if(url)window.open(url,'_blank','noopener,noreferrer')};
   const searchInput=$('#readerSearchInput'),searchBtn=$('#readerSearchBtn'),searchClear=$('#readerSearchClear');
   const runSearch=async()=>{await renderReaderSearchResults(book,searchInput?.value||'');searchClear?.classList.toggle('hidden',!String(searchInput?.value||'').trim());wireReaderSearchResults(book)};
   if(searchBtn)searchBtn.onclick=runSearch;
@@ -2362,7 +2379,7 @@ function wireReader(book,ch){
   if(searchClear)searchClear.onclick=()=>{if(searchInput)searchInput.value='';state.readerSearchQuery='';renderReaderSearchResults(book,'');searchClear.classList.add('hidden');searchInput?.focus()};
   if(state.readerSearchQuery){renderReaderSearchResults(book,state.readerSearchQuery).then(()=>wireReaderSearchResults(book))}
 
-  $('#chapterSelect').onchange=async e=>{ stopAllSpeech(); state.chapterIndex=+e.target.value; state.selectedParagraph=0; state.selectedCharOffset=0; state.selectedWordEnd=0; await saveProgress(book); renderReader(); };
+  $('#chapterSelect').onchange=async e=>{ stopAllSpeech(); state.chapterIndex=+e.target.value; state.selectedParagraph=0; state.selectedCharOffset=0; state.selectedWordEnd=0; await saveProgress(book); await renderReader(); };
   $$('#readingPage p').forEach(p=>p.onclick=async e=>{
     const selection=window.getSelection?.();
     if(selection&&!selection.isCollapsed&&selection.toString().trim()){
@@ -3850,6 +3867,7 @@ $$('[data-reader-act]').forEach(b=>b.addEventListener('click',async()=>{
   document.body.classList.remove('mobile-tools-open');
   if(b.dataset.readerAct==='start'){ startSpeechFromSelection(); return; }
   const book=await idbGet('books',state.bookId); if(!book)return;
+  if(book.webReader){showToast('Web Reader is read-only.');return}
   const ch=book.chapters[state.chapterIndex]; if(!ch)return;
   await handleAction(b.dataset.readerAct,book,ch);
 }));
