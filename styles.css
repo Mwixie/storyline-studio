@@ -861,3 +861,47 @@ body{min-height:100dvh}.app-shell{min-height:100dvh;padding-bottom:86px}.topbar{
 .revision-search-result .reader-search-actions{
   justify-content:flex-start;
 }
+
+
+/* Build 49: read-only Web Reader */
+.web-reader-library{
+  display:grid;
+  gap:10px;
+  margin:22px 0;
+}
+.web-reader-title{margin:2px 0 0}
+.web-story-card{
+  display:grid;
+  gap:14px;
+  border-style:solid;
+}
+.web-reader-sourcebar{
+  display:flex;
+  align-items:center;
+  flex-wrap:wrap;
+  gap:8px;
+  margin-top:10px;
+}
+.web-reader-sourcebar .meta{flex:1 1 180px}
+.web-reader-book-title{
+  font-size:1rem;
+  margin-top:3px;
+  color:var(--muted);
+}
+.web-reader-error{
+  max-width:760px;
+  margin:34px auto;
+  display:grid;
+  gap:14px;
+}
+.web-reader-mode .mobile-tools-toggle,
+.web-reader-mode #readerNavTools{
+  display:none !important;
+}
+.web-reader-mode .reader-header{
+  border-color:rgba(214,179,106,.22);
+}
+@media(max-width:600px){
+  .web-reader-sourcebar{align-items:flex-start}
+  .web-reader-sourcebar #openWebSourceBtn{width:100%}
+}
