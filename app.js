@@ -17,6 +17,7 @@ const state = {
 };
 
 const PREF='storyline.prefs.v1';
+const WEB_READER_PROXY=''; // Build 50: populated with the published Storyline reader-service URL.
 const dbName='storyline-studio';
 let db;
 const savedAudioObjectUrls=new Set();
@@ -1739,24 +1740,52 @@ function webReaderChapterLinks(doc,baseUrl){
   }
   return links;
 }
+async function fetchWebReaderViaProxy(rawUrl){
+  if(!WEB_READER_PROXY)throw new Error('This website blocks direct reading and the Storyline reader service is not connected yet.');
+  const url=normalizeWebReaderUrl(rawUrl),endpoint=WEB_READER_PROXY.replace(/\/+$/,'')+'/api/read?url='+encodeURIComponent(url);
+  let response;
+  try{response=await fetch(endpoint,{method:'GET',credentials:'omit',headers:{Accept:'application/json'}})}
+  catch{throw new Error('The Storyline reader service could not be reached.')}
+  let data={};try{data=await response.json()}catch{}
+  if(!response.ok||data?.ok===false)throw new Error(data?.error||('The reader service returned '+response.status+'.'));
+  const paragraphs=Array.isArray(data.paragraphs)?data.paragraphs.map(t=>String(t||'').replace(/\s+/g,' ').trim()).filter(Boolean):[];
+  if(paragraphs.join(' ').length<200)throw new Error('The reader service reached the page, but could not identify enough story text to read.');
+  return {
+    url:data.url||url,
+    title:String(data.title||'Online story'),
+    storyTitle:String(data.storyTitle||data.title||'Online story'),
+    paragraphs,
+    nextUrl:data.nextUrl||null,
+    prevUrl:data.prevUrl||null,
+    chapterLinks:Array.isArray(data.chapterLinks)?data.chapterLinks.filter(x=>x?.url).map(x=>({title:String(x.title||'Chapter'),url:String(x.url)})):[]
+  };
+}
 async function fetchWebReaderChapter(rawUrl){
   const url=normalizeWebReaderUrl(rawUrl);
   let response;
   try{response=await fetch(url,{method:'GET',credentials:'omit',redirect:'follow',headers:{Accept:'text/html,text/plain;q=0.9,*/*;q=0.8'}})}
-  catch{throw new Error('This website did not allow Storyline to read the page directly. You can still open it in Safari, but this site blocks browser-to-browser reading.')}
-  if(!response.ok)throw new Error('The story page returned '+response.status+' '+(response.statusText||'')+'.');
-  const type=(response.headers.get('content-type')||'').toLowerCase();
-  const body=await response.text();
-  if(type.includes('text/plain')){
-    const paragraphs=body.split(/\n\s*\n+/).map(t=>t.replace(/\s+/g,' ').trim()).filter(t=>t.length>1);
-    if(!paragraphs.length)throw new Error('Storyline could not find readable text on this page.');
-    return {url:response.url||url,title:'Online story',storyTitle:'Online story',paragraphs,nextUrl:null,prevUrl:null,chapterLinks:[]};
+  catch{return fetchWebReaderViaProxy(url)}
+  if(!response.ok){
+    if(WEB_READER_PROXY)return fetchWebReaderViaProxy(url);
+    throw new Error('The story page returned '+response.status+' '+(response.statusText||'')+'.');
   }
-  const doc=new DOMParser().parseFromString(body,'text/html');
-  const paragraphs=webReaderParagraphs(doc);
-  if(paragraphs.join(' ').length<200)throw new Error('Storyline opened the page, but could not identify enough story text to read.');
-  const title=webReaderTitleText(doc),storyTitle=webReaderStoryTitle(doc,title);
-  return {url:response.url||url,title,storyTitle,paragraphs,nextUrl:webReaderNavLink(doc,response.url||url,'next'),prevUrl:webReaderNavLink(doc,response.url||url,'prev'),chapterLinks:webReaderChapterLinks(doc,response.url||url)};
+  try{
+    const type=(response.headers.get('content-type')||'').toLowerCase();
+    const body=await response.text();
+    if(type.includes('text/plain')){
+      const paragraphs=body.split(/\n\s*\n+/).map(t=>t.replace(/\s+/g,' ').trim()).filter(t=>t.length>1);
+      if(!paragraphs.length)throw new Error('Storyline could not find readable text on this page.');
+      return {url:response.url||url,title:'Online story',storyTitle:'Online story',paragraphs,nextUrl:null,prevUrl:null,chapterLinks:[]};
+    }
+    const doc=new DOMParser().parseFromString(body,'text/html');
+    const paragraphs=webReaderParagraphs(doc);
+    if(paragraphs.join(' ').length<200)throw new Error('Storyline opened the page, but could not identify enough story text to read.');
+    const title=webReaderTitleText(doc),storyTitle=webReaderStoryTitle(doc,title);
+    return {url:response.url||url,title,storyTitle,paragraphs,nextUrl:webReaderNavLink(doc,response.url||url,'next'),prevUrl:webReaderNavLink(doc,response.url||url,'prev'),chapterLinks:webReaderChapterLinks(doc,response.url||url)};
+  }catch(e){
+    if(WEB_READER_PROXY)return fetchWebReaderViaProxy(url);
+    throw e;
+  }
 }
 function webReaderChapterRecord(title,url,loaded=false,paragraphs=[]){
   return {title:title||'Chapter',sourceUrl:url,loaded:!!loaded,paragraphs:Array.isArray(paragraphs)?paragraphs:[],webReader:true,synthetic:false};
