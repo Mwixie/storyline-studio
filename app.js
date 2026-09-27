@@ -13,7 +13,8 @@ const state = {
   followNarrationSuspended:false, readerBook:null, recapBookId:null, selectedReaderPhrase:'',
   liveCharOffset:null, pendingHandoffContext:null, handoffScanStop:null,
   sharedPronunciations:[], gentleStopPending:false, pendingRevisionPrompt:null, revisionDiff:null,
-  reviewSession:null, reviewAudio:null, reviewAudioUrl:null, reviewAutoTimer:null
+  reviewSession:null, reviewAudio:null, reviewAudioUrl:null, reviewAutoTimer:null,
+  speechWatchdogId:null, speechWatchdogDeadline:0, storageWarningAt:0
 };
 
 const PREF='storyline.prefs.v1';
@@ -26,7 +27,14 @@ function revokeSavedAudioObjectUrls(){
   savedAudioObjectUrls.clear();
 }
 
-function showToast(msg){ toast.textContent=msg; toast.classList.add('show'); clearTimeout(showToast.t); showToast.t=setTimeout(()=>toast.classList.remove('show'),2200); }
+function showToast(msg){
+  toast.textContent=msg; toast.classList.add('show'); clearTimeout(showToast.t); showToast.t=setTimeout(()=>toast.classList.remove('show'),2200);
+  if(modal?.open){
+    let mt=modal.querySelector('.modal-toast');
+    if(!mt){mt=document.createElement('div');mt.className='modal-toast';modal.appendChild(mt)}
+    mt.textContent=msg;mt.classList.add('show');clearTimeout(showToast.mt);showToast.mt=setTimeout(()=>mt.classList.remove('show'),2400);
+  }
+}
 function uid(){ return crypto.randomUUID ? crypto.randomUUID() : Date.now().toString(36)+Math.random().toString(36).slice(2); }
 function escapeHtml(s=''){return String(s).replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]));}
 function prefs(){ try{return JSON.parse(localStorage.getItem(PREF)||'{}')}catch{return{}} }
@@ -822,7 +830,14 @@ async function openDB(){
 function store(name,mode='readonly'){return db.transaction(name,mode).objectStore(name)}
 function idbGetAll(name){return new Promise((res,rej)=>{const r=store(name).getAll();r.onsuccess=()=>res(r.result||[]);r.onerror=()=>rej(r.error)})}
 function idbGet(name,id){return new Promise((res,rej)=>{const r=store(name).get(id);r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error)})}
-function idbPut(name,obj){return new Promise((res,rej)=>{const r=store(name,'readwrite').put(obj);r.onsuccess=()=>res(obj);r.onerror=()=>rej(r.error)})}
+function storageWriteError(error){
+  const name=String(error?.name||''),message=String(error?.message||'');
+  if(name==='QuotaExceededError'||/quota|storage.*full|disk.*full/i.test(message)){
+    const now=Date.now();
+    if(now-state.storageWarningAt>5000){state.storageWarningAt=now;showToast('Storyline could not save because browser storage is full. Export a backup or remove large voice notes, then try again.')}
+  }
+}
+function idbPut(name,obj){return new Promise((res,rej)=>{const r=store(name,'readwrite').put(obj);r.onsuccess=()=>res(obj);r.onerror=()=>{storageWriteError(r.error);rej(r.error)}})}
 function idbDelete(name,id){return new Promise((res,rej)=>{const r=store(name,'readwrite').delete(id);r.onsuccess=()=>res();r.onerror=()=>rej(r.error)})}
 function idbClear(name){return new Promise((res,rej)=>{const r=store(name,'readwrite').clear();r.onsuccess=()=>res();r.onerror=()=>rej(r.error)})}
 async function loadSharedPronunciations(){
@@ -2550,10 +2565,10 @@ function wireReader(book,ch){
     highlightRange(paragraphIndex,seg.start,seg.end);
     startSpeechFromSelection();
   });
-  $('#positionRange').oninput=e=>{stopAllSpeech();state.selectedCharOffset=0;state.selectedWordEnd=0;selectParagraph(+e.target.value,true);};
+  $('#positionRange').oninput=e=>{stopAllSpeech({preserveSleep:true});state.selectedCharOffset=0;state.selectedWordEnd=0;selectParagraph(+e.target.value,true);};
   $('#playBtn').onclick=toggleSpeech;
-  $('#prevBtn').onclick=()=>{ stopAllSpeech(); state.selectedCharOffset=0;state.selectedWordEnd=0;selectParagraph(Math.max(0,state.selectedParagraph-1)); };
-  $('#nextBtn').onclick=()=>{ stopAllSpeech(); state.selectedCharOffset=0;state.selectedWordEnd=0;selectParagraph(Math.min(ch.paragraphs.length-1,state.selectedParagraph+1)); };
+  $('#prevBtn').onclick=()=>{ stopAllSpeech({preserveSleep:true}); state.selectedCharOffset=0;state.selectedWordEnd=0;selectParagraph(Math.max(0,state.selectedParagraph-1)); };
+  $('#nextBtn').onclick=()=>{ stopAllSpeech({preserveSleep:true}); state.selectedCharOffset=0;state.selectedWordEnd=0;selectParagraph(Math.min(ch.paragraphs.length-1,state.selectedParagraph+1)); };
   const repeatBtn=$('#repeatBtn');if(repeatBtn)repeatBtn.onclick=()=>{
     const enabled=!prefs().repeatParagraph;savePrefs({repeatParagraph:enabled});
     repeatBtn.classList.toggle('active',enabled);repeatBtn.setAttribute('aria-pressed',String(enabled));
@@ -2637,7 +2652,14 @@ function wireReaderSearchResults(book){
     if(play){await new Promise(resolve=>requestAnimationFrame(resolve));startSpeechFromSelection()}
   });
 }
-async function selectParagraph(i,noScroll=false,preserveWord=false){ state.selectedParagraph=i; if(!preserveWord){state.selectedCharOffset=0;state.selectedWordEnd=0;} $$('#readingPage p').forEach(p=>p.classList.toggle('selected',+p.dataset.p===i)); $('#positionRange').value=i; $('#positionLabel').textContent=readerPositionLabel(book,state.chapterIndex,i,$('#readingPage').children.length); const book=await idbGet('books',state.bookId); await saveProgress(book); updateReadingTimeMeta(book); if(!noScroll) scrollSelected(); }
+async function selectParagraph(i,noScroll=false,preserveWord=false){
+  const book=await idbGet('books',state.bookId);if(!book)return;
+  state.selectedParagraph=i;if(!preserveWord){state.selectedCharOffset=0;state.selectedWordEnd=0;}
+  $('#readingPage p').forEach(p=>p.classList.toggle('selected',+p.dataset.p===i));
+  const range=$('#positionRange');if(range)range.value=i;
+  const label=$('#positionLabel');if(label)label.textContent=readerPositionLabel(book,state.chapterIndex,i,$('#readingPage')?.children.length||0);
+  await saveProgress(book);updateReadingTimeMeta(book);if(!noScroll)scrollSelected();
+}
 function scrollSelected(smooth=true){ const el=$(`#readingPage p[data-p="${state.selectedParagraph}"]`); if(el) el.scrollIntoView({block:'center',behavior:smooth?'smooth':'auto'}); }
 function updateFollowControl(){
   const btn=$('#resumeFollowBtn');if(btn)btn.classList.toggle('hidden',!state.followNarrationSuspended);
@@ -2673,7 +2695,7 @@ async function saveProgress(book,{snapshot=null,completed=null,updatePrefs=true}
 function persistReadingProgress(){
   const bookId=state.bookId,snapshot=progressSnapshot();
   if(!bookId)return;
-  idbGet('books',bookId).then(book=>book&&saveProgress(book,{snapshot,updatePrefs:false})).catch(()=>{});
+  idbGet('books',bookId).then(book=>book&&saveProgress(book,{snapshot,updatePrefs:false})).catch(e=>storageWriteError(e));
 }
 function updateVoiceSummary(){
   const sel=$('#voiceSelect'); const summary=$('#voiceSummary'); const st=$('#voiceStatus');
@@ -2881,7 +2903,7 @@ function dialogueSamanthaVoice(){
   const p=prefs(),voices=samanthaVoices(),key=p.dialogueVoiceKey||'';
   return voices.find(v=>voiceKey(v)===key)||mainSamanthaVoice();
 }
-async function speakBoundedRange(book,chapterIndex,paragraphIndex,start=0,end=null,{onDone=null,movePosition=false,preserveSleep=false}={}){
+async function speakBoundedRange(book,chapterIndex,paragraphIndex,start=0,end=null,{onDone=null,movePosition=false,preserveSleep=true}={}){
   const ch=book?.chapters?.[chapterIndex],text=String(ch?.paragraphs?.[paragraphIndex]||'');
   if(!text){showToast('There is no passage to play.');return false}
   const a=Math.max(0,Math.min(Number(start)||0,text.length)),b=Math.max(a,Math.min(end===null?text.length:Number(end)||a,text.length));
@@ -2936,9 +2958,10 @@ async function speakBoundedRange(book,chapterIndex,paragraphIndex,start=0,end=nu
     u.rate=Math.max(.5,Math.min(2,isDialogue?baseRate+Number(p.dialogueRateOffset||0):baseRate));
     u.pitch=isDialogue?Number(p.dialoguePitch??1.15):1;u.volume=1;
     if(v){u.voice=v;u.lang=v.lang||'en-US'}else u.lang='en-US';
-    u.onboundary=e=>{if(token!==state.playbackToken||state.activeUtterance!==u)return;const rel=Number(e.charIndex);if(Number.isFinite(rel))state.liveCharOffset=piece.mapIndex(rel)};
-    u.onend=()=>{if(token!==state.playbackToken||state.activeUtterance!==u)return;state.activeUtterance=null;next()};
-    u.onerror=e=>{if(token!==state.playbackToken||state.activeUtterance!==u)return;state.activeUtterance=null;if(e.error==='canceled'||e.error==='interrupted')return;showToast('Samantha could not play this passage.');finishSpeech(token,{preserveSleep})};
+    u.onstart=()=>{if(token!==state.playbackToken||state.activeUtterance!==u)return;armSpeechWatchdog(piece.text,u.rate)};
+    u.onboundary=e=>{if(token!==state.playbackToken||state.activeUtterance!==u)return;const rel=Number(e.charIndex);if(Number.isFinite(rel)){state.liveCharOffset=piece.mapIndex(rel);armSpeechWatchdog(piece.text.slice(Math.max(0,rel)),u.rate)}};
+    u.onend=()=>{if(token!==state.playbackToken||state.activeUtterance!==u)return;state.activeUtterance=null;state.speechWatchdogDeadline=0;next()};
+    u.onerror=e=>{if(token!==state.playbackToken||state.activeUtterance!==u)return;state.activeUtterance=null;if(e.error==='canceled')return;if(e.error==='interrupted'){handleSpeechInterrupted(token,'Samantha was interrupted');return}showToast('Samantha could not play this passage.');finishSpeech(token,{preserveSleep})};
     speechSynthesis.resume();speechSynthesis.speak(u);
   };
   next();return true;
@@ -2971,6 +2994,37 @@ function restartNarrationForSettingChange(message='Playback setting changed'){
     showToast(message);
   });
 }
+function clearSpeechWatchdog(){
+  if(state.speechWatchdogId){clearInterval(state.speechWatchdogId);state.speechWatchdogId=null}
+  state.speechWatchdogDeadline=0;
+}
+function armSpeechWatchdog(text='',rate=1){
+  const words=Math.max(1,String(text||'').trim().split(/\s+/).filter(Boolean).length);
+  const expected=(words/Math.max(80,155*Number(rate||1)))*60000;
+  state.speechWatchdogDeadline=Date.now()+Math.max(14000,Math.min(90000,expected*2.5+6000));
+  if(!state.speechWatchdogId)state.speechWatchdogId=setInterval(()=>checkSpeechWatchdog(false),5000);
+}
+function speechResumeOffset(){
+  const live=Number(state.liveCharOffset);
+  if(Number.isFinite(live)&&live>=0)state.selectedCharOffset=live;
+  state.selectedWordEnd=Math.max(state.selectedCharOffset||0,state.selectedWordEnd||0);
+}
+function handleSpeechInterrupted(token,message='Narration was interrupted'){
+  if(token!==state.playbackToken)return;
+  speechResumeOffset();persistReadingProgress();
+  finishSpeech(token,{preserveSleep:true});
+  showToast(message+' · tap Play to resume');
+}
+function checkSpeechWatchdog(fromVisibility=false){
+  if(!state.isSpeaking||state.isPaused||currentEngine()!=='device'||!state.speechWatchdogDeadline)return;
+  if(document.visibilityState!=='visible'&&!fromVisibility)return;
+  if(Date.now()<=state.speechWatchdogDeadline)return;
+  const bookId=state.bookId;
+  speechResumeOffset();persistReadingProgress();
+  stopAllSpeech({preserveSleep:true});
+  showToast('Narration stalled while Storyline was in the background · resuming');
+  if(state.route==='reader'&&bookId)requestAnimationFrame(()=>startSpeechFromSelection());
+}
 function toggleSpeech(){
   if(currentEngine()==='local'){
     if(state.isSpeaking){stopAllSpeech();return}
@@ -2979,7 +3033,7 @@ function toggleSpeech(){
   if(!state.voicesReady){showToast('Device voices are still loading.');return}
   if(!('speechSynthesis' in window) || typeof SpeechSynthesisUtterance==='undefined'){ showToast('Text-to-speech is not available in this browser.'); return; }
   if(state.isSpeaking&&!state.isPaused){ speechSynthesis.pause(); state.isPaused=true; $('#playBtn').textContent='▶'; setMediaPlaybackState('paused'); return; }
-  if(state.isSpeaking&&state.isPaused){ speechSynthesis.resume(); state.isPaused=false; $('#playBtn').textContent='Ⅱ'; setMediaPlaybackState('playing'); return; }
+  if(state.isSpeaking&&state.isPaused){ speechSynthesis.resume(); state.isPaused=false; $('#playBtn').textContent='Ⅱ'; setMediaPlaybackState('playing'); armSpeechWatchdog('',prefs().rate||1.05); return; }
   startSpeech(true);
 }
 function startSpeech(fromSelected=true,{preserveFollow=false}={}){
@@ -3106,17 +3160,19 @@ function startSpeech(fromSelected=true,{preserveFollow=false}={}){
       u.rate=Math.max(.5,Math.min(2,isDialogue?baseRate+Number(settings.dialogueRateOffset||0):baseRate));
       u.volume=1;u.pitch=isDialogue?Number(settings.dialoguePitch??1.15):1;
       if(v){u.voice=v;u.lang=v.lang}else{u.lang='en-US'}
-      u.onstart=()=>{if(token===state.playbackToken&&state.activeUtterance===u)requestWakeLock()};
+      u.onstart=()=>{if(token===state.playbackToken&&state.activeUtterance===u){requestWakeLock();armSpeechWatchdog(piece.text,u.rate)}};
       u.onboundary=e=>{
         if(token!==state.playbackToken||state.activeUtterance!==u||!onMappedBoundary)return;
         const rel=Number(e.charIndex);if(!Number.isFinite(rel))return;
+        armSpeechWatchdog(piece.text.slice(Math.max(0,rel)),u.rate);
         onMappedBoundary(piece.mapIndex(rel));
       };
-      u.onend=()=>{if(token!==state.playbackToken||state.activeUtterance!==u)return;state.activeUtterance=null;onDone()};
+      u.onend=()=>{if(token!==state.playbackToken||state.activeUtterance!==u)return;state.activeUtterance=null;state.speechWatchdogDeadline=0;onDone()};
       u.onerror=e=>{
         if(token!==state.playbackToken||state.activeUtterance!==u)return;
         state.activeUtterance=null;
-        if(e.error==='canceled'||e.error==='interrupted')return;
+        if(e.error==='canceled')return;
+        if(e.error==='interrupted'){handleSpeechInterrupted(token,'Samantha was interrupted');return}
         showToast('Samantha could not continue reading.');finishSpeech(token);
       };
       speechSynthesis.speak(u);
@@ -3199,6 +3255,7 @@ function replayCurrentSentence(){
   state.replayCurrent();
 }
 function stopAllSpeech({preserveSleep=false}={}){
+  clearSpeechWatchdog();
   state.playbackToken++;
   try{speechSynthesis.cancel()}catch{}
   try{if(window.meSpeak)meSpeak.stop()}catch{}
@@ -3444,6 +3501,8 @@ function markSpeaking(i){
 }
 function finishSpeech(token=null,{preserveSleep=false}={}){
   if(token!==null&&token!==state.playbackToken)return;
+  clearSpeechWatchdog();
+  if(!preserveSleep)state.gentleStopPending=false;
   state.isSpeaking=false;state.isPaused=false;state.speakingParagraph=null;state.activeUtterance=null;state.localSpeakingId=null;
   setMediaPlaybackState('none');
   state.speakingPIndex=null;state.speakingSIndex=null;state.speakingSegments=null;state.replayCurrent=null;
@@ -4077,7 +4136,7 @@ setupMediaSession();
 fileInput.addEventListener('change',e=>{importFile(e.target.files[0]);e.target.value=''});
 window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();state.deferredPrompt=e;$('#installBtn').classList.remove('hidden')});
 $('#installBtn').onclick=async()=>{if(state.deferredPrompt){state.deferredPrompt.prompt();await state.deferredPrompt.userChoice;state.deferredPrompt=null;$('#installBtn').classList.add('hidden')}};
-document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&state.isSpeaking)requestWakeLock()});
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&state.isSpeaking){requestWakeLock();checkSpeechWatchdog(true)}});
 window.addEventListener('hashchange',()=>{if(db&&extractHandoffCode(location.href))processHandoffFromLocation()});
 // Do not cancel speech merely because iOS backgrounds the installed app.
 if('serviceWorker' in navigator) window.addEventListener('load',()=>navigator.serviceWorker.register('./sw.js').catch(()=>{}));
