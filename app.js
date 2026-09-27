@@ -2987,6 +2987,7 @@ function startSpeech(fromSelected=true,{preserveFollow=false}={}){
 
   const continueChapter=async()=>{
     if(token!==state.playbackToken||!state.isSpeaking)return;
+    if(state.gentleStopPending){completeGentleSleepStop(token);return}
     let fresh=await idbGet('books',state.bookId);
     if(token!==state.playbackToken||!state.isSpeaking)return;
     if(!fresh){finishSpeech(token);return}
@@ -2996,11 +2997,14 @@ function startSpeech(fromSelected=true,{preserveFollow=false}={}){
     let nextIndex=currentIndex+1;
     if(fresh.webReader){
       try{
-        fresh=await extendWebReaderNext(fresh,currentIndex);
-        let target=fresh.chapters[nextIndex];
-        if(!target){await saveProgress(fresh,{completed:true});finishSpeech(token);return}
-        const targetUrl=target.sourceUrl;
-        if(!target.loaded||!target.paragraphs?.length)fresh=await ensureWebReaderChapter(fresh,nextIndex,{syncState:false});
+        const current=fresh.chapters[currentIndex],nextUrl=current?.nextUrl||null;
+        if(nextUrl){
+          if(!fresh.chapters.some(ch=>sameWebReaderUrl(ch.sourceUrl,nextUrl)))fresh=await extendWebReaderNext(fresh,currentIndex);
+          nextIndex=fresh.chapters.findIndex(ch=>sameWebReaderUrl(ch.sourceUrl,nextUrl));
+        }else nextIndex=currentIndex+1;
+        if(nextIndex<0||nextIndex>=fresh.chapters.length){await saveProgress(fresh,{completed:true});finishSpeech(token);return}
+        let target=fresh.chapters[nextIndex],targetUrl=target?.sourceUrl||null;
+        if(!target?.loaded||!target.paragraphs?.length)fresh=await ensureWebReaderChapter(fresh,nextIndex,{syncState:false});
         if(targetUrl){const moved=fresh.chapters.findIndex(ch=>sameWebReaderUrl(ch.sourceUrl,targetUrl));if(moved>=0)nextIndex=moved}
       }catch(e){
         finishSpeech(token);
@@ -3010,7 +3014,7 @@ function startSpeech(fromSelected=true,{preserveFollow=false}={}){
     }else if(currentIndex>=fresh.chapters.length-1){
       await saveProgress(fresh,{completed:true});finishSpeech(token);return;
     }
-    if(nextIndex>=fresh.chapters.length){await saveProgress(fresh,{completed:true});finishSpeech(token);return}
+    if(nextIndex<0||nextIndex>=fresh.chapters.length){await saveProgress(fresh,{completed:true});finishSpeech(token);return}
     state.readerBook=fresh;
     const completedLabel=chapterLabel(fresh.chapters[currentIndex],fresh);
     state.chapterIndex=nextIndex;state.selectedParagraph=0;state.selectedCharOffset=0;state.selectedWordEnd=0;state.speakingParagraph=null;
@@ -3232,6 +3236,7 @@ async function startLocalSpeech(fromSelected=true,{preserveFollow=false}={}){
 
   const continueLocalChapter=async()=>{
     if(token!==state.playbackToken||!state.isSpeaking)return;
+    if(state.gentleStopPending){completeGentleSleepStop(token);return}
     let fresh=await idbGet('books',state.bookId);
     if(token!==state.playbackToken||!state.isSpeaking)return;
     if(!fresh){finishSpeech(token);return}
@@ -3241,11 +3246,14 @@ async function startLocalSpeech(fromSelected=true,{preserveFollow=false}={}){
     let nextIndex=currentIndex+1;
     if(fresh.webReader){
       try{
-        fresh=await extendWebReaderNext(fresh,currentIndex);
-        let target=fresh.chapters[nextIndex];
-        if(!target){await saveProgress(fresh,{completed:true});finishSpeech(token);return}
-        const targetUrl=target.sourceUrl;
-        if(!target.loaded||!target.paragraphs?.length)fresh=await ensureWebReaderChapter(fresh,nextIndex,{syncState:false});
+        const current=fresh.chapters[currentIndex],nextUrl=current?.nextUrl||null;
+        if(nextUrl){
+          if(!fresh.chapters.some(ch=>sameWebReaderUrl(ch.sourceUrl,nextUrl)))fresh=await extendWebReaderNext(fresh,currentIndex);
+          nextIndex=fresh.chapters.findIndex(ch=>sameWebReaderUrl(ch.sourceUrl,nextUrl));
+        }else nextIndex=currentIndex+1;
+        if(nextIndex<0||nextIndex>=fresh.chapters.length){await saveProgress(fresh,{completed:true});finishSpeech(token);return}
+        let target=fresh.chapters[nextIndex],targetUrl=target?.sourceUrl||null;
+        if(!target?.loaded||!target.paragraphs?.length)fresh=await ensureWebReaderChapter(fresh,nextIndex,{syncState:false});
         if(targetUrl){const moved=fresh.chapters.findIndex(ch=>sameWebReaderUrl(ch.sourceUrl,targetUrl));if(moved>=0)nextIndex=moved}
       }catch(e){
         finishSpeech(token);
@@ -3255,7 +3263,7 @@ async function startLocalSpeech(fromSelected=true,{preserveFollow=false}={}){
     }else if(currentIndex>=fresh.chapters.length-1){
       await saveProgress(fresh,{completed:true});finishSpeech(token);return;
     }
-    if(nextIndex>=fresh.chapters.length){await saveProgress(fresh,{completed:true});finishSpeech(token);return}
+    if(nextIndex<0||nextIndex>=fresh.chapters.length){await saveProgress(fresh,{completed:true});finishSpeech(token);return}
     state.readerBook=fresh;
     const completedLabel=chapterLabel(fresh.chapters[currentIndex],fresh);
     state.chapterIndex=nextIndex;state.selectedParagraph=0;state.selectedCharOffset=0;state.selectedWordEnd=0;state.speakingParagraph=null;
