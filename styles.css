@@ -946,3 +946,7 @@ body{min-height:100dvh}.app-shell{min-height:100dvh;padding-bottom:86px}.topbar{
   transition:.2s;
 }
 .modal-toast.show{opacity:1;transform:translateY(0)}
+
+/* Build 56: visible non-destructive startup state */
+.studio-loading{max-width:690px;margin:40px auto;padding:24px;border:1px solid var(--line);border-radius:18px;background:var(--panel);color:var(--ink)}
+.studio-loading p{color:var(--muted);line-height:1.55}
