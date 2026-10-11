@@ -2719,7 +2719,7 @@ function wireReaderSearchResults(book){
 async function selectParagraph(i,noScroll=false,preserveWord=false){
   const book=await idbGet('books',state.bookId);if(!book)return;
   state.selectedParagraph=i;if(!preserveWord){state.selectedCharOffset=0;state.selectedWordEnd=0;}
-  $('#readingPage p').forEach(p=>p.classList.toggle('selected',+p.dataset.p===i));
+  $$('#readingPage p').forEach(p=>p.classList.toggle('selected',+p.dataset.p===i));
   const range=$('#positionRange');if(range)range.value=i;
   const label=$('#positionLabel');if(label)label.textContent=readerPositionLabel(book,state.chapterIndex,i,$('#readingPage')?.children.length||0);
   await saveProgress(book);updateReadingTimeMeta(book);if(!noScroll)scrollSelected();
@@ -4170,8 +4170,8 @@ function wireItemButtons(visibleItems=[]){
     await idbPut('items',i);
     savePrefs({lastBookId:state.bookId});await saveProgress(book);navigate('reader');
   });
-  $('[data-edit-item]').forEach(b=>b.onclick=async()=>{const item=await idbGet('items',b.dataset.editItem);if(item)editTextRevisionItem(item)});
-  $('[data-edit-transcript]').forEach(b=>b.onclick=async()=>{
+  $$('[data-edit-item]').forEach(b=>b.onclick=async()=>{const item=await idbGet('items',b.dataset.editItem);if(item)editTextRevisionItem(item)});
+  $$('[data-edit-transcript]').forEach(b=>b.onclick=async()=>{
     const item=await idbGet('items',b.dataset.editTranscript);if(item)editVoiceTranscript(item);
   });
   $$('[data-rerecord-transcript]').forEach(b=>b.onclick=async()=>{
@@ -4195,7 +4195,7 @@ function wireItemButtons(visibleItems=[]){
   $$('[data-copy]').forEach(b=>b.onclick=()=>{const i=visibleMap.get(b.dataset.copy);if(i)copyItemsForChat([i]);else showToast('That revision item is no longer available.')});
 }
 
-$('[data-nav]').forEach(b=>b.addEventListener('click',()=>{if(b.dataset.nav===state.route)return;navigate(b.dataset.nav)}));
+$$('[data-nav]').forEach(b=>b.addEventListener('click',()=>{if(b.dataset.nav===state.route)return;navigate(b.dataset.nav)}));
 $$('[data-reader-act]').forEach(b=>b.addEventListener('click',async()=>{
   if(state.route!=='reader'||!state.bookId)return;
   document.body.classList.remove('mobile-tools-open');
