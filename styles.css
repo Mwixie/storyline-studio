@@ -950,3 +950,37 @@ body{min-height:100dvh}.app-shell{min-height:100dvh;padding-bottom:86px}.topbar{
 /* Build 56: visible non-destructive startup state */
 .studio-loading{max-width:690px;margin:40px auto;padding:24px;border:1px solid var(--line);border-radius:18px;background:var(--panel);color:var(--ink)}
 .studio-loading p{color:var(--muted);line-height:1.55}
+
+/* Build 58: Car Mode — large, high-contrast controls for setup before driving */
+body.car-mode{overflow:hidden}
+body.car-mode .topbar,body.car-mode .bottom-nav,body.car-mode #view{visibility:hidden;pointer-events:none}
+body.car-mode #toast{z-index:3600;bottom:18px}
+.car-mode-screen{
+  position:fixed;inset:0;z-index:3500;overflow:auto;
+  color:#fff5e9;background:radial-gradient(circle at 55% -15%,#4d304b,#17101d 55%,#100e16 100%);
+  padding:calc(20px + env(safe-area-inset-top)) max(18px,env(safe-area-inset-right)) calc(20px + env(safe-area-inset-bottom)) max(18px,env(safe-area-inset-left));
+  -webkit-overflow-scrolling:touch;
+}
+.car-mode-shell{width:min(660px,100%);min-height:calc(100dvh - 65px);margin:auto;display:flex;flex-direction:column;justify-content:space-between;gap:20px}
+.car-mode-top{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.car-mode-eyebrow{font-size:12px;letter-spacing:.15em;font-weight:800;color:#e8c986}
+.car-mode-exit{border:1px solid #88776b;border-radius:13px;background:rgba(255,255,255,.08);color:#fff0d9;min-height:50px;padding:12px 16px;font-weight:700}
+.car-mode-book{display:grid;justify-items:center;gap:13px;text-align:center;padding-top:15px}
+.car-mode-cover{width:108px;height:108px;border:2px solid #caa86e;border-radius:23px;display:grid;place-items:center;background:linear-gradient(145deg,#54405a,#201a2b);font:700 64px Georgia,serif;color:#f3dca9;box-shadow:0 15px 45px rgba(0,0,0,.35)}
+.car-mode-book h1{font:700 clamp(32px,7vw,52px)/1.1 Georgia,serif;max-width:100%;overflow-wrap:anywhere;margin:0}
+.car-mode-book h2{font:500 clamp(18px,4.5vw,28px)/1.25 Georgia,serif;color:#e3c994}
+.car-mode-player{display:grid;gap:28px}
+.car-mode-buttons{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:clamp(9px,4vw,30px)}
+.car-mode-buttons button{touch-action:manipulation;cursor:pointer;color:#fff7e9}
+.car-play{width:clamp(102px,26vw,132px);height:clamp(102px,26vw,132px);border-radius:100px;border:2px solid #f0dbac;background:linear-gradient(155deg,#e8c782,#b79455);color:#221522!important;font-size:clamp(42px,10vw,56px);font-weight:800;display:grid;place-items:center}
+.car-skip{min-height:86px;border:1px solid #817180;border-radius:18px;background:rgba(255,255,255,.055);display:grid;place-items:center;gap:2px;font-size:26px;font-weight:700}
+.car-skip span{font-size:14px}
+.car-skip:disabled{opacity:.3}
+.car-mode-progress{display:grid;gap:12px}
+.car-mode-progress-track{height:10px;border-radius:100px;background:#4a394b;overflow:hidden}
+.car-mode-progress-track span{display:block;width:0;height:100%;background:#efcc82;border-radius:100px;transition:width .2s}
+.car-mode-progress p{margin:0;text-align:center;font-size:clamp(15px,3vw,19px);color:#ead6b6}
+.car-mode-sleep{align-self:stretch;min-height:66px;background:rgba(255,255,255,.065);border:1px solid #817180;border-radius:17px;color:#fff1df;font-size:18px;font-weight:700}
+.car-mode-hint{text-align:center;font-size:12px;line-height:1.4;color:#c6b9c9;margin:0}
+@media(max-height:680px){.car-mode-shell{gap:12px}.car-mode-cover{width:64px;height:64px;font-size:40px}.car-mode-book{gap:7px}.car-mode-player{gap:16px}.car-mode-sleep{min-height:54px}}
+@media(max-width:430px){.car-mode-shell{gap:17px}.car-mode-buttons{gap:10px}.car-skip{min-height:82px;font-size:23px}.car-skip span{font-size:12px}.car-mode-cover{width:86px;height:86px;font-size:52px}}
