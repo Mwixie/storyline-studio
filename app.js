@@ -2979,7 +2979,7 @@ function holdCarAudio(){
   const audio=ensureCarAudio();if(!audio)return;
   try{
     const task=audio.play();
-    if(task?.catch)task.catch(e=>{
+    if(task?.then)task.then(()=>updateNowPlaying()).catch(e=>{
       if(e?.name==='NotAllowedError'){console.warn('Car audio requires a user gesture',e);return}
       state.carAudioFailed=true;console.warn('Car audio hold unavailable',e);
     });
@@ -3093,11 +3093,12 @@ function setupMediaSession(){
   const safe=(name,handler)=>{try{navigator.mediaSession.setActionHandler(name,handler)}catch{}};
   safe('play',()=>{
     if(state.isSpeaking&&state.isPaused){
+      if(state.carMode)holdCarAudio();
       setDeviceNarrationAudioSession(true);
       try{speechSynthesis.resume()}catch{}
       state.isPaused=false;
       const b=$('#playBtn');if(b){b.textContent='Ⅱ';b.setAttribute('aria-label','Pause')}
-      setMediaPlaybackState('playing');
+      setMediaPlaybackState('playing');updateCarModeScreen();
       return;
     }
     if(!state.isSpeaking)startSpeechFromSelection();
@@ -3107,11 +3108,11 @@ function setupMediaSession(){
     try{speechSynthesis.pause()}catch{}
     state.isPaused=true;
     const b=$('#playBtn');if(b){b.textContent='▶';b.setAttribute('aria-label','Play')}
-    setMediaPlaybackState('paused');
+    setMediaPlaybackState('paused');updateCarModeScreen();
   });
-  safe('previoustrack',()=>{mediaMoveParagraph(-1)});
-  safe('nexttrack',()=>{mediaMoveParagraph(1)});
-  safe('stop',()=>stopAllSpeech());
+  safe('previoustrack',()=>{state.carMode?carMoveChapter(-1):mediaMoveParagraph(-1)});
+  safe('nexttrack',()=>{state.carMode?carMoveChapter(1):mediaMoveParagraph(1)});
+  safe('stop',()=>{cancelCarAutoResume();stopAllSpeech()});
 }
 function mainSamanthaVoice(){
   const p=prefs(),voices=samanthaVoices(),key=p.voiceKey||'';
@@ -3234,18 +3235,27 @@ function speechResumeOffset(){
 function handleSpeechInterrupted(token,message='Narration was interrupted'){
   if(token!==state.playbackToken)return;
   speechResumeOffset();persistReadingProgress();
+  const interruptedBookId=state.bookId,interruptedChapter=state.chapterIndex;
   finishSpeech(token,{preserveSleep:true});
-  showToast(message+' · tap Play to resume');
+  releaseCarAudio();updateCarModeScreen();
+  if(state.carMode){
+    showToast(message+' · will try resuming after the interruption');
+    queueCarAutoResume(interruptedBookId,interruptedChapter);
+  }else showToast(message+' · tap Play to resume');
 }
 function checkSpeechWatchdog(fromVisibility=false){
   if(!state.isSpeaking||state.isPaused||currentEngine()!=='device'||!state.speechWatchdogDeadline)return;
-  if(document.visibilityState!=='visible'&&!fromVisibility)return;
+  if(!state.carMode&&document.visibilityState!=='visible'&&!fromVisibility)return;
   if(Date.now()<=state.speechWatchdogDeadline)return;
   const bookId=state.bookId;
   speechResumeOffset();persistReadingProgress();
+  try{speechSynthesis.resume()}catch{}
   stopAllSpeech({preserveSleep:true});
-  showToast('Narration stalled while Storyline was in the background · resuming');
-  if(state.route==='reader'&&bookId)requestAnimationFrame(()=>startSpeechFromSelection());
+  showToast('Narration stalled · trying to resume from the saved position');
+  if(state.route==='reader'&&bookId){
+    if(state.carMode)setTimeout(()=>{if(state.route==='reader'&&state.bookId===bookId)startSpeechFromSelection()},250);
+    else requestAnimationFrame(()=>startSpeechFromSelection());
+  }
 }
 function toggleSpeech(){
   if(currentEngine()==='local'){
@@ -3254,8 +3264,8 @@ function toggleSpeech(){
   }
   if(!state.voicesReady){showToast('Device voices are still loading.');return}
   if(!('speechSynthesis' in window) || typeof SpeechSynthesisUtterance==='undefined'){ showToast('Text-to-speech is not available in this browser.'); return; }
-  if(state.isSpeaking&&!state.isPaused){ speechSynthesis.pause(); state.isPaused=true; $('#playBtn').textContent='▶'; setMediaPlaybackState('paused'); return; }
-  if(state.isSpeaking&&state.isPaused){ setDeviceNarrationAudioSession(true); speechSynthesis.resume(); state.isPaused=false; $('#playBtn').textContent='Ⅱ'; setMediaPlaybackState('playing'); armSpeechWatchdog('',prefs().rate||1.05); return; }
+  if(state.isSpeaking&&!state.isPaused){ speechSynthesis.pause(); state.isPaused=true; $('#playBtn').textContent='▶'; setMediaPlaybackState('paused'); updateCarModeScreen(); return; }
+  if(state.isSpeaking&&state.isPaused){ if(state.carMode)holdCarAudio();setDeviceNarrationAudioSession(true); speechSynthesis.resume(); state.isPaused=false; $('#playBtn').textContent='Ⅱ'; setMediaPlaybackState('playing'); armSpeechWatchdog('',prefs().rate||1.05); updateCarModeScreen(); return; }
   startSpeech(true);
 }
 function startSpeech(fromSelected=true,{preserveFollow=false}={}){
@@ -3268,8 +3278,10 @@ function startSpeech(fromSelected=true,{preserveFollow=false}={}){
   const book=state.readerBook;
   if(!book){showToast('The manuscript is still loading.');return}
 
+  cancelCarAutoResume();
   const token=++state.playbackToken;
   try{speechSynthesis.cancel()}catch{}
+  if(state.carMode)holdCarAudio();
   setDeviceNarrationAudioSession(true);
   speechSynthesis.resume();
 
@@ -3278,7 +3290,7 @@ function startSpeech(fromSelected=true,{preserveFollow=false}={}){
   let firstOffset=fromSelected?(state.selectedCharOffset||0):0;
 
   state.isSpeaking=true;state.isPaused=false;
-  setMediaPlaybackState('playing');updateNowPlaying();
+  setMediaPlaybackState('playing');updateNowPlaying();updateCarModeScreen();
   requestWakeLock();
   const st=$('#voiceStatus');
   if(st)st.textContent=state.chapterTransitionNotice||'Starting…';
@@ -3478,8 +3490,9 @@ function replayCurrentSentence(){
   if(!state.isSpeaking||!state.replayCurrent){showToast('Start reading first.');return}
   state.replayCurrent();
 }
-function stopAllSpeech({preserveSleep=false}={}){
+function stopAllSpeech({preserveSleep=false,preserveCarAudio=false}={}){
   clearSpeechWatchdog();
+  cancelCarAutoResume();
   if(state.activeEngine==='device')setDeviceNarrationAudioSession(false);
   state.playbackToken++;
   try{speechSynthesis.cancel()}catch{}
@@ -3488,6 +3501,7 @@ function stopAllSpeech({preserveSleep=false}={}){
   setMediaPlaybackState('none');
   state.speakingPIndex=null;state.speakingSIndex=null;state.speakingSegments=null;state.replayCurrent=null;state.liveCharOffset=null;
   if(!preserveSleep)clearSleepTimer();releaseWakeLock();
+  releaseCarAudio();updateCarModeScreen();
   const b=$('#playBtn');if(b){b.textContent='▶';b.setAttribute('aria-label','Play')}
   const replay=$('#replayBtn');if(replay)replay.disabled=true;
   const st=$('#voiceStatus');if(st)st.textContent='Device voice ready';
@@ -3719,6 +3733,7 @@ function testVoice(){
 }
 function markSpeaking(i){
   $$('#readingPage p').forEach(p=>p.classList.toggle('speaking',+p.dataset.p===i));
+  if(state.carMode)updateCarModeScreen();
   const el=$(`#readingPage p[data-p="${i}"]`);
   followNarrationElement(el);
   const st=$('#voiceStatus');
@@ -3733,6 +3748,7 @@ function finishSpeech(token=null,{preserveSleep=false}={}){
   setMediaPlaybackState('none');
   state.speakingPIndex=null;state.speakingSIndex=null;state.speakingSegments=null;state.replayCurrent=null;
   if(!preserveSleep)clearSleepTimer();releaseWakeLock();
+  releaseCarAudio();updateCarModeScreen();
   const b=$('#playBtn');if(b){b.textContent='▶';b.setAttribute('aria-label','Play')}
   const replay=$('#replayBtn');if(replay)replay.disabled=true;
   $$('#readingPage p').forEach(p=>p.classList.remove('speaking'));clearSentenceHighlights();
@@ -4377,7 +4393,12 @@ setupMediaSession();
 fileInput.addEventListener('change',e=>{importFile(e.target.files[0]);e.target.value=''});
 window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();state.deferredPrompt=e;$('#installBtn').classList.remove('hidden')});
 $('#installBtn').onclick=async()=>{if(state.deferredPrompt){state.deferredPrompt.prompt();await state.deferredPrompt.userChoice;state.deferredPrompt=null;$('#installBtn').classList.add('hidden')}};
-document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&state.isSpeaking){requestWakeLock();checkSpeechWatchdog(true)}});
+document.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState==='visible'){
+    if(state.isSpeaking){requestWakeLock();checkSpeechWatchdog(true)}
+    if(state.carResumePending)scheduleCarAutoResume();
+  }
+});
 window.addEventListener('pagehide',()=>{if(state.isSpeaking){speechResumeOffset();persistReadingProgress()}});
 window.addEventListener('hashchange',()=>{if(db&&extractHandoffCode(location.href))processHandoffFromLocation()});
 window.addEventListener('popstate',e=>{
