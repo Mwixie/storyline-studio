@@ -14,7 +14,9 @@ const state = {
   liveCharOffset:null, pendingHandoffContext:null, handoffScanStop:null,
   sharedPronunciations:[], gentleStopPending:false, pendingRevisionPrompt:null, revisionDiff:null,
   reviewSession:null, reviewAudio:null, reviewAudioUrl:null, reviewAutoTimer:null,
-  speechWatchdogId:null, speechWatchdogDeadline:0, storageWarningAt:0
+  speechWatchdogId:null, speechWatchdogDeadline:0, storageWarningAt:0,
+  carMode:false, carAudio:null, carAudioUrl:null, carAudioFailed:false,
+  carResumePending:null, carResumeTimer:null, carAudioSessionState:null
 };
 
 const PREF='storyline.prefs.v1';
@@ -2948,6 +2950,144 @@ async function mediaMoveParagraph(delta){
   updateNowPlaying();
   startSpeechFromSelection();
 }
+
+/* Build 58: car-friendly controls and optional browser-audio session hold.
+   Pure PCM silence is an experiment; iOS may suspend Web Speech despite it. */
+function makeSilenceWavUrl(){
+  const rate=8000,seconds=10,samples=rate*seconds,buffer=new ArrayBuffer(44+samples*2),dv=new DataView(buffer);
+  const write=(at,value)=>{for(let i=0;i<value.length;i++)dv.setUint8(at+i,value.charCodeAt(i))};
+  write(0,'RIFF');dv.setUint32(4,36+samples*2,true);write(8,'WAVE');write(12,'fmt ');
+  dv.setUint32(16,16,true);dv.setUint16(20,1,true);dv.setUint16(22,1,true);
+  dv.setUint32(24,rate,true);dv.setUint32(28,rate*2,true);
+  dv.setUint16(32,2,true);dv.setUint16(34,16,true);
+  write(36,'data');dv.setUint32(40,samples*2,true);
+  // All samples remain exactly zero; volume is not set to zero.
+  return URL.createObjectURL(new Blob([buffer],{type:'audio/wav'}));
+}
+function ensureCarAudio(){
+  if(state.carAudio)return state.carAudio;
+  try{
+    const audio=new Audio(),url=makeSilenceWavUrl();
+    audio.src=url;audio.loop=true;audio.preload='auto';audio.volume=1;
+    audio.setAttribute('aria-hidden','true');
+    state.carAudio=audio;state.carAudioUrl=url;
+    return audio;
+  }catch(e){console.warn('Car audio session could not be prepared',e);return null}
+}
+function holdCarAudio(){
+  if(!state.carMode||state.carAudioFailed)return;
+  const audio=ensureCarAudio();if(!audio)return;
+  try{
+    const task=audio.play();
+    if(task?.catch)task.catch(e=>{
+      if(e?.name==='NotAllowedError'){console.warn('Car audio requires a user gesture',e);return}
+      state.carAudioFailed=true;console.warn('Car audio hold unavailable',e);
+    });
+  }catch(e){console.warn('Car audio hold failed',e)}
+}
+function releaseCarAudio(){
+  if(!state.carAudio)return;
+  try{state.carAudio.pause();state.carAudio.currentTime=0}catch{}
+}
+function cancelCarAutoResume(){
+  if(state.carResumeTimer){clearTimeout(state.carResumeTimer);state.carResumeTimer=null}
+  state.carResumePending=null;
+}
+function queueCarAutoResume(bookId,chapterIndex){
+  if(!state.carMode||!bookId)return;
+  state.carResumePending={bookId,chapterIndex,createdAt:Date.now(),token:state.playbackToken};
+  scheduleCarAutoResume();
+}
+function canCarAutoResume(){
+  if(!state.carResumePending||!state.carMode||state.route!=='reader'||state.isSpeaking)return false;
+  const s=navigator.audioSession?.state;
+  if(s==='interrupted')return false;
+  // Do not start speaking over an ongoing telephone call when iOS has hidden Safari.
+  return document.visibilityState==='visible'||(s==='active'&&state.carAudioSessionState==='active');
+}
+function scheduleCarAutoResume(){
+  if(!state.carResumePending||state.carResumeTimer)return;
+  state.carResumeTimer=setTimeout(()=>{
+    state.carResumeTimer=null;
+    const pending=state.carResumePending;
+    if(!pending)return;
+    if(Date.now()-pending.createdAt>120000){cancelCarAutoResume();return}
+    if(pending.token!==state.playbackToken||state.bookId!==pending.bookId||state.chapterIndex!==pending.chapterIndex){cancelCarAutoResume();return}
+    if(!canCarAutoResume())return; // wait for visible/audio-session-active event
+    state.carResumePending=null;
+    showToast('Call ended · trying to resume Samantha');
+    startSpeechFromSelection();
+  },2000);
+}
+function carModeRequestedByUrl(){
+  try{return new URL(location.href).searchParams.get('carplay')==='1'}catch{return false}
+}
+function updateCarModeScreen(){
+  const screen=$('#carModeScreen');
+  if(!screen)return;
+  const active=state.carMode&&state.route==='reader'&&!!state.readerBook;
+  screen.classList.toggle('hidden',!active);
+  document.body.classList.toggle('car-mode',active);
+  const b=$('#carModeToggle');if(b){b.textContent=state.carMode?'Exit Car Mode':'Car Mode';b.setAttribute('aria-pressed',String(state.carMode))}
+  if(!active)return;
+  const book=state.readerBook,ch=book.chapters?.[state.chapterIndex];
+  const title=$('#carBookTitle'),chapter=$('#carChapterLabel'),progress=$('#carChapterProgress');
+  const play=$('#carPlayPause'),previous=$('#carPreviousChapter'),next=$('#carNextChapter');
+  if(title)title.textContent=book.title||'Storyline Studio';
+  if(chapter)chapter.textContent=chapterLabel(ch,book);
+  const total=Math.max(1,ch?.paragraphs?.length||1),current=Math.max(0,Math.min(total-1,state.speakingPIndex??state.selectedParagraph));
+  if(progress)progress.textContent='Chapter '+(state.chapterIndex+1)+' of '+book.chapters.length+' · Paragraph '+(current+1)+' of '+total;
+  const bar=$('#carProgressBar');if(bar)bar.style.width=(100*(current/total))+'%';
+  if(play){play.textContent=state.isSpeaking&&!state.isPaused?'Ⅱ':'▶';play.setAttribute('aria-label',state.isSpeaking&&!state.isPaused?'Pause narration':'Resume Samantha narration')}
+  if(previous)previous.disabled=state.chapterIndex===0;
+  if(next)next.disabled=state.chapterIndex>=book.chapters.length-1&&!(ch?.nextUrl);
+  const sleep=$('#carSleepTimer');
+  if(sleep)sleep.textContent=state.sleepDeadline?'Sleep timer on':'Sleep timer';
+}
+function enableCarMode(enabled){
+  state.carMode=!!enabled;
+  savePrefs({carMode:state.carMode});
+  if(!state.carMode){
+    cancelCarAutoResume();releaseCarAudio();
+    try{const u=new URL(location.href);u.searchParams.delete('carplay');history.replaceState(history.state,'',u.toString())}catch{}
+  }else ensureCarAudio();
+  updateCarModeScreen();
+}
+async function carMoveChapter(delta){
+  if(!state.bookId||state.route!=='reader')return;
+  const book=await idbGet('books',state.bookId);if(!book)return;
+  let index=state.chapterIndex+delta;
+  if(delta>0&&index>=book.chapters.length&&book.webReader)await extendWebReaderNext(book,state.chapterIndex);
+  if(index<0||index>=book.chapters.length){showToast('No more chapters in this direction');return}
+  const shouldPlay=state.isSpeaking&&!state.isPaused;
+  stopAllSpeech({preserveSleep:true});
+  state.chapterIndex=index;state.selectedParagraph=0;state.selectedCharOffset=0;state.selectedWordEnd=0;
+  await saveProgress(book);await renderReader();updateNowPlaying();updateCarModeScreen();
+  if(shouldPlay)startSpeechFromSelection();
+}
+function setupCarModeControls(){
+  const play=$('#carPlayPause'),prev=$('#carPreviousChapter'),next=$('#carNextChapter');
+  const exit=$('#carModeExit'),sleep=$('#carSleepTimer');
+  if(play)play.addEventListener('click',()=>{
+    if(!state.isSpeaking||state.isPaused){holdCarAudio();setDeviceNarrationAudioSession(true)}
+    toggleSpeech();updateCarModeScreen();
+  });
+  if(prev)prev.addEventListener('click',()=>carMoveChapter(-1));
+  if(next)next.addEventListener('click',()=>carMoveChapter(1));
+  if(exit)exit.addEventListener('click',()=>enableCarMode(false));
+  if(sleep)sleep.addEventListener('click',()=>{
+    // One-tap cycling: off -> 15 -> 30 -> 45 -> 60 -> off.
+    const options=[0,15,30,45,60],n=options.indexOf(state.sleepMinutes||0),value=options[(n+1)%options.length];
+    setSleepTimer(value);updateCarModeScreen();showToast(value?'Sleep timer: '+value+' minutes':'Sleep timer off');
+  });
+  try{
+    navigator.audioSession?.addEventListener?.('statechange',()=>{
+      state.carAudioSessionState=navigator.audioSession.state;
+      if(state.carAudioSessionState==='active')scheduleCarAutoResume();
+    });
+  }catch{}
+}
+
 function setupMediaSession(){
   if(!('mediaSession' in navigator))return;
   const safe=(name,handler)=>{try{navigator.mediaSession.setActionHandler(name,handler)}catch{}};
