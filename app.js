@@ -2902,6 +2902,17 @@ async function releaseWakeLock(){
   const lock=state.wakeLock;state.wakeLock=null;
   try{await lock?.release?.()}catch{}
 }
+// Request an ordinary media playback session for Safari device narration.
+// This influences iOS audio routing but cannot guarantee CarPlay will take TTS output.
+function setDeviceNarrationAudioSession(active){
+  try{
+    const session=navigator.audioSession;
+    if(!session)return false;
+    const type=active?'playback':'auto';
+    if(session.type!==type)session.type=type;
+    return session.type===type;
+  }catch(e){console.warn('Audio session category could not be changed',e);return false}
+}
 function setMediaPlaybackState(value){
   if(!('mediaSession' in navigator))return;
   try{navigator.mediaSession.playbackState=value}catch{}
@@ -2942,6 +2953,7 @@ function setupMediaSession(){
   const safe=(name,handler)=>{try{navigator.mediaSession.setActionHandler(name,handler)}catch{}};
   safe('play',()=>{
     if(state.isSpeaking&&state.isPaused){
+      setDeviceNarrationAudioSession(true);
       try{speechSynthesis.resume()}catch{}
       state.isPaused=false;
       const b=$('#playBtn');if(b){b.textContent='Ⅱ';b.setAttribute('aria-label','Pause')}
@@ -2978,6 +2990,7 @@ async function speakBoundedRange(book,chapterIndex,paragraphIndex,start=0,end=nu
   stopAllSpeech({preserveSleep});
   const token=++state.playbackToken,p=prefs(),pieces=speechPiecesForRange(text,a,b,book,{dialogueEnabled:!!p.dialogueEnabled});
   if(!pieces.length)return false;
+  if(currentEngine()==='device')setDeviceNarrationAudioSession(true);
   if(movePosition){
     state.bookId=book.id;state.chapterIndex=chapterIndex;state.selectedParagraph=paragraphIndex;state.selectedCharOffset=a;state.selectedWordEnd=b;
     await saveProgress(book);
@@ -3030,6 +3043,7 @@ async function speakBoundedRange(book,chapterIndex,paragraphIndex,start=0,end=nu
     u.onboundary=e=>{if(token!==state.playbackToken||state.activeUtterance!==u)return;const rel=Number(e.charIndex);if(Number.isFinite(rel)){state.liveCharOffset=piece.mapIndex(rel);armSpeechWatchdog(piece.text.slice(Math.max(0,rel)),u.rate)}};
     u.onend=()=>{if(token!==state.playbackToken||state.activeUtterance!==u)return;state.activeUtterance=null;state.speechWatchdogDeadline=0;if(state.gentleStopPending){completeGentleSleepStop(token);return}next()};
     u.onerror=e=>{if(token!==state.playbackToken||state.activeUtterance!==u)return;state.activeUtterance=null;if(e.error==='canceled')return;if(e.error==='interrupted'){handleSpeechInterrupted(token,'Samantha was interrupted');return}showToast('Samantha could not play this passage.');finishSpeech(token,{preserveSleep})};
+    setDeviceNarrationAudioSession(true);
     speechSynthesis.resume();speechSynthesis.speak(u);
   };
   next();return true;
@@ -3101,7 +3115,7 @@ function toggleSpeech(){
   if(!state.voicesReady){showToast('Device voices are still loading.');return}
   if(!('speechSynthesis' in window) || typeof SpeechSynthesisUtterance==='undefined'){ showToast('Text-to-speech is not available in this browser.'); return; }
   if(state.isSpeaking&&!state.isPaused){ speechSynthesis.pause(); state.isPaused=true; $('#playBtn').textContent='▶'; setMediaPlaybackState('paused'); return; }
-  if(state.isSpeaking&&state.isPaused){ speechSynthesis.resume(); state.isPaused=false; $('#playBtn').textContent='Ⅱ'; setMediaPlaybackState('playing'); armSpeechWatchdog('',prefs().rate||1.05); return; }
+  if(state.isSpeaking&&state.isPaused){ setDeviceNarrationAudioSession(true); speechSynthesis.resume(); state.isPaused=false; $('#playBtn').textContent='Ⅱ'; setMediaPlaybackState('playing'); armSpeechWatchdog('',prefs().rate||1.05); return; }
   startSpeech(true);
 }
 function startSpeech(fromSelected=true,{preserveFollow=false}={}){
@@ -3116,6 +3130,7 @@ function startSpeech(fromSelected=true,{preserveFollow=false}={}){
 
   const token=++state.playbackToken;
   try{speechSynthesis.cancel()}catch{}
+  setDeviceNarrationAudioSession(true);
   speechSynthesis.resume();
 
   let pIndex=fromSelected?state.selectedParagraph:(state.speakingParagraph??state.selectedParagraph);
@@ -3243,6 +3258,7 @@ function startSpeech(fromSelected=true,{preserveFollow=false}={}){
         if(e.error==='interrupted'){handleSpeechInterrupted(token,'Samantha was interrupted');return}
         showToast('Samantha could not continue reading.');finishSpeech(token);
       };
+      setDeviceNarrationAudioSession(true);
       speechSynthesis.speak(u);
     };
     const speakRange=(sourceStart,sourceEnd,onDone)=>{
@@ -3324,6 +3340,7 @@ function replayCurrentSentence(){
 }
 function stopAllSpeech({preserveSleep=false}={}){
   clearSpeechWatchdog();
+  if(state.activeEngine==='device')setDeviceNarrationAudioSession(false);
   state.playbackToken++;
   try{speechSynthesis.cancel()}catch{}
   try{if(window.meSpeak)meSpeak.stop()}catch{}
@@ -3570,6 +3587,7 @@ function markSpeaking(i){
 function finishSpeech(token=null,{preserveSleep=false}={}){
   if(token!==null&&token!==state.playbackToken)return;
   clearSpeechWatchdog();
+  if(state.activeEngine==='device')setDeviceNarrationAudioSession(false);
   if(!preserveSleep)state.gentleStopPending=false;
   state.isSpeaking=false;state.isPaused=false;state.speakingParagraph=null;state.activeUtterance=null;state.localSpeakingId=null;
   setMediaPlaybackState('none');
