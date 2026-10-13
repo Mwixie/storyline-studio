@@ -1,5 +1,5 @@
-const CACHE='storyline-v58';
-const RUNTIME='storyline-runtime-v58';
+const CACHE='storyline-v58r1';
+const RUNTIME='storyline-runtime-v58r1';
 const ASSETS=['./','./index.html','./styles.css?v=58','./app.js?v=58','./manifest.webmanifest','./icon.svg','./vendor/qrcode.min.js','./vendor/jsQR.js'];
 const CACHEABLE_EXTERNAL_HOSTS=new Set(['cdnjs.cloudflare.com','cdn.jsdelivr.net','tessdata.projectnaptha.com']);
 self.addEventListener('install',e=>e.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS)).then(()=>self.skipWaiting())));
