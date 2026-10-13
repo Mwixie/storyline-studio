@@ -2046,7 +2046,7 @@ async function renderLibrary(){
   const books=allBooks.filter(b=>!b.webReader),webBooks=allBooks.filter(b=>b.webReader);
   const items=await idbGetAll('items');
   view.innerHTML=`
-    <section class="hero"><div class="eyebrow">Your private listening desk</div><h1>Read with your ears.<br>Revise with receipts.</h1><p class="sub">Your manuscript stays in this browser. Storyline remembers where you stopped and keeps every note tied to its exact passage.</p><div class="row hero-actions"><button id="receiveHandoffBtn" class="ghost">Receive handoff</button><button id="readFromWebBtn" class="button">Read from web</button></div></section>
+    <section class="hero"><div class="eyebrow">Your private listening desk</div><h1>Read with your ears.<br>Revise with receipts.</h1><p class="sub">Your manuscript stays in this browser. Storyline remembers where you stopped and keeps every note tied to its exact passage.</p><div class="row hero-actions"><button id="receiveHandoffBtn" class="ghost">Receive handoff</button><button id="readFromWebBtn" class="button">Read from web</button><button id="carModeLibraryBtn" class="ghost">Car Mode</button></div></section>
     ${webBooks.length?`<section class="web-reader-library"><div class="row between"><div><div class="eyebrow">Read-only</div><h2 class="section-title web-reader-title">Web Reader</h2></div><button id="addWebStoryBtn" class="ghost tiny">Open another link</button></div><div class="grid books">${webBooks.map(webReaderCard).join('')}</div></section>`:''}
     <section id="importZone" class="import-zone" tabindex="0"><strong>${books.length?'Add another manuscript':'Bring in a manuscript'}</strong><p class="sub">DOCX, EPUB, PDF, ODT, Markdown, HTML, TXT, or pasted text. Chapter headings are detected automatically.</p><div class="row import-actions"><button id="importBtn" class="button">Choose manuscript</button><button id="pasteImportBtn" class="ghost">Paste text or file</button></div><div class="privacy">You can also drag/drop or paste a copied manuscript file here. Everything stays local to this browser.</div></section>
     <section class="backup-card card"><div><div class="eyebrow">Data safety</div><h2>Backup & restore</h2><p class="sub">Export manuscripts, reading positions, Queue and Actioned items, preferences, and saved voice-note audio.</p></div><div class="row backup-actions"><button id="exportBackupBtn" class="ghost">Export backup</button><button id="restoreBackupBtn" class="ghost">Restore backup</button><input id="restoreBackupInput" type="file" accept="application/json,.json" hidden /></div></section>
@@ -2055,6 +2055,14 @@ async function renderLibrary(){
   $('#importBtn').onclick=()=>fileInput.click();
   $('#pasteImportBtn').onclick=()=>openPasteImport();
   $('#readFromWebBtn').onclick=openWebReaderImport;
+  const libraryCar=$('#carModeLibraryBtn');if(libraryCar)libraryCar.onclick=async()=>{
+    const books=await idbGetAll('books'),requested=(state.bookId&&books.find(b=>b.id===state.bookId))||books.find(b=>b.id===prefs().lastBookId)||books[0];
+    if(!requested){showToast('Import a manuscript or open a story before using Car Mode.');return}
+    state.bookId=requested.id;state.chapterIndex=requested.progress?.chapterIndex||0;
+    state.selectedParagraph=requested.progress?.paragraphIndex||0;
+    state.selectedCharOffset=requested.progress?.charOffset||0;state.selectedWordEnd=requested.progress?.wordEnd||0;
+    await navigate('reader');enableCarMode(true);
+  };
   const addWeb=$('#addWebStoryBtn');if(addWeb)addWeb.onclick=openWebReaderImport;
   const receiveHandoff=$('#receiveHandoffBtn');if(receiveHandoff)receiveHandoff.onclick=()=>openHandoffReceiver();
   const importZone=$('#importZone');
@@ -2514,7 +2522,7 @@ async function renderReader(){
         </div>
         <div class="transport-progress"><div class="row between"><span id="positionLabel" class="meta">${escapeHtml(readerPositionLabel(book,state.chapterIndex,state.selectedParagraph,ch.paragraphs.length))}</span><span id="timeLeftLabel" class="meta">${readingMinutesLabel(remainingChapterWords(ch,state.selectedParagraph,state.selectedCharOffset||0))} left in chapter</span><span id="speedLabel" class="meta">${Number(p.rate||1.05).toFixed(2)}×</span></div><input id="positionRange" class="range" type="range" min="0" max="${Math.max(ch.paragraphs.length-1,0)}" value="${state.selectedParagraph}" /></div>
       </div>
-      <div class="compact-status"><span id="voiceStatus" class="reading-status">Loading device voices…</span><button id="resumeFollowBtn" class="ghost tiny hidden">↧ Resume follow</button></div>
+      <div class="compact-status"><span id="voiceStatus" class="reading-status">Loading device voices…</span><button id="carModeToggle" class="ghost tiny" type="button" aria-pressed="false">Car Mode</button><button id="resumeFollowBtn" class="ghost tiny hidden">↧ Resume follow</button></div>
       <details id="voiceOptions" class="voice-options">
         <summary><span>Voice & speed</span><span id="voiceSummary" class="meta">Samantha · ${(p.readingStyle||'natural')==='standard'?'Standard':'Natural'} · ${Number(p.rate||1.05).toFixed(2)}×</span></summary>
         <div class="voice-options-panel">
@@ -2538,7 +2546,7 @@ async function renderReader(){
         </div>
       </details>
     </section>`;
-  wireReader(book,ch); loadVoices(); if(isWeb)prefetchWebReaderNext(book,state.chapterIndex); requestAnimationFrame(()=>{
+  wireReader(book,ch); loadVoices();updateCarModeScreen(); if(isWeb)prefetchWebReaderNext(book,state.chapterIndex); requestAnimationFrame(()=>{
     if(state.sleepDeadline){const sleep=$('#sleepTimerSelect');if(sleep)sleep.value=String(state.sleepMinutes||0);updateSleepTimerStatus()}
     updateReadingTimeMeta(book);
     const ref=state.pendingPassageReference;
@@ -2567,6 +2575,7 @@ function positionSelectionPronunciation(button){
 }
 function wireReader(book,ch){
   $('#backLibrary').onclick=()=>navigate('library');
+  const carToggle=$('#carModeToggle');if(carToggle)carToggle.onclick=()=>enableCarMode(!state.carMode);
   const readingPage=$('#readingPage'),resumeFollow=$('#resumeFollowBtn'),selectionPronunciation=$('#selectionPronunciationBtn');
   const cacheReaderSelection=()=>{setTimeout(()=>{
     const text=selectedReaderText();
@@ -3050,7 +3059,14 @@ function enableCarMode(enabled){
   if(!state.carMode){
     cancelCarAutoResume();releaseCarAudio();
     try{const u=new URL(location.href);u.searchParams.delete('carplay');history.replaceState(history.state,'',u.toString())}catch{}
-  }else ensureCarAudio();
+  }else{
+    ensureCarAudio();
+    if(currentEngine()!=='device'){
+      stopAllSpeech({preserveSleep:true});
+      state.activeEngine='device';
+      showToast('Car Mode uses Samantha');
+    }
+  }
   updateCarModeScreen();
 }
 async function carMoveChapter(delta){
@@ -3092,6 +3108,7 @@ function setupMediaSession(){
   if(!('mediaSession' in navigator))return;
   const safe=(name,handler)=>{try{navigator.mediaSession.setActionHandler(name,handler)}catch{}};
   safe('play',()=>{
+    if(state.carMode&&!state.isSpeaking)holdCarAudio();
     if(state.isSpeaking&&state.isPaused){
       if(state.carMode)holdCarAudio();
       setDeviceNarrationAudioSession(true);
@@ -4423,6 +4440,7 @@ function applyNavCollapse(){
 if(navCollapse)navCollapse.onclick=()=>{savePrefs({navCollapsed:!prefs().navCollapsed});applyNavCollapse()};
 applyNavCollapse();
 setupMediaSession();
+setupCarModeControls();
 fileInput.addEventListener('change',e=>{importFile(e.target.files[0]);e.target.value=''});
 window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();state.deferredPrompt=e;$('#installBtn').classList.remove('hidden')});
 $('#installBtn').onclick=async()=>{if(state.deferredPrompt){state.deferredPrompt.prompt();await state.deferredPrompt.userChoice;state.deferredPrompt=null;$('#installBtn').classList.add('hidden')}};
@@ -4456,5 +4474,5 @@ if('serviceWorker' in navigator) window.addEventListener('load',async()=>{
   }catch{}
 });
 
-openDB().then(async()=>{ await loadSharedPronunciations(); const p=prefs(); state.bookId=p.lastBookId||null; if(state.bookId){ const b=await idbGet('books',state.bookId); if(b){ state.chapterIndex=b.progress?.chapterIndex ?? p.lastChapterIndex ?? 0; state.selectedParagraph=b.progress?.paragraphIndex ?? p.lastParagraphIndex ?? 0; state.selectedCharOffset=b.progress?.charOffset ?? p.lastCharOffset ?? 0; state.selectedWordEnd=b.progress?.wordEnd ?? p.lastWordEnd ?? 0; } } await navigate('library',{replaceHistory:true}); migrateLegacyPassageAnchors().then(()=>updateQueueBadge()).catch(e=>console.warn('Legacy note migration could not finish:',e)); await processHandoffFromLocation(); }).catch(e=>{view.innerHTML=`<section class="card studio-loading"><h2>Library could not open</h2><p>${escapeHtml(e.message||'An unexpected error occurred.')}</p><p>Your stored manuscripts have not been cleared. Do not clear website data.</p><button id="retryLibraryStart" class="ghost tiny" type="button">Retry opening Library</button></section>`; const btn=$('#retryLibraryStart'); if(btn)btn.onclick=()=>location.reload();});
+openDB().then(async()=>{ await loadSharedPronunciations(); const p=prefs(); state.carMode=carModeRequestedByUrl()||!!p.carMode;state.bookId=p.lastBookId||null; if(state.bookId){ const b=await idbGet('books',state.bookId); if(b){ state.chapterIndex=b.progress?.chapterIndex ?? p.lastChapterIndex ?? 0; state.selectedParagraph=b.progress?.paragraphIndex ?? p.lastParagraphIndex ?? 0; state.selectedCharOffset=b.progress?.charOffset ?? p.lastCharOffset ?? 0; state.selectedWordEnd=b.progress?.wordEnd ?? p.lastWordEnd ?? 0; } } await navigate(carModeRequestedByUrl()&&state.bookId?'reader':'library',{replaceHistory:true});if(carModeRequestedByUrl()&&!state.bookId)showToast('Import a manuscript to use Car Mode.');updateCarModeScreen(); migrateLegacyPassageAnchors().then(()=>updateQueueBadge()).catch(e=>console.warn('Legacy note migration could not finish:',e)); await processHandoffFromLocation(); }).catch(e=>{view.innerHTML=`<section class="card studio-loading"><h2>Library could not open</h2><p>${escapeHtml(e.message||'An unexpected error occurred.')}</p><p>Your stored manuscripts have not been cleared. Do not clear website data.</p><button id="retryLibraryStart" class="ghost tiny" type="button">Retry opening Library</button></section>`; const btn=$('#retryLibraryStart'); if(btn)btn.onclick=()=>location.reload();});
 })();
