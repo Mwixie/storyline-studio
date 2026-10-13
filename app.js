@@ -3099,6 +3099,7 @@ function setupCarModeControls(){
     setSleepTimer(value);updateCarModeScreen();showToast(value?'Sleep timer: '+value+' minutes':'Sleep timer off');
   });
   try{
+    state.carAudioSessionState=navigator.audioSession?.state||null;
     navigator.audioSession?.addEventListener?.('statechange',()=>{
       state.carAudioSessionState=navigator.audioSession.state;
       if(state.carAudioSessionState==='active')scheduleCarAutoResume();
@@ -3299,6 +3300,10 @@ function checkSpeechWatchdog(fromVisibility=false){
   if(!state.isSpeaking||state.isPaused||currentEngine()!=='device'||!state.speechWatchdogDeadline)return;
   if(!state.carMode&&document.visibilityState!=='visible'&&!fromVisibility)return;
   if(Date.now()<=state.speechWatchdogDeadline)return;
+  if(state.carMode&&navigator.audioSession?.state==='interrupted'){
+    handleSpeechInterrupted(state.playbackToken,'Audio interrupted');
+    return;
+  }
   const bookId=state.bookId;
   speechResumeOffset();persistReadingProgress();
   try{speechSynthesis.resume()}catch{}
