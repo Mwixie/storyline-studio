@@ -3008,7 +3008,7 @@ function queueCarAutoResume(bookId,chapterIndex){
   scheduleCarAutoResume();
 }
 function canCarAutoResume(){
-  if(!state.carResumePending||!state.carMode||state.route!=='reader'||state.isSpeaking)return false;
+  if(!state.carResumePending||!state.carMode||state.route!=='reader'||state.isSpeaking||state.gentleStopPending)return false;
   const s=navigator.audioSession?.state;
   if(s==='interrupted')return false;
   // Do not start speaking over an ongoing telephone call when iOS has hidden Safari.
@@ -3061,6 +3061,7 @@ function enableCarMode(enabled){
     try{const u=new URL(location.href);u.searchParams.delete('carplay');history.replaceState(history.state,'',u.toString())}catch{}
   }else{
     ensureCarAudio();
+    if(state.isSpeaking&&currentEngine()==='device')holdCarAudio();
     if(currentEngine()!=='device'){
       stopAllSpeech({preserveSleep:true});
       state.activeEngine='device';
@@ -3085,6 +3086,7 @@ function setupCarModeControls(){
   const play=$('#carPlayPause'),prev=$('#carPreviousChapter'),next=$('#carNextChapter');
   const exit=$('#carModeExit'),sleep=$('#carSleepTimer');
   if(play)play.addEventListener('click',()=>{
+    if(!state.voicesReady){showToast('Samantha is still loading on this device.');return}
     if(!state.isSpeaking||state.isPaused){holdCarAudio();setDeviceNarrationAudioSession(true)}
     toggleSpeech();updateCarModeScreen();
   });
@@ -3540,7 +3542,7 @@ function replayCurrentSentence(){
   if(!state.isSpeaking||!state.replayCurrent){showToast('Start reading first.');return}
   state.replayCurrent();
 }
-function stopAllSpeech({preserveSleep=false,preserveCarAudio=false}={}){
+function stopAllSpeech({preserveSleep=false}={}){
   clearSpeechWatchdog();
   cancelCarAutoResume();
   if(state.activeEngine==='device')setDeviceNarrationAudioSession(false);
