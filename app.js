@@ -3129,7 +3129,8 @@ async function speakBoundedRange(book,chapterIndex,paragraphIndex,start=0,end=nu
   const a=Math.max(0,Math.min(Number(start)||0,text.length)),b=Math.max(a,Math.min(end===null?text.length:Number(end)||a,text.length));
   if(b<=a){showToast('There is no passage to play.');return false}
   stopAllSpeech({preserveSleep});
-  const token=++state.playbackToken,p=prefs(),pieces=speechPiecesForRange(text,a,b,book,{dialogueEnabled:!!p.dialogueEnabled});
+  const token=++state.playbackToken,p=prefs(),rawPieces=speechPiecesForRange(text,a,b,book,{dialogueEnabled:!!p.dialogueEnabled}),
+    pieces=currentEngine()==='device'?capDeviceSpeechPieces(rawPieces):rawPieces;
   if(!pieces.length)return false;
   if(currentEngine()==='device')setDeviceNarrationAudioSession(true);
   if(movePosition){
@@ -3188,6 +3189,38 @@ async function speakBoundedRange(book,chapterIndex,paragraphIndex,start=0,end=nu
     speechSynthesis.resume();speechSynthesis.speak(u);
   };
   next();return true;
+}
+function capDeviceSpeechPieces(pieces,limit=190){
+  const result=[];
+  for(const piece of pieces){
+    const text=String(piece?.text||'');
+    if(text.length<=limit){result.push(piece);continue}
+    let cursor=0;
+    while(cursor<text.length){
+      let end=Math.min(text.length,cursor+limit);
+      if(end<text.length){
+        // Prefer full sentence breaks, otherwise use a nearby word boundary.
+        const segment=text.slice(cursor,end),points=[];
+        const sentence=/[.!?]["'”’)]?\s+/g;
+        let match;
+        while((match=sentence.exec(segment))!==null)points.push(match.index+match[0].length);
+        const boundary=points.filter(p=>p>=70).pop();
+        const space=segment.lastIndexOf(' ');
+        if(boundary)end=cursor+boundary;
+        else if(space>=90)end=cursor+space+1;
+        // Avoid separating a UTF-16 surrogate pair.
+        const c=text.charCodeAt(end-1);
+        if(c>=0xD800&&c<=0xDBFF)end--;
+      }
+      if(end<=cursor)end=Math.min(text.length,cursor+limit);
+      const from=cursor,to=end,short=text.slice(from,to);
+      if(short.trim()){
+        result.push({...piece,text:short,mapIndex:index=>piece.mapIndex(from+Math.max(0,Math.min(short.length,Number(index)||0)))});
+      }
+      cursor=to;
+    }
+  }
+  return result;
 }
 function startSpeechFromSelection(){
   if(currentEngine()==='local'){startLocalSpeech(true);return}
@@ -3414,7 +3447,7 @@ function startSpeech(fromSelected=true,{preserveFollow=false}={}){
       speechSynthesis.speak(u);
     };
     const speakRange=(sourceStart,sourceEnd,onDone)=>{
-      const pieces=speechPiecesForRange(full,sourceStart,sourceEnd,book,{dialogueEnabled});
+      const pieces=capDeviceSpeechPieces(speechPiecesForRange(full,sourceStart,sourceEnd,book,{dialogueEnabled}));
       let pieceIndex=0,highlighted=sentenceIndexAtSource(sourceStart);
       setSentenceState(highlighted);
       const nextPiece=()=>{
