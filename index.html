@@ -24,6 +24,26 @@
     </header>
 
     <main id="view" class="view"><section class="studio-loading" aria-live="polite"><h2>Opening your library…</h2><p>Your saved manuscripts are loading from this browser.</p><p>If this message does not disappear, refresh the page. Do not clear website data.</p></section></main>
+    <section id="carModeScreen" class="car-mode-screen hidden" role="region" aria-label="Storyline Car Mode">
+      <div class="car-mode-shell">
+        <div class="car-mode-top"><span class="car-mode-eyebrow">STORYLINE · CAR MODE</span><button id="carModeExit" type="button" class="car-mode-exit">Exit Car Mode</button></div>
+        <div class="car-mode-book">
+          <div class="car-mode-cover" aria-hidden="true">S</div>
+          <h1 id="carBookTitle">Storyline Studio</h1>
+          <h2 id="carChapterLabel">Resume your listening</h2>
+        </div>
+        <div class="car-mode-player">
+          <div class="car-mode-buttons">
+            <button id="carPreviousChapter" type="button" class="car-skip" aria-label="Previous chapter">⏮<span>Previous</span></button>
+            <button id="carPlayPause" type="button" class="car-play" aria-label="Resume Samantha narration">▶</button>
+            <button id="carNextChapter" type="button" class="car-skip" aria-label="Next chapter">⏭<span>Next</span></button>
+          </div>
+          <div class="car-mode-progress"><div class="car-mode-progress-track"><span id="carProgressBar"></span></div><p id="carChapterProgress">Your saved position</p></div>
+        </div>
+        <button id="carSleepTimer" type="button" class="car-mode-sleep">☾ Sleep timer</button>
+        <p class="car-mode-hint">Set up before driving. Background speech and CarPlay controls depend on iOS.</p>
+      </div>
+    </section>
 
     <nav class="bottom-nav" aria-label="Primary">
       <button data-nav="library" class="nav-item active"><span>▥</span><small>Library</small></button>
