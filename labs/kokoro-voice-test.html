@@ -11,7 +11,7 @@
 </head>
 <body>
 <main>
-<div class="brand"><span class="mark">S</span><span><strong>Storyline Studio</strong><small>VOICE LAB · EXPERIMENT 01 · NOT BUILD 59</small></span></div>
+<div class="brand"><span class="mark">S</span><span><strong>Storyline Studio</strong><small>VOICE LAB · EXPERIMENT 01 · BUILD 59 UNCHANGED</small></span></div>
 <header><div class="kicker">Private listening experiment</div><h1>Can we make stories sound more human?</h1><p>Compare your current Apple narration with the open-source Kokoro AI engine on exactly the same passage. This page is separate from your Storyline Studio reader; no manuscripts or saved positions are touched.</p></header>
 <div id="resumeWarning" class="notice" role="alert">The previous AI attempt did not finish (or this page was refreshed). On some iPads, an AI model can exhaust memory and reload Safari. Try a shorter passage, or simply report that the page reloaded. The main Storyline Studio remains unaffected.</div>
 <section class="panel">
@@ -29,7 +29,7 @@
 </section>
 <section class="panel">
 <div class="panel-top"><h2>3. Experimental AI</h2><span class="pill">Kokoro · local processing</span></div>
-<p class="sub">Uses compact Q4 weights with WebAssembly. First load downloads approximately 86 MB of model weights plus supporting files; processing stays in the browser.</p>
+<p class="sub">Uses the compact 8-bit model with WebAssembly. First load downloads approximately 92 MB of model weights plus supporting files; generation runs in your browser.</p>
 <div class="field"><label for="aiVoice">Narrator voice</label><select id="aiVoice"><option value="af_heart">Heart · American female</option><option value="af_bella">Bella · American female</option><option value="af_sky">Sky · American female</option><option value="bf_emma">Emma · British female</option><option value="bm_george">George · British male</option><option value="am_michael">Michael · American male</option></select></div>
 <div class="controls"><button id="load" class="secondary">⬇ Load AI voice engine</button><button id="generate" class="primary" disabled>✦ Generate sample</button></div>
 <div id="aiStatus" class="status" aria-live="polite">Not loaded. Tap Load when ready to test.</div>
@@ -65,7 +65,7 @@ const marker = "storylineVoiceLabAttemptV1";
 const source = "https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/dist/kokoro.web.js";
 const model = "onnx-community/Kokoro-82M-v1.0-ONNX";
 const isIPad = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-const deviceText = [isIPad ? "iPad/iOS detected" : "Non-iPad device detected", "Browser: " + navigator.userAgent, "WebGPU: " + (navigator.gpu ? "present (not used)" : "not exposed"), "Engine: WASM / Q4", "Local mode: No server-side generation"].join("\n");
+const deviceText = [isIPad ? "iPad/iOS detected" : "Non-iPad device detected", "Browser: " + navigator.userAgent, "WebGPU: " + (navigator.gpu ? "present (not used)" : "not exposed"), "Engine: WASM / 8-bit (q8)", "Local mode: No server-side generation"].join("\n");
 byId("deviceInfo").textContent = deviceText;
 function log(message) {
   const s = new Date().toLocaleTimeString() + "  " + message;
@@ -153,14 +153,14 @@ byId("load").addEventListener("click", async () => {
   setBusy();
   const start = performance.now();
   localStorage.setItem(marker, "Loading started " + new Date().toISOString());
-  status("aiStatus", "Loading the voice runtime. Downloads start now; a large first-time download is normal.", "warn");
+  status("aiStatus", "Loading the voice runtime. Initial model weights are about 92 MB, plus supporting files.", "warn");
   try {
     const lib = await import(source);
     if (!lib || !lib.KokoroTTS) throw new Error("KokoroTTS export not found in browser module");
     log("Browser engine module imported from pinned version 1.2.1.");
     let lastProgress = "";
     tts = await lib.KokoroTTS.from_pretrained(model, {
-      dtype: "q4",
+      dtype: "q8",
       device: "wasm",
       progress_callback: info => {
         if (!info) return;
