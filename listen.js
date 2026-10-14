@@ -14,7 +14,7 @@ function validateListeningCopy(value){
     paragraphs:Array.isArray(c?.paragraphs)?c.paragraphs.map(t=>String(t??'')).filter(t=>t.trim()):[]
   })).filter(c=>c.paragraphs.length);
   if(!chapters.length)throw new Error('The listening copy contains no readable paragraphs.');
-  return {marker:'storyline-safari-v1',title:String(value.title||'Manuscript').slice(0,350),chapters};
+  return {marker:'storyline-safari-v1',bookId:String(value.bookId||''),title:String(value.title||'Manuscript').slice(0,350),chapters};
 }
 function parseClipboard(text){
   const trimmed=String(text||'').trim();
@@ -98,12 +98,15 @@ function bookToCopy(book,params){
     paragraphs:Array.isArray(c?.paragraphs)?c.paragraphs.slice(i===0?paragraph:0):[]
   })).filter(c=>c.paragraphs.length);
   if(!chapters.length)return null;
-  return validateListeningCopy({marker:'storyline-safari-v1',title:book.title,chapters});
+  return validateListeningCopy({marker:'storyline-safari-v1',bookId:book.id,title:book.title,chapters});
 }
 function receiveCopy(text){
   try{
     const copy=parseClipboard(text);
     const temporary=saveSessionCopy(copy);
+    const url=new URL(location.href);
+    if(copy.bookId)url.searchParams.set('book',copy.bookId);
+    history.replaceState(history.state,'',url.toString());
     setView(copy,{temporary});
     if(!temporary)message('Listening copy opened but could not be saved in this tab. Avoid refreshing the page.');
     else message('Listening copy loaded privately in this Safari tab. Use Safari’s page menu → Listen to Page.');
@@ -132,7 +135,7 @@ async function initialize(){
     }
   }
   const session=getSessionCopy();
-  if(session){setView(session,{temporary:true});return}
+  if(session&&(!id||session.bookId===id)){setView(session,{temporary:true});return}
   showTransfer('The manuscript is not accessible in this Safari tab. Use Storyline’s copy-and-paste handoff if needed.');
 }
 initialize().catch(e=>{console.error(e);showTransfer('Could not prepare Safari Listening Edition. '+(e.message||''))});
