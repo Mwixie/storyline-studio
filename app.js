@@ -2576,7 +2576,7 @@ function safariListeningPayload(book,fromChapter,fromParagraph,count){
       .slice(i===0?paragraphIndex:0).map(t=>String(t??'')).filter(t=>t.trim())
   })).filter(ch=>ch.paragraphs.length);
   if(!chapters.length)throw new Error('These chapters are not downloaded or have no remaining text.');
-  return {marker:'storyline-safari-v1',title:book.title||'Manuscript',chapters};
+  return {marker:'storyline-safari-v1',bookId:book.id,title:book.title||'Manuscript',chapters};
 }
 function safariListeningUrl(book,count=3){
   const url=new URL('listen.html',location.href);
