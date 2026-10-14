@@ -1,6 +1,6 @@
-const CACHE='storyline-v58r1';
-const RUNTIME='storyline-runtime-v58r1';
-const ASSETS=['./','./index.html','./styles.css?v=58','./app.js?v=58','./manifest.webmanifest','./icon.svg','./vendor/qrcode.min.js','./vendor/jsQR.js'];
+const CACHE='storyline-v59';
+const RUNTIME='storyline-runtime-v59';
+const ASSETS=['./','./index.html','./styles.css?v=59','./app.js?v=59','./listen.html','./listen.js?v=59','./listen.css?v=59','./manifest.webmanifest','./icon.svg','./vendor/qrcode.min.js','./vendor/jsQR.js'];
 const CACHEABLE_EXTERNAL_HOSTS=new Set(['cdnjs.cloudflare.com','cdn.jsdelivr.net','tessdata.projectnaptha.com']);
 self.addEventListener('install',e=>e.waitUntil(caches.open(CACHE).then(c=>c.addAll(ASSETS)).then(()=>self.skipWaiting())));
 self.addEventListener('activate',e=>e.waitUntil(caches.keys().then(keys=>Promise.all(keys.filter(k=>![CACHE,RUNTIME].includes(k)).map(k=>caches.delete(k)))).then(()=>self.clients.claim())));
