@@ -2522,7 +2522,7 @@ async function renderReader(){
         </div>
         <div class="transport-progress"><div class="row between"><span id="positionLabel" class="meta">${escapeHtml(readerPositionLabel(book,state.chapterIndex,state.selectedParagraph,ch.paragraphs.length))}</span><span id="timeLeftLabel" class="meta">${readingMinutesLabel(remainingChapterWords(ch,state.selectedParagraph,state.selectedCharOffset||0))} left in chapter</span><span id="speedLabel" class="meta">${Number(p.rate||1.05).toFixed(2)}×</span></div><input id="positionRange" class="range" type="range" min="0" max="${Math.max(ch.paragraphs.length-1,0)}" value="${state.selectedParagraph}" /></div>
       </div>
-      <div class="compact-status"><span id="voiceStatus" class="reading-status">Loading device voices…</span><button id="carModeToggle" class="ghost tiny" type="button" aria-pressed="false">Car Mode</button><button id="resumeFollowBtn" class="ghost tiny hidden">↧ Resume follow</button></div>
+      <div class="compact-status"><span id="voiceStatus" class="reading-status">Loading device voices…</span><button id="safariListenBtn" class="ghost tiny" type="button">Listen with Safari</button><button id="carModeToggle" class="ghost tiny" type="button" aria-pressed="false">Car Mode</button><button id="resumeFollowBtn" class="ghost tiny hidden">↧ Resume follow</button></div>
       <details id="voiceOptions" class="voice-options">
         <summary><span>Voice & speed</span><span id="voiceSummary" class="meta">Samantha · ${(p.readingStyle||'natural')==='standard'?'Standard':'Natural'} · ${Number(p.rate||1.05).toFixed(2)}×</span></summary>
         <div class="voice-options-panel">
@@ -2563,6 +2563,82 @@ async function renderReader(){
   });
 }
 
+
+/* Build 59: private Safari Listen to Page handoff, not an audio engine. */
+function safariListeningPayload(book,fromChapter,fromParagraph,count){
+  if(!book?.chapters?.length)throw new Error('No manuscript chapters are available.');
+  const chapterIndex=Math.max(0,Math.min(book.chapters.length-1,Number(fromChapter)||0));
+  const paragraphIndex=Math.max(0,Number(fromParagraph)||0);
+  const max=Math.max(1,Math.min(5,Number(count)||3));
+  const chapters=book.chapters.slice(chapterIndex,chapterIndex+max).map((chapter,i)=>({
+    title:chapterLabel(chapter,book),
+    paragraphs:(Array.isArray(chapter.paragraphs)?chapter.paragraphs:[])
+      .slice(i===0?paragraphIndex:0).map(t=>String(t??'')).filter(t=>t.trim())
+  })).filter(ch=>ch.paragraphs.length);
+  if(!chapters.length)throw new Error('These chapters are not downloaded or have no remaining text.');
+  return {marker:'storyline-safari-v1',title:book.title||'Manuscript',chapters};
+}
+function safariListeningUrl(book,count=3){
+  const url=new URL('listen.html',location.href);
+  url.searchParams.set('book',book.id);
+  url.searchParams.set('chapter',String(state.chapterIndex));
+  url.searchParams.set('paragraph',String(state.selectedParagraph));
+  url.searchParams.set('count',String(count));
+  return url.href;
+}
+function copyListeningText(text){
+  const backup=()=>{
+    const textarea=document.createElement('textarea');
+    textarea.value=text;
+    textarea.setAttribute('readonly','');
+    textarea.style.cssText='position:fixed;left:-10000px;top:0;opacity:0';
+    document.body.append(textarea);
+    textarea.focus();textarea.select();textarea.setSelectionRange(0,text.length);
+    let success=false;
+    try{success=document.execCommand('copy')}catch{}
+    textarea.remove();
+    if(!success)throw new Error('Automatic copy was unavailable on this device.');
+    return true;
+  };
+  if(navigator.clipboard?.writeText){
+    return navigator.clipboard.writeText(text).then(()=>true).catch(()=>backup());
+  }
+  return Promise.resolve(backup());
+}
+function showSafariListeningDialog(book){
+  if(!book?.chapters?.length){showToast('Open a readable manuscript first.');return}
+  if(state.carMode)enableCarMode(false);
+  modalForm.innerHTML=
+    '<h3>Listen with Safari</h3>'+
+    '<p class="sub">Prepare a clean reading copy for Safari’s “Listen to Page”. Your manuscript is not uploaded or changed.</p>'+
+    '<label><span class="meta">How much to prepare?</span><select id="safariListenCount" class="select">'+
+    '<option value="1">This chapter</option><option value="3" selected>This chapter + next 2</option>'+
+    '<option value="5">This chapter + next 4</option></select></label>'+
+    '<p class="meta">Starts at your saved paragraph (not the exact spoken word). Only already-downloaded web chapters can be included.</p>'+
+    '<a id="openSafariPage" class="button" target="_blank" rel="noopener noreferrer" href="'+escapeHtml(safariListeningUrl(book,3))+'">Open Safari listening page ↗</a>'+
+    '<button id="copySafariChapters" type="button" class="ghost">Copy listening chapters for Safari</button>'+
+    '<p class="meta" id="safariListenInstructions">If Safari cannot find this manuscript, come back and copy the chapters. Open the Safari page, then choose “Paste listening copy”. Your clipboard will contain the selected manuscript text until replaced.</p>'+
+    '<div class="row between"><button id="closeSafariListening" type="button" class="ghost tiny">Close</button></div>';
+  if(!modal.open)modal.showModal();
+  const count=$('#safariListenCount'),open=$('#openSafariPage'),status=$('#safariListenInstructions');
+  count.onchange=()=>{open.href=safariListeningUrl(book,Number(count.value)||3)};
+  $('#copySafariChapters').onclick=async()=>{
+    const button=$('#copySafariChapters');
+    try{
+      const selected=Number(count.value)||3,payload=safariListeningPayload(book,state.chapterIndex,state.selectedParagraph,selected);
+      const copied='STORYLINE_SAFARI_LISTEN_V1\n'+JSON.stringify(payload);
+      button.disabled=true;
+      await copyListeningText(copied);
+      status.textContent='Copied '+payload.chapters.length+' chapters. Open the Safari listening page and tap “Paste listening copy” if it cannot see your library. The content is on your clipboard, not in the URL.';
+      showToast('Listening chapters copied');
+    }catch(e){
+      status.textContent=(e.message||'Copy failed')+' You can still open the Safari page directly if Safari shares this library.';
+      showToast(e.message||'Could not copy chapters');
+    }finally{button.disabled=false}
+  };
+  $('#closeSafariListening').onclick=()=>modal.close();
+}
+
 function positionSelectionPronunciation(button){
   if(!button)return;
   const selection=window.getSelection?.();if(!selection||selection.isCollapsed||!selection.rangeCount)return;
@@ -2576,6 +2652,7 @@ function positionSelectionPronunciation(button){
 function wireReader(book,ch){
   $('#backLibrary').onclick=()=>navigate('library');
   const carToggle=$('#carModeToggle');if(carToggle)carToggle.onclick=()=>enableCarMode(!state.carMode);
+  const safariListen=$('#safariListenBtn');if(safariListen)safariListen.onclick=()=>showSafariListeningDialog(book);
   const readingPage=$('#readingPage'),resumeFollow=$('#resumeFollowBtn'),selectionPronunciation=$('#selectionPronunciationBtn');
   const cacheReaderSelection=()=>{setTimeout(()=>{
     const text=selectedReaderText();
