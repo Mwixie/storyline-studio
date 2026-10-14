@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light">
+  <meta name="referrer" content="no-referrer">
+  <title>Safari Listening Edition · Storyline Studio</title>
+  <link rel="stylesheet" href="./listen.css?v=59">
+  <script defer src="./listen.js?v=59"></script>
+</head>
+<body>
+  <header class="listen-toolbar" aria-label="Listening page controls">
+    <div class="listen-brand"><span class="listen-brand-mark" aria-hidden="true">S</span><span>Storyline Studio <small>Safari Listening Edition</small></span></div>
+    <a class="listen-back" href="./">Back to Studio</a>
+  </header>
+  <main>
+    <div id="listenStatus" class="listen-status" role="status" aria-live="polite">Preparing your listening copy…</div>
+    <div id="listenHelp" class="listen-help" hidden>
+      <h1>Open your listening copy</h1>
+      <p>The manuscript was not found in this Safari tab. If you use Storyline from your Home Screen, its saved library may be separate from Safari's.</p>
+      <p>In Storyline, open the manuscript, tap <strong>Listen with Safari</strong>, and choose <strong>Copy listening chapters</strong>. Then return here and paste.</p>
+      <button id="pasteFromClipboard" type="button" class="listen-button">Paste listening copy</button>
+      <details>
+        <summary>Cannot paste automatically? Paste manually</summary>
+        <label for="manualListeningCopy">Paste the copied Storyline listening data</label>
+        <textarea id="manualListeningCopy" spellcheck="false" rows="5" placeholder="Paste the listening copy from Storyline"></textarea>
+        <button id="loadManualCopy" type="button" class="listen-button secondary">Open pasted chapters</button>
+      </details>
+      <p class="listen-privacy">No manuscript is uploaded to Storyline or a cloud service. A clipboard transfer can be accessible to other apps until replaced. The pasted copy is kept in this Safari tab's session storage; use “Forget this copy” when finished.</p>
+    </div>
+    <div id="listenControls" class="listen-controls" hidden>
+      <p>Open Safari's page menu and choose <strong>Listen to Page</strong>. If Safari does not offer that option, this page is not recognised as eligible on your device.</p>
+      <div class="listen-row">
+        <span id="listenChapters" class="listen-meta"></span>
+        <button id="forgetListeningCopy" type="button" class="listen-link" hidden>Forget this copy</button>
+      </div>
+      <p class="listen-privacy">Safari controls voice, speed and playback. Storyline cannot track your exact spoken position here. Keep this tab private.</p>
+    </div>
+    <article id="listeningArticle" class="listening-article" hidden aria-label="Manuscript listening text"></article>
+  </main>
+</body>
+</html>
