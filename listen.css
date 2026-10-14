@@ -32,3 +32,5 @@ main{margin:0 auto;padding:20px 18px 90px;max-width:850px}
 .listen-chapter h2{font:600 clamp(24px,4vw,34px)/1.23 Georgia,serif;margin:0 0 26px;text-align:center}
 .listen-chapter p{font:inherit;margin:0 0 1.1em;overflow-wrap:break-word;white-space:pre-wrap}
 @media(max-width:600px){.listen-toolbar{padding:12px 15px}.listen-back{font-size:11px}.listen-controls,.listen-help{padding:15px}.listening-article{margin-top:20px}.listen-chapter{margin-bottom:38px}.listen-chapter + .listen-chapter{padding-top:36px}}
+
+[hidden]{display:none!important}
