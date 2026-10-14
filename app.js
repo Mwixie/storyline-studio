@@ -2624,19 +2624,31 @@ function showSafariListeningDialog(book){
   count.onchange=()=>{open.href=safariListeningUrl(book,Number(count.value)||3)};
   $('#copySafariChapters').onclick=async()=>{
     const button=$('#copySafariChapters');
+    let copied='';
     try{
       const selected=Number(count.value)||3,payload=safariListeningPayload(book,state.chapterIndex,state.selectedParagraph,selected);
-      const copied='STORYLINE_SAFARI_LISTEN_V1\n'+JSON.stringify(payload);
+      copied='STORYLINE_SAFARI_LISTEN_V1\n'+JSON.stringify(payload);
       button.disabled=true;
       await copyListeningText(copied);
       status.textContent='Copied '+payload.chapters.length+' chapters. Open the Safari listening page and tap “Paste listening copy” if it cannot see your library. The content is on your clipboard, not in the URL.';
       showToast('Listening chapters copied');
     }catch(e){
-      status.textContent=(e.message||'Copy failed')+' You can still open the Safari page directly if Safari shares this library.';
-      showToast(e.message||'Could not copy chapters');
+      const fallback=document.createElement('textarea');
+      fallback.id='manualSafariCopy';
+      fallback.value=typeof copied==='string'?copied:'';
+      fallback.readOnly=true;fallback.rows=5;
+      fallback.setAttribute('aria-label','Listening copy text to copy manually');
+      fallback.style.cssText='width:100%;font-size:12px;min-height:95px';
+      if(fallback.value){
+        const previous=$('#manualSafariCopy');if(previous)previous.remove();
+        status.insertAdjacentElement('afterend',fallback);
+        status.textContent='Automatic copy was unavailable. Long-press in the text box, choose Select All and Copy, then paste it into the Safari listening page.';
+        fallback.focus();fallback.select();
+      }else status.textContent=e.message||'Could not prepare the listening copy.';
+      showToast('Use manual copy if needed');
     }finally{button.disabled=false}
   };
-  $('#closeSafariListening').onclick=()=>modal.close();
+  $('#closeSafariListening').onclick=()=>{const fallback=$('#manualSafariCopy');if(fallback){fallback.value='';fallback.remove()}modal.close()};
 }
 
 function positionSelectionPronunciation(button){
