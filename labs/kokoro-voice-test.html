@@ -1,0 +1,252 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#151018">
+<title>Storyline Voice Lab · Isolated Kokoro Test</title>
+<style>
+:root{color-scheme:dark;--bg:#151018;--panel:#221a27;--panel2:#2d2332;--line:#453749;--text:#f9f1ee;--muted:#bcacbc;--gold:#dfb97f;--pink:#d79baa;--green:#b8d4b4}*{box-sizing:border-box}body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;background:linear-gradient(155deg,#24182b,#151018 48%);color:var(--text);min-height:100vh}main{max-width:790px;margin:auto;padding:24px 16px 64px}.brand{display:flex;align-items:center;gap:12px;margin-bottom:30px}.mark{width:40px;height:40px;border-radius:12px;background:#50324b;color:#fff4de;display:grid;place-items:center;font-family:Georgia,serif;font-size:27px}.brand strong{display:block;font-family:Georgia,serif;font-size:20px}.brand small,.dim{color:var(--muted);font-size:12px}.kicker{letter-spacing:.18em;text-transform:uppercase;font-size:11px;font-weight:750;color:var(--gold)}h1{font-family:Georgia,serif;font-weight:500;line-height:1.1;font-size:clamp(34px,6vw,48px);margin:8px 0 14px}h2{font-size:17px;margin:0 0 12px}p{line-height:1.58;margin:7px 0 14px}header>p{color:var(--muted);max-width:650px}.notice{border:1px solid #65503d;color:#f1d5ad;background:#352a27;padding:12px 14px;border-radius:12px;font-size:13px;margin:18px 0}.panel{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:18px;margin-top:15px}.panel-top{display:flex;gap:12px;align-items:flex-start;justify-content:space-between;flex-wrap:wrap}.pill{font-size:11px;border-radius:99px;padding:5px 9px;background:var(--panel2);color:var(--gold);border:1px solid #604c57}.field{margin:13px 0 8px}label{font-size:13px;color:#e2d3de;display:block;margin-bottom:7px}textarea,select{width:100%;color:var(--text);background:#1b151e;border:1px solid #5c4a5e;border-radius:11px;font:inherit;outline-offset:2px}textarea{padding:12px 13px;resize:vertical;min-height:115px;line-height:1.65}select{padding:12px;min-height:46px}.controls{display:flex;flex-wrap:wrap;gap:9px;margin-top:12px}button{font:inherit;border:1px solid #685567;border-radius:11px;padding:11px 15px;background:#392b3c;color:var(--text);font-weight:650;cursor:pointer;min-height:44px}button.primary{background:#e6bd88;color:#221724;border-color:#e6bd88}button.secondary{background:#3b2c40}button:disabled{opacity:.5;cursor:not-allowed}button:focus-visible,select:focus-visible,textarea:focus-visible{outline:3px solid #dfb97f}.status{margin-top:13px;padding:12px 13px;border-radius:10px;background:#1b151e;border:1px solid var(--line);color:#e6dce5;line-height:1.55;min-height:48px;font-size:13px;white-space:pre-wrap;overflow-wrap:anywhere}.good{color:var(--green)}.warn{color:var(--gold)}.bad{color:#ffb2b1}.sub{font-size:12px;color:var(--muted)}.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:9px;margin-top:13px}.metric{border:1px solid var(--line);border-radius:10px;padding:10px}.metric strong{font-size:17px;display:block;font-variant-numeric:tabular-nums}.metric small{color:var(--muted);font-size:11px}audio{width:100%;margin:14px 0 3px}details{margin-top:16px}summary{cursor:pointer;font-size:13px;color:var(--gold)}pre{padding:12px;background:#140f17;color:#cfc4cc;white-space:pre-wrap;overflow-wrap:anywhere;font-size:11px;border-radius:9px;max-height:230px;overflow:auto}.foot{font-size:12px;color:var(--muted);margin-top:23px}a{color:#eac59a}#resumeWarning{display:none}@media(max-width:530px){.grid,.metrics{grid-template-columns:1fr}.panel{padding:16px}.panel-top{display:block}.pill{display:inline-block;margin:4px 0}main{padding-top:16px}.controls button{flex:1 1 auto}}
+</style>
+</head>
+<body>
+<main>
+<div class="brand"><span class="mark">S</span><span><strong>Storyline Studio</strong><small>VOICE LAB · EXPERIMENT 01 · NOT BUILD 59</small></span></div>
+<header><div class="kicker">Private listening experiment</div><h1>Can we make stories sound more human?</h1><p>Compare your current Apple narration with the open-source Kokoro AI engine on exactly the same passage. This page is separate from your Storyline Studio reader; no manuscripts or saved positions are touched.</p></header>
+<div id="resumeWarning" class="notice" role="alert">The previous AI attempt did not finish (or this page was refreshed). On some iPads, an AI model can exhaust memory and reload Safari. Try a shorter passage, or simply report that the page reloaded. The main Storyline Studio remains unaffected.</div>
+<section class="panel">
+<h2>1. Choose a test passage</h2>
+<div class="field"><label for="sample">Sample type</label><select id="sample">
+<option value="suspense">Suspense and atmosphere</option><option value="dialogue">Dialogue and emotion</option><option value="nonfiction">Clear non-fiction</option><option value="custom">My own short excerpt</option></select></div>
+<div class="field"><label for="passage">The same text will be used for both voices (320 characters maximum)</label><textarea id="passage" maxlength="320" spellcheck="false">Mara stopped at the foot of the stairs. From the darkened hallway, a familiar voice whispered, “You were not supposed to find this.”</textarea><div id="count" class="sub">0 / 320 characters</div></div>
+</section>
+<div class="grid">
+<section class="panel">
+<div class="panel-top"><h2>2. Current voice</h2><span class="pill">Apple · built in</span></div>
+<p class="sub">Uses Safari's speech engine, with Samantha preferred when installed. This is a control test, not the existing Storyline playback system.</p>
+<div class="controls"><button id="applePlay" class="secondary">▶ Listen with Apple</button><button id="appleStop">■ Stop</button></div>
+<div id="appleStatus" class="status" aria-live="polite">Ready for comparison.</div>
+</section>
+<section class="panel">
+<div class="panel-top"><h2>3. Experimental AI</h2><span class="pill">Kokoro · local processing</span></div>
+<p class="sub">Uses compact Q4 weights with WebAssembly. First load downloads approximately 86 MB of model weights plus supporting files; processing stays in the browser.</p>
+<div class="field"><label for="aiVoice">Narrator voice</label><select id="aiVoice"><option value="af_heart">Heart · American female</option><option value="af_bella">Bella · American female</option><option value="af_sky">Sky · American female</option><option value="bf_emma">Emma · British female</option><option value="bm_george">George · British male</option><option value="am_michael">Michael · American male</option></select></div>
+<div class="controls"><button id="load" class="secondary">⬇ Load AI voice engine</button><button id="generate" class="primary" disabled>✦ Generate sample</button></div>
+<div id="aiStatus" class="status" aria-live="polite">Not loaded. Tap Load when ready to test.</div>
+<audio id="audio" controls preload="none" playsinline hidden aria-label="Kokoro generated audio"></audio>
+<div class="controls"><button id="save" disabled>↓ Save WAV</button></div>
+</section>
+</div>
+<section class="panel">
+<h2>4. Check the results</h2>
+<div class="metrics"><div class="metric"><strong id="loadTime">—</strong><small>Engine load</small></div><div class="metric"><strong id="genTime">—</strong><small>Audio generation</small></div><div class="metric"><strong id="audioTime">—</strong><small>Generated audio</small></div></div>
+<p class="sub">After playing, try locking your iPad screen or moving to another app. Note whether playback continues. We are testing voice quality and iPad reliability separately.</p>
+<details><summary>Diagnostics and troubleshooting</summary><p class="sub" id="deviceInfo"></p><pre id="log">Awaiting test.</pre><div class="controls"><button id="copyLog">Copy diagnostic report</button><button id="reset">Reset test markers</button></div><p class="sub">The copied report includes technical events and device information, but not your passage text. You can share it to help diagnose a failure.</p></details>
+</section>
+<div class="foot">No sign-in, payment or API key. This is a capability test, not a production feature. AI runtime and model assets are loaded from jsDelivr and Hugging Face; your passage is not submitted to an inference server. Supported browsers and available memory determine whether local speech generation succeeds. <a href="../">Return to Storyline Studio</a> · <a href="https://github.com/hexgrad/kokoro/tree/main/kokoro.js" target="_blank" rel="noopener">Kokoro source</a></div>
+</main>
+<script type="module">
+const byId = (id) => document.getElementById(id);
+const samples = {
+  suspense: "Mara stopped at the foot of the stairs. From the darkened hallway, a familiar voice whispered, “You were not supposed to find this.”",
+  dialogue: "“You remembered?” she asked quietly. Daniel looked at the little paper star in his hand. “Of course I remembered,” he said.",
+  nonfiction: "A good story creates a world in the listener's imagination. A pause, a change of pace, or a carefully chosen word can transform how a passage feels."
+};
+let tts = null;
+let generatedBlob = null;
+let generatedUrl = null;
+let loading = false;
+let generating = false;
+let engineLoadMs = null;
+let generationMs = null;
+let appleUtterance = null;
+const logs = [];
+const marker = "storylineVoiceLabAttemptV1";
+const source = "https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/dist/kokoro.web.js";
+const model = "onnx-community/Kokoro-82M-v1.0-ONNX";
+const isIPad = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+const deviceText = [isIPad ? "iPad/iOS detected" : "Non-iPad device detected", "Browser: " + navigator.userAgent, "WebGPU: " + (navigator.gpu ? "present (not used)" : "not exposed"), "Engine: WASM / Q4", "Local mode: No server-side generation"].join("\n");
+byId("deviceInfo").textContent = deviceText;
+function log(message) {
+  const s = new Date().toLocaleTimeString() + "  " + message;
+  logs.push(s);
+  if (logs.length > 80) logs.shift();
+  byId("log").textContent = logs.join("\n");
+}
+function status(id, message, kind) {
+  const el = byId(id);
+  el.textContent = message;
+  el.className = "status" + (kind ? " " + kind : "");
+  log(id + ": " + message);
+}
+function duration(ms) { return (ms / 1000).toFixed(1) + " s"; }
+function passage() { return byId("passage").value.trim(); }
+function updateCount() { byId("count").textContent = byId("passage").value.length + " / 320 characters"; }
+function setBusy() {
+  byId("load").disabled = loading || generating || !!tts;
+  byId("generate").disabled = loading || generating || !tts;
+  byId("save").disabled = !generatedBlob || loading || generating;
+  byId("passage").disabled = loading || generating;
+  byId("aiVoice").disabled = loading || generating;
+}
+function discardAudio() {
+  byId("audio").pause();
+  byId("audio").removeAttribute("src");
+  byId("audio").load();
+  byId("audio").hidden = true;
+  if (generatedUrl) URL.revokeObjectURL(generatedUrl);
+  generatedUrl = null;
+  generatedBlob = null;
+  byId("audioTime").textContent = "—";
+  setBusy();
+}
+if (localStorage.getItem(marker)) {
+  byId("resumeWarning").style.display = "block";
+  log("Previous attempt marker found: " + localStorage.getItem(marker));
+}
+byId("sample").addEventListener("change", () => {
+  const v = byId("sample").value;
+  if (samples[v]) byId("passage").value = samples[v];
+  updateCount();
+  discardAudio();
+});
+byId("passage").addEventListener("input", () => {
+  if (byId("sample").value !== "custom") byId("sample").value = "custom";
+  updateCount();
+  discardAudio();
+});
+byId("aiVoice").addEventListener("change", () => { discardAudio(); status("aiStatus", tts ? "Voice changed. Generate again to hear it." : "Engine not loaded yet."); });
+updateCount();
+function chooseAppleVoice() {
+  const voices = speechSynthesis.getVoices();
+  return voices.find(v => /^Samantha$/i.test(v.name) && /^en/.test(v.lang)) ||
+    voices.find(v => /Samantha/i.test(v.name)) ||
+    voices.find(v => /^en-US/i.test(v.lang)) ||
+    voices.find(v => /^en/i.test(v.lang)) ||
+    null;
+}
+byId("applePlay").addEventListener("click", () => {
+  if (!("speechSynthesis" in window)) { status("appleStatus", "Speech synthesis is unavailable here.", "bad"); return; }
+  const text = passage();
+  if (!text) { status("appleStatus", "Enter a short passage first.", "bad"); return; }
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  appleUtterance = u;
+  u.lang = "en-US";
+  u.rate = 0.94;
+  const v = chooseAppleVoice();
+  if (v) u.voice = v;
+  u.onstart = () => status("appleStatus", "Playing with " + (v ? v.name : "default device voice") + ".", "good");
+  u.onend = () => { if (appleUtterance === u) status("appleStatus", "Apple sample finished.", "good"); };
+  u.onerror = e => status("appleStatus", "Apple playback ended: " + (e.error || "unknown"), "warn");
+  speechSynthesis.speak(u);
+  status("appleStatus", "Requesting Apple voice" + (v ? ": " + v.name : "") + "…");
+});
+byId("appleStop").addEventListener("click", () => {
+  if ("speechSynthesis" in window) speechSynthesis.cancel();
+  appleUtterance = null;
+  status("appleStatus", "Stopped.");
+});
+byId("load").addEventListener("click", async () => {
+  if (tts || loading) return;
+  loading = true;
+  setBusy();
+  const start = performance.now();
+  localStorage.setItem(marker, "Loading started " + new Date().toISOString());
+  status("aiStatus", "Loading the voice runtime. Downloads start now; a large first-time download is normal.", "warn");
+  try {
+    const lib = await import(source);
+    if (!lib || !lib.KokoroTTS) throw new Error("KokoroTTS export not found in browser module");
+    log("Browser engine module imported from pinned version 1.2.1.");
+    let lastProgress = "";
+    tts = await lib.KokoroTTS.from_pretrained(model, {
+      dtype: "q4",
+      device: "wasm",
+      progress_callback: info => {
+        if (!info) return;
+        const path = String(info.file || info.name || "model");
+        const percent = typeof info.progress === "number" ? " " + Math.round(info.progress) + "%" : "";
+        const label = String(info.status || "loading") + ": " + path.split("/").pop() + percent;
+        if (label !== lastProgress) {
+          lastProgress = label;
+          byId("aiStatus").textContent = "Loading: " + label;
+          if (info.status === "done" || (typeof info.progress === "number" && Math.round(info.progress) % 20 === 0)) log(label);
+        }
+      }
+    });
+    engineLoadMs = performance.now() - start;
+    byId("loadTime").textContent = duration(engineLoadMs);
+    localStorage.removeItem(marker);
+    byId("resumeWarning").style.display = "none";
+    status("aiStatus", "Kokoro loaded. Choose a voice, then generate a short sample.", "good");
+  } catch (e) {
+    localStorage.removeItem(marker);
+    status("aiStatus", "AI loading failed: " + (e && e.message ? e.message : String(e)) + "\nThis may be due to network access, iPad memory, or browser compatibility.", "bad");
+  } finally {
+    loading = false;
+    setBusy();
+  }
+});
+byId("generate").addEventListener("click", async () => {
+  if (!tts || generating) return;
+  const text = passage();
+  if (!text) { status("aiStatus", "Enter some text first.", "bad"); return; }
+  if (text.length > 320) { status("aiStatus", "Please use 320 characters or fewer.", "bad"); return; }
+  if ("speechSynthesis" in window) speechSynthesis.cancel();
+  discardAudio();
+  generating = true;
+  setBusy();
+  localStorage.setItem(marker, "Generation started " + new Date().toISOString());
+  const start = performance.now();
+  status("aiStatus", "Generating locally. On iPad this may be slow; if Safari reloads, the device may have run out of memory.", "warn");
+  try {
+    const output = await tts.generate(text, { voice: byId("aiVoice").value, speed: 1 });
+    if (!output || !output.toBlob) throw new Error("Engine did not return playable audio");
+    generatedBlob = output.toBlob();
+    generatedUrl = URL.createObjectURL(generatedBlob);
+    byId("audio").src = generatedUrl;
+    byId("audio").hidden = false;
+    generationMs = performance.now() - start;
+    byId("genTime").textContent = duration(generationMs);
+    localStorage.removeItem(marker);
+    byId("resumeWarning").style.display = "none";
+    status("aiStatus", "Audio generated successfully. Tap Play below to listen. Playback is deliberately user-initiated for Safari.", "good");
+    byId("audio").scrollIntoView({block:"nearest",behavior:"smooth"});
+  } catch (e) {
+    localStorage.removeItem(marker);
+    status("aiStatus", "Generation failed: " + (e && e.message ? e.message : String(e)) + "\nIf Safari reloaded, please report that separately.", "bad");
+  } finally {
+    generating = false;
+    setBusy();
+  }
+});
+byId("audio").addEventListener("loadedmetadata", () => {
+  const d = byId("audio").duration;
+  if (Number.isFinite(d)) byId("audioTime").textContent = d.toFixed(1) + " s";
+});
+byId("audio").addEventListener("error", () => status("aiStatus", "The audio file was generated but Safari could not play it.", "bad"));
+byId("save").addEventListener("click", () => {
+  if (!generatedBlob || !generatedUrl) return;
+  const link = document.createElement("a");
+  link.href = generatedUrl;
+  link.download = "storyline-kokoro-voice-test.wav";
+  document.body.append(link);
+  link.click();
+  link.remove();
+  log("Save WAV requested.");
+});
+byId("copyLog").addEventListener("click", async () => {
+  const report = "Storyline Studio Voice Lab — Kokoro 1.2.1\n" + deviceText + "\nEngine loaded: " + Boolean(tts) + "\nEngine load: " + (engineLoadMs === null ? "not completed" : duration(engineLoadMs)) + "\nGeneration: " + (generationMs === null ? "not completed" : duration(generationMs)) + "\nVoice: " + byId("aiVoice").value + "\nPassage characters: " + passage().length + "\nEvents:\n" + logs.join("\n");
+  try { await navigator.clipboard.writeText(report); status("aiStatus", "Diagnostic report copied. Passage text was not included.", "good"); }
+  catch (e) { status("aiStatus", "Could not copy automatically; select the diagnostics text instead.", "warn"); }
+});
+byId("reset").addEventListener("click", () => {
+  localStorage.removeItem(marker);
+  byId("resumeWarning").style.display = "none";
+  log("Attempt marker cleared.");
+});
+window.addEventListener("pagehide", () => { if ("speechSynthesis" in window) speechSynthesis.cancel(); });
+log("Voice Lab opened. Build 59 application files remain unchanged.");
+</script>
+</body>
+</html>
