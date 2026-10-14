@@ -3162,6 +3162,7 @@ async function carMoveChapter(delta){
 function setupCarModeControls(){
   const play=$('#carPlayPause'),prev=$('#carPreviousChapter'),next=$('#carNextChapter');
   const exit=$('#carModeExit'),sleep=$('#carSleepTimer');
+  const safari=$('#carSafariListen');if(safari)safari.addEventListener('click',()=>{if(state.readerBook)showSafariListeningDialog(state.readerBook);else showToast('Open a manuscript first.')});
   if(play)play.addEventListener('click',()=>{
     if(!state.voicesReady){showToast('Samantha is still loading on this device.');return}
     if(!state.isSpeaking||state.isPaused){holdCarAudio();setDeviceNarrationAudioSession(true)}
