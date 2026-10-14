@@ -11,7 +11,7 @@
 </head>
 <body>
 <main>
-<div class="brand"><span class="mark">S</span><span><strong>Storyline Studio</strong><small>VOICE LAB · EXPERIMENT 01 · BUILD 59 UNCHANGED</small></span></div>
+<div class="brand"><span class="mark">S</span><span><strong>Storyline Studio</strong><small>VOICE LAB · EXPERIMENT 02 · BUILD 59 UNCHANGED</small></span></div>
 <header><div class="kicker">Private listening experiment</div><h1>Can we make stories sound more human?</h1><p>Compare your current Apple narration with the open-source Kokoro AI engine on exactly the same passage. This page is separate from your Storyline Studio reader; no manuscripts or saved positions are touched.</p></header>
 <div id="resumeWarning" class="notice" role="alert">The previous AI attempt did not finish (or this page was refreshed). On some iPads, an AI model can exhaust memory and reload Safari. Try a shorter passage, or simply report that the page reloaded. The main Storyline Studio remains unaffected.</div>
 <section class="panel">
@@ -29,17 +29,17 @@
 </section>
 <section class="panel">
 <div class="panel-top"><h2>3. Experimental AI</h2><span class="pill">Kokoro · local processing</span></div>
-<p class="sub">Uses the compact 8-bit model with WebAssembly. First load downloads approximately 92 MB of model weights plus supporting files; generation runs in your browser.</p>
-<div class="field"><label for="aiVoice">Narrator voice</label><select id="aiVoice"><option value="af_heart">Heart · American female</option><option value="af_bella">Bella · American female</option><option value="af_sky">Sky · American female</option><option value="bf_emma">Emma · British female</option><option value="bm_george">George · British male</option><option value="am_michael">Michael · American male</option></select></div>
+<p class="sub">Choose CPU (previously stalled) or an opt-in experimental GPU test. Neither changes Storyline Studio.</p>
+<div class="field"><label for="backend">Processing method</label><select id="backend"><option value="wasm">CPU · 92 MB · previous test stalled</option><option value="webgpu">WebGPU · 326 MB · experimental</option></select><p class="sub" id="backendNote"></p></div><div class="field"><label for="aiVoice">Narrator voice</label><select id="aiVoice"><option value="af_heart">Heart · American female</option><option value="af_bella">Bella · American female</option><option value="af_sky">Sky · American female</option><option value="bf_emma">Emma · British female</option><option value="bm_george">George · British male</option><option value="am_michael">Michael · American male</option></select></div>
 <div class="controls"><button id="load" class="secondary">⬇ Load AI voice engine</button><button id="generate" class="primary" disabled>✦ Generate sample</button></div>
-<div id="aiStatus" class="status" aria-live="polite">Not loaded. Tap Load when ready to test.</div>
+<div id="aiStatus" class="status" aria-live="polite">Choose the engine to test.</div><p class="sub" id="stageStatus">Stage: not started</p><div class="controls"><button id="reload" disabled>Stop test (reload page)</button></div>
 <audio id="audio" controls preload="none" playsinline hidden aria-label="Kokoro generated audio"></audio>
 <div class="controls"><button id="save" disabled>↓ Save WAV</button></div>
 </section>
 </div>
 <section class="panel">
 <h2>4. Check the results</h2>
-<div class="metrics"><div class="metric"><strong id="loadTime">—</strong><small>Engine load</small></div><div class="metric"><strong id="genTime">—</strong><small>Audio generation</small></div><div class="metric"><strong id="audioTime">—</strong><small>Generated audio</small></div></div>
+<div class="metrics"><div class="metric"><strong id="loadTime">—</strong><small>Engine load</small></div><div class="metric"><strong id="genTime">—</strong><small>Audio generation</small></div><div class="metric"><strong id="audioTime">—</strong><small>Generated audio</small></div><div class="metric"><strong id="elapsed">—</strong><small>Elapsed time</small></div></div>
 <p class="sub">After playing, try locking your iPad screen or moving to another app. Note whether playback continues. We are testing voice quality and iPad reliability separately.</p>
 <details><summary>Diagnostics and troubleshooting</summary><p class="sub" id="deviceInfo"></p><pre id="log">Awaiting test.</pre><div class="controls"><button id="copyLog">Copy diagnostic report</button><button id="reset">Reset test markers</button></div><p class="sub">The copied report includes technical events and device information, but not your passage text. You can share it to help diagnose a failure.</p></details>
 </section>
@@ -63,9 +63,11 @@ let appleUtterance = null;
 const logs = [];
 const marker = "storylineVoiceLabAttemptV1";
 const source = "https://cdn.jsdelivr.net/npm/kokoro-js@1.2.1/dist/kokoro.web.js";
-const model = "onnx-community/Kokoro-82M-v1.0-ONNX";
+const cpuModel = "onnx-community/Kokoro-82M-v1.0-ONNX";
+const gpuModel = "DevAmarnadh/Kokoro-82M-v1.0-ONNX-webgpu";
+let liveTimer = null, activeStage = "Not started";
 const isIPad = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
-const deviceText = [isIPad ? "iPad/iOS detected" : "Non-iPad device detected", "Browser: " + navigator.userAgent, "WebGPU: " + (navigator.gpu ? "present (not used)" : "not exposed"), "Engine: WASM / 8-bit (q8)", "Local mode: No server-side generation"].join("\n");
+const deviceText = [isIPad ? "iPad/iOS detected" : "Non-iPad device detected", "Browser: " + navigator.userAgent, "WebGPU API: " + (navigator.gpu ? "present; runtime unverified" : "not exposed"), "Local mode: No server-side generation"].join("\n");
 byId("deviceInfo").textContent = deviceText;
 function log(message) {
   const s = new Date().toLocaleTimeString() + "  " + message;
@@ -80,6 +82,28 @@ function status(id, message, kind) {
   log(id + ": " + message);
 }
 function duration(ms) { return (ms / 1000).toFixed(1) + " s"; }
+function stage(name) { activeStage=name; byId("stageStatus").textContent="Stage: "+name; log("stage: "+name); }
+function stopTimer() { if(liveTimer) clearInterval(liveTimer); liveTimer=null; }
+function startTimer(started) {
+  stopTimer();
+  let warned=false;
+  byId("elapsed").textContent="0 s";
+  liveTimer=setInterval(()=>{
+    const seconds=Math.floor((performance.now()-started)/1000);
+    byId("elapsed").textContent=seconds+" s";
+    if(!warned && seconds>=60) {
+      warned=true;
+      status("aiStatus","Still no audio after one minute. Current stage: "+activeStage+". This may be stalled. Use Stop test rather than waiting ten minutes.","warn");
+    }
+  },1000);
+}
+function showBackendNote() {
+  byId("backendNote").textContent = byId("backend").value==="webgpu"
+    ? "Experimental GPU uses a community-patched fp32 model (about 326 MB plus processing memory). It can fail, crash or reload Safari. Do not select on limited memory or storage."
+    : "CPU uses 92 MB q8 model. This has already stalled twice on this iPad. Select GPU to try a different approach.";
+}
+byId("backend").addEventListener("change",showBackendNote);
+showBackendNote();
 function passage() { return byId("passage").value.trim(); }
 function updateCount() { byId("count").textContent = byId("passage").value.length + " / 320 characters"; }
 function setBusy() {
@@ -88,6 +112,8 @@ function setBusy() {
   byId("save").disabled = !generatedBlob || loading || generating;
   byId("passage").disabled = loading || generating;
   byId("aiVoice").disabled = loading || generating;
+  byId("backend").disabled = loading || generating || !!tts;
+  byId("reload").disabled = !(loading || generating);
 }
 function discardAudio() {
   byId("audio").pause();
@@ -147,21 +173,25 @@ byId("appleStop").addEventListener("click", () => {
   appleUtterance = null;
   status("appleStatus", "Stopped.");
 });
+byId("reload").addEventListener("click",()=>location.reload());
 byId("load").addEventListener("click", async () => {
   if (tts || loading) return;
+  const backend=byId("backend").value;
+  if(backend==="webgpu" && !navigator.gpu) { status("aiStatus","WebGPU API not available.","bad"); return; }
   loading = true;
   setBusy();
   const start = performance.now();
   localStorage.setItem(marker, "Loading started " + new Date().toISOString());
-  status("aiStatus", "Loading the voice runtime. Initial model weights are about 92 MB, plus supporting files.", "warn");
+  stage("Loading model"); startTimer(start);
+  status("aiStatus",backend==="webgpu" ? "GPU experimental: loading ~326 MB model plus support files. May fail on iPad." : "CPU: loading ~92 MB model plus support files.","warn");
   try {
     const lib = await import(source);
     if (!lib || !lib.KokoroTTS) throw new Error("KokoroTTS export not found in browser module");
     log("Browser engine module imported from pinned version 1.2.1.");
     let lastProgress = "";
-    tts = await lib.KokoroTTS.from_pretrained(model, {
-      dtype: "q8",
-      device: "wasm",
+    tts = await lib.KokoroTTS.from_pretrained(backend==="webgpu" ? gpuModel : cpuModel, {
+      dtype: backend==="webgpu" ? "fp32" : "q8",
+      device: backend,
       progress_callback: info => {
         if (!info) return;
         const path = String(info.file || info.name || "model");
@@ -176,13 +206,22 @@ byId("load").addEventListener("click", async () => {
     });
     engineLoadMs = performance.now() - start;
     byId("loadTime").textContent = duration(engineLoadMs);
+    const base=tts.generate_from_ids.bind(tts);
+    tts.generate_from_ids=async function(ids,options) {
+      stage("Text prepared; loading voice assets / calculating waveform");
+      const result=await base(ids,options);
+      stage("Waveform calculated");
+      return result;
+    };
     localStorage.removeItem(marker);
     byId("resumeWarning").style.display = "none";
-    status("aiStatus", "Kokoro loaded. Choose a voice, then generate a short sample.", "good");
+    stage("Model ready");
+    status("aiStatus","Kokoro "+backend.toUpperCase()+" loaded. Generate a short sample.","good");
   } catch (e) {
     localStorage.removeItem(marker);
     status("aiStatus", "AI loading failed: " + (e && e.message ? e.message : String(e)) + "\nThis may be due to network access, iPad memory, or browser compatibility.", "bad");
   } finally {
+    stopTimer();
     loading = false;
     setBusy();
   }
@@ -198,7 +237,8 @@ byId("generate").addEventListener("click", async () => {
   setBusy();
   localStorage.setItem(marker, "Generation started " + new Date().toISOString());
   const start = performance.now();
-  status("aiStatus", "Generating locally. On iPad this may be slow; if Safari reloads, the device may have run out of memory.", "warn");
+  stage("Preparing text (phonemization)"); startTimer(start);
+  status("aiStatus","Generating locally; check the elapsed time and stage below.","warn");
   try {
     const output = await tts.generate(text, { voice: byId("aiVoice").value, speed: 1 });
     if (!output || !output.toBlob) throw new Error("Engine did not return playable audio");
@@ -206,8 +246,10 @@ byId("generate").addEventListener("click", async () => {
     generatedUrl = URL.createObjectURL(generatedBlob);
     byId("audio").src = generatedUrl;
     byId("audio").hidden = false;
-    generationMs = performance.now() - start;
-    byId("genTime").textContent = duration(generationMs);
+    generationMs=performance.now()-start;
+    byId("genTime").textContent=duration(generationMs);
+    byId("elapsed").textContent=duration(generationMs);
+    stage("Audio ready to play");
     localStorage.removeItem(marker);
     byId("resumeWarning").style.display = "none";
     status("aiStatus", "Audio generated successfully. Tap Play below to listen. Playback is deliberately user-initiated for Safari.", "good");
@@ -216,7 +258,8 @@ byId("generate").addEventListener("click", async () => {
     localStorage.removeItem(marker);
     status("aiStatus", "Generation failed: " + (e && e.message ? e.message : String(e)) + "\nIf Safari reloaded, please report that separately.", "bad");
   } finally {
-    generating = false;
+    stopTimer();
+    generating=false;
     setBusy();
   }
 });
@@ -236,7 +279,7 @@ byId("save").addEventListener("click", () => {
   log("Save WAV requested.");
 });
 byId("copyLog").addEventListener("click", async () => {
-  const report = "Storyline Studio Voice Lab — Kokoro 1.2.1\n" + deviceText + "\nEngine loaded: " + Boolean(tts) + "\nEngine load: " + (engineLoadMs === null ? "not completed" : duration(engineLoadMs)) + "\nGeneration: " + (generationMs === null ? "not completed" : duration(generationMs)) + "\nVoice: " + byId("aiVoice").value + "\nPassage characters: " + passage().length + "\nEvents:\n" + logs.join("\n");
+  const report = "Storyline Studio Voice Lab — Kokoro 1.2.1\n" + deviceText + "\nBackend: " + byId("backend").value + "\nLast stage: " + activeStage + "\nElapsed: " + byId("elapsed").textContent + "\nEngine loaded: " + Boolean(tts) + "\nEngine load: " + (engineLoadMs === null ? "not completed" : duration(engineLoadMs)) + "\nGeneration: " + (generationMs === null ? "not completed" : duration(generationMs)) + "\nVoice: " + byId("aiVoice").value + "\nPassage characters: " + passage().length + "\nEvents:\n" + logs.join("\n");
   try { await navigator.clipboard.writeText(report); status("aiStatus", "Diagnostic report copied. Passage text was not included.", "good"); }
   catch (e) { status("aiStatus", "Could not copy automatically; select the diagnostics text instead.", "warn"); }
 });
@@ -246,7 +289,7 @@ byId("reset").addEventListener("click", () => {
   log("Attempt marker cleared.");
 });
 window.addEventListener("pagehide", () => { if ("speechSynthesis" in window) speechSynthesis.cancel(); });
-log("Voice Lab opened. Build 59 application files remain unchanged.");
+log("Voice Lab v2 opened. Build 59 application files remain unchanged.");
 </script>
 </body>
 </html>
