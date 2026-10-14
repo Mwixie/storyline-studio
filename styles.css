@@ -984,3 +984,8 @@ body.car-mode #toast{z-index:3600;bottom:18px}
 .car-mode-hint{text-align:center;font-size:12px;line-height:1.4;color:#c6b9c9;margin:0}
 @media(max-height:680px){.car-mode-shell{gap:12px}.car-mode-cover{width:64px;height:64px;font-size:40px}.car-mode-book{gap:7px}.car-mode-player{gap:16px}.car-mode-sleep{min-height:54px}}
 @media(max-width:430px){.car-mode-shell{gap:17px}.car-mode-buttons{gap:10px}.car-skip{min-height:82px;font-size:23px}.car-skip span{font-size:12px}.car-mode-cover{width:86px;height:86px;font-size:52px}}
+
+/* Build 59: listening page entry is separate from Car Mode */
+#safariListenBtn{color:var(--gold2);border-color:#6e6044}
+.car-mode-safari{align-self:stretch;border:1px solid #c8a76b;border-radius:16px;background:rgba(214,179,106,.11);color:#f8e9c8;font-size:16px;font-weight:750;min-height:58px;padding:12px}
+@media(max-height:680px){.car-mode-safari{min-height:48px;font-size:14px}}
